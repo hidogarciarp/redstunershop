@@ -1,0 +1,22 @@
+﻿+         { id: "clientes", label: "ðŸ‘¥ Clientes", cor: "#facc15" },
++         { id: "bot", label: "ðŸ¤– Bot", cor: "#ff0000" },
++         { id: "admin", label: "âš™ï¸ Admin", cor: "#ff0000" },
++                           : paginaAtual === "bot"
++                             ? "ðŸ¤–Bot"
++                             : "Painel";
+-   const userPodeNitro = userRole && (userRole.includes("admin") || userRole.includes("dono") || userRole.includes("gerente_geral") || userRole.includes("financeiro"));
+-         { id: "clientes",    label: "ðŸ‘¥ Clientes",    cor: "#facc15" },
+-         { id: "admin",       label: "âš™ï¸ Admin",        cor: "#ff0000" },
+-         { id: "ponto-admin", label: "ðŸ“‹ Ponto Admin",  cor: "#f97316" },
+-         { id: "relatorio",   label: "ðŸ“Š RelatÃ³rio",   cor: "#a78bfa" },
+-     ...(userPodeNitro
+-       ? [{ id: "nitro-admin", label: "ðŸ§ª Nitro Admin", cor: "#14b8a6" }]
+-       : []),
+-                           : paginaAtual === "ponto-admin"
+-                             ? "ðŸ“‹Ponto Admin"
+-                             : paginaAtual === "relatorio"
+-                               ? "ðŸ“ŠRelatÃ³rio"
+-                               : paginaAtual === "nitro-admin"
+-                                 ? "ðŸ§ªNitro Admin"
+-                                 : "Painel";
+- 

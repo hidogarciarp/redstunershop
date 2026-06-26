@@ -1,0 +1,330 @@
+﻿+ import React, { useState } from "react";
++ import { supabase } from "../../utils/supabaseClient";
++   isDarkMode = true, // Garante que comece no escuro se houver erro
++   const [draggedUser, setDraggedUser] = useState(null);
++   const [migrating, setMigrating] = useState(false);
++   // Cores dinÃ¢micas para Dark/Light Mode (Turbinadas)
++   const bgColor = isDarkMode ? "#060606" : "#f5f5f5";
++   const cardBg = isDarkMode ? "#121212" : "#ffffff";
++   const groupBg = isDarkMode ? "#0d0d0d" : "#eeeeee";
++   const textColor = isDarkMode ? "#ffffff" : "#222222";
++   const subTextColor = isDarkMode ? "#888" : "#666";
++   const borderColor = isDarkMode ? "#1a1a1a" : "#ddd";
++   // FUNÃ‡ÃƒO DE MIGRAÃ‡ÃƒO INTERNA (Roda no navegador)
++   const migrarIdsParaUsuarios = async () => {
++     if (!confirm("Deseja copiar todos os IDs do Discord da tabela 'registros' para 'usuarios'?")) return;
++     setMigrating(true);
++     try {
++       const { data: registros } = await supabase.from('registros').select('registro_id, discord_id').not('discord_id', 'is', null);
++       if (!registros) return alert("Nenhum vÃ­nculo encontrado.");
++       let count = 0;
++       for (const reg of registros) {
++         const { error } = await supabase.from('usuarios').update({ discord_id: reg.discord_id }).eq('id', reg.registro_id);
++         if (!error) count++;
++       }
++       alert(`âœ… Sucesso! ${count} vÃ­nculos migrados para a tabela usuarios.`);
++       buscarHierarquia();
++     } catch (e) { alert("Erro na migraÃ§Ã£o."); }
++     finally { setMigrating(false); }
++   };
++   const mudarCargo = async (userId, novoCargo) => {
++     if (!userIsAdmin) return;
++     try {
++       // 1. Busca DIRETO na tabela usuarios agora (Muito mais rÃ¡pido!)
++       const { data: user } = await supabase.from("usuarios").select("discord_id").eq("id", userId).single();
++       const { error } = await supabase.from("usuarios").update({ role: novoCargo }).eq("id", userId);
++       if (error) throw error;
++ 
++       const discordId = user?.discord_id;
++       if (discordId) {
++         console.log(`ðŸš€ Sincronizando com Bot (User: ${discordId}, Novo Cargo: ${novoCargo})`);
++         const botUrl = process.env.NEXT_PUBLIC_BOT_URL || 'https://bot-discord-bvnb.onrender.com';
++         const resBot = await fetch(`${botUrl}/update-role`, {
++           method: "POST",
++           headers: { "Content-Type": "application/json" },
++           body: JSON.stringify({ userId: discordId, newRole: novoCargo })
++         });
++ 
++         if (resBot.ok) {
++           console.log("âœ… Bot atualizou o Discord!");
++         } else {
++           console.error("âŒ Bot recusou a atualizaÃ§Ã£o de cargo.");
++         }
++       } else {
++         alert("âš ï¸ UsuÃ¡rio sem Discord vinculado na tabela 'usuarios'.");
++       }
++       buscarHierarquia();
++     } catch (err) {
++       console.error(err);
++       alert("âŒ Erro ao mudar cargo.");
++     }
++   };
++ 
++ 
++   const getGrupoAlvo = (role) => {
++     const primary = getPrimaryRole(role);
++     if (primary === "gerente_rh") return "gerente";
++     return primary;
++   };
++ 
++   const cargosFiltro = CARGOS_HIERARQUIA.filter(c => !["admin", "gerente_rh", "user"].includes(c.value));
++   const grupos = cargosFiltro.slice().reverse().map((cargo) => ({
++     cargo,
++     membros: visiveis.filter((f) => getGrupoAlvo(f.role) === cargo.value),
++   })).filter((g) => g.membros.length > 0 || (userIsAdmin && ["gerente", "gerente_geral"].includes(g.cargo.value)));
++ 
++   const sistemaUsuarios = visiveis.filter(f =>
++     getPrimaryRole(f.role) === 'admin' || getPrimaryRole(f.role) === 'user' || !CARGOS_HIERARQUIA.some(c => c.value === getPrimaryRole(f.role))
++ 
++     <div style={{ ...styles.dashContainer, background: bgColor, transition: "background 0.3s ease" }}>
++       <style>{`
++         .draggable-card { transition: all 0.2s ease; cursor: grab; }
++         .draggable-card:active { cursor: grabbing; transform: scale(0.98); opacity: 0.7; }
++         .drop-zone-glow { border: 1px dashed #38bdf8 !important; background: rgba(56, 189, 248, 0.03) !important; }
++         .phone-icon { color: #e91e63; margin-right: 5px; }
++         .phone-number { color: #00bcd4; font-weight: bold; }
++       `}</style>
++ 
++       <div style={{ padding: "30px 40px", maxWidth: "1100px", margin: "0 auto" }}>
++ 
++         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "30px" }}>
++           <h2 style={{ color: textColor, margin: 0, fontWeight: "900", fontSize: "24px", display: "flex", alignItems: "center", gap: "12px" }}>
++             <span style={{ opacity: 0.8 }}>ðŸ›ï¸</span> Hierarquia de FuncionÃ¡rios
++           </h2>
++           <button onClick={buscarHierarquia} style={{ background: "#b40d0d", color: "#fff", border: "none", padding: "8px 16px", borderRadius: "6px", fontSize: "13px", fontWeight: "bold", cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}>
++ 
++             onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("drop-zone-glow"); }}
++             onDragLeave={(e) => { e.currentTarget.classList.remove("drop-zone-glow"); }}
++             onDrop={(e) => {
++               e.preventDefault();
++               e.currentTarget.classList.remove("drop-zone-glow");
++               if (draggedUser && getGrupoAlvo(draggedUser.role) !== cargo.value) mudarCargo(draggedUser.id, cargo.value);
++               background: groupBg,
++               borderRadius: "15px",
++               padding: "18px",
++               borderLeft: `3px solid ${cargo.nivel >= 7 ? "#fbc02d" : cargo.nivel >= 5 ? "#f57c00" : "#03a9f4"}`,
++               borderTop: `1px solid ${borderColor}`,
++               borderRight: `1px solid ${borderColor}`,
++               borderBottom: `1px solid ${borderColor}`,
++               transition: "all 0.3s ease"
++             }}
++             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
++               <span style={{ height: "8px", width: "8px", borderRadius: "50%", background: cargo.nivel >= 7 ? "#fbc02d" : cargo.nivel >= 5 ? "#f57c00" : "#03a9f4" }}></span>
++               <span style={{ color: cargo.nivel >= 7 ? "#fbc02d" : cargo.nivel >= 5 ? "#f57c00" : textColor, fontWeight: "900", fontSize: "14px", letterSpacing: "1px" }}>{cargo.label.toUpperCase()}</span>
++               <span style={{ background: isDarkMode ? "#252525" : "#ddd", color: isDarkMode ? "#666" : "#888", fontSize: "10px", padding: "2px 10px", borderRadius: "15px", fontWeight: "800" }}>
++                 NÃVEL {cargo.nivel} - {membros.length} MEMBROS
++ 
++               {membros.map((func) => (
++                   draggable={userIsAdmin}
++                   onDragStart={() => setDraggedUser(func)}
++                   className="draggable-card"
++                   style={{ background: cardBg, border: `1px solid ${borderColor}`, borderRadius: "10px", padding: "14px", display: "flex", justifyContent: "space-between", alignItems: "center", transition: "all 0.3s ease" }}
++                   <div style={{ flex: 1 }}>
++                     <div style={{ color: textColor, fontWeight: "800", fontSize: "15px" }}>{func.nome}</div>
++                     <div style={{ color: subTextColor, fontSize: "10px", marginTop: "1px" }}>ID: {func.id}</div>
++                     <div style={{ marginTop: "8px", fontSize: "12px", display: "flex", alignItems: "center" }}>
++                       <span className="phone-icon" style={{ fontSize: "12px" }}>ðŸ“ž</span>
++                       <span className="phone-number">{func.telefone || "000-000"}</span>
++                   {userIsAdmin && (
++                     <button onClick={() => toggleOcultoHierarquia(func.id, false)} style={{ background: cardBg, border: "1px solid #b40d0d", color: isDarkMode ? "#fff" : "#b40d0d", borderRadius: "6px", padding: "4px 10px", fontSize: "10px", fontWeight: "bold", cursor: "pointer" }}>
++                       ðŸ‘ï¸ Ocultar
++                     </button>
++                   )}
++ 
++         <div style={{ marginTop: "80px", borderTop: "1px solid #222", paddingTop: "40px", opacity: 0.5 }}>
++           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
++             <h4 style={{ color: "#444", fontSize: "12px", margin: 0 }}>CONFIGURAÃ‡ÃƒO DE SISTEMA E USUÃRIOS OCULTOS</h4>
++             {userIsAdmin && (
++               <button
++                 onClick={migrarIdsParaUsuarios}
++                 disabled={migrating}
++                 style={{ background: "#38bdf820", color: "#38bdf8", border: "1px solid #38bdf8", padding: "5px 12px", borderRadius: "6px", fontSize: "10px", cursor: "pointer", fontWeight: "800" }}
++                 {migrating ? "âŒ› MIGRANDO..." : "ðŸ”„ SINCRONIZAR BANCO (MIGRAR IDs)"}
++               </button>
++             )}
++ 
++           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "15px" }}>
++             {sistemaUsuarios.map(f => (
++               <div key={f.id} style={{ background: "#111", border: "1px solid #222", padding: "15px", borderRadius: "10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
++                 <div style={{ color: "#888", fontSize: "13px" }}>{f.nome} <br /><small>{getLabelCargo(f.role)}</small></div>
++                 <button onClick={() => toggleOcultoHierarquia(f.id, false)} style={{ color: "#ef4444", background: "none", border: "none", cursor: "pointer" }}>OCULTAR</button>
++               </div>
++             ))}
++             {ocultosAdmin.map(f => (
++               <div key={f.id} style={{ background: "#111", border: "1px solid #3d0a0a", padding: "15px", borderRadius: "10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
++                 <div style={{ color: "#b40d0d", fontSize: "13px" }}>ðŸ‘» {f.nome} <br /><small>OCULTO</small></div>
++                 <button onClick={() => toggleOcultoHierarquia(f.id, true)} style={{ color: "#22c55e", background: "none", border: "none", cursor: "pointer" }}>REATIVAR</button>
++               </div>
++             ))}
++         </div>
++ 
++   );
+- import React from "react";
+-   const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+-   // Agrupar por nÃ­vel
+-   const grupos = CARGOS_HIERARQUIA.slice()
+-     .reverse()
+-     .map((cargo) => ({
+-       cargo,
+-       membros: visiveis.filter((f) => getPrimaryRole(f.role) === cargo.value),
+-     }))
+-     .filter((g) => g.membros.length > 0);
+-     <div style={styles.dashContainer}>
+-       <style>{`@keyframes fadeLogin { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+-       <div style={{ padding: "30px 40px", maxWidth: "1000px", margin: "0 auto" }}>
+-         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+-           <h2 style={{ color: theme.text, margin: 0, fontWeight: "800" }}>ðŸ›ï¸ Hierarquia de FuncionÃ¡rios</h2>
+-           <button
+-             onClick={buscarHierarquia}
+-             style={{ ...styles.btnPrimary, width: "auto", marginTop: 0, padding: "9px 18px", fontSize: "12px" }}
+-               ...styles.whiteCard,
+-               borderLeft: `4px solid ${cargo.nivel >= 7 ? "#facc15" : cargo.nivel >= 5 ? "#f97316" : cargo.nivel >= 3 ? "#38bdf8" : theme.accent}`,
+-           >
+-             <div
+-               style={{
+-                 ...styles.cardHeader,
+-                 color: cargo.nivel >= 7 ? "#facc15" : cargo.nivel >= 5 ? "#f97316" : cargo.nivel >= 3 ? "#38bdf8" : theme.text,
+-               }}
+-             >
+-               <span
+-                 style={{
+-                   ...styles.dot,
+-                   background:
+-                     cargo.nivel >= 7 ? "#facc15" : cargo.nivel >= 5 ? "#f97316" : cargo.nivel >= 3 ? "#38bdf8" : theme.accent,
+-                 }}
+-               ></span>
+-               {cargo.label}
+-               <span
+-                 style={{
+-                   marginLeft: "8px",
+-                   background: theme.card2,
+-                   border: `1px solid ${theme.border}`,
+-                   borderRadius: "20px",
+-                   padding: "2px 10px",
+-                   fontSize: "11px",
+-                   color: theme.subtext,
+-                   fontWeight: "600",
+-                 }}
+-                 NÃ­vel {cargo.nivel} Â· {membros.length} {membros.length === 1 ? "membro" : "membros"}
+-               {membros.map((func) => {
+-                 const atribuicoes = getAtribuicoes(func.role);
+-                 return (
+-                   <div
+-                     key={func.id}
+-                     style={{
+-                       background: theme.card2,
+-                       border: `1px solid ${theme.border}`,
+-                       borderRadius: "12px",
+-                       padding: "14px 16px",
+-                       display: "flex",
+-                       justifyContent: "space-between",
+-                       alignItems: "center",
+-                     }}
+-                   >
+-                     <div>
+-                       <div style={{ fontWeight: "700", fontSize: "14px", color: theme.text }}>{func.nome}</div>
+-                       <div style={{ fontSize: "11px", color: theme.subtext, marginTop: "2px" }}>ID: {func.id}</div>
+-                       {atribuicoes.length > 0 && (
+-                         <div style={{ fontSize: "11px", color: "#f97316", marginTop: "2px", fontWeight: "600" }}>
+-                           {atribuicoes
+-                             .map((a) =>
+-                               a === "resp_ponto"
+-                                 ? "ðŸ“Œ Resp. Ponto"
+-                                 : a === "resp_tunagem"
+-                                 ? "ðŸ”§ Resp. Tunagem"
+-                                 : a === "resp_financas"
+-                                 ? "ðŸ’° Resp. FinanÃ§as"
+-                                 : a
+-                             )
+-                             .join(" Â· ")}
+-                         </div>
+-                       )}
+-                       {func.telefone && (
+-                         <div style={{ fontSize: "12px", color: "#38bdf8", marginTop: "4px", fontWeight: "600" }}>
+-                           ðŸ“ž {func.telefone}
+-                         </div>
+-                       )}
+-                       {!func.telefone && (
+-                         <div style={{ fontSize: "11px", color: theme.border, marginTop: "4px" }}>ðŸ“ž Sem telefone</div>
+-                       )}
+-                     {userIsAdmin && (
+-                       <button
+-                         onClick={() => toggleOcultoHierarquia(func.id, false)}
+-                         title="Ocultar da hierarquia"
+-                         style={{
+-                           background: "#7f1d1d20",
+-                           border: "1px solid #7f1d1d",
+-                           color: "#ef4444",
+-                           padding: "5px 10px",
+-                           borderRadius: "7px",
+-                           cursor: "pointer",
+-                           fontSize: "11px",
+-                           fontWeight: "700",
+-                           whiteSpace: "nowrap",
+-                           marginLeft: "8px",
+-                         }}
+-                       >
+-                         ðŸ‘ï¸ Ocultar
+-                       </button>
+-                     )}
+-                 );
+-               })}
+-         {/* UsuÃ¡rios ocultos â€” visÃ­vel apenas para admin/dono */}
+-         {userIsAdmin && ocultosAdmin.length > 0 && (
+-           <div style={{ ...styles.whiteCard, borderLeft: `4px solid #374151`, marginBottom: "20px", opacity: 0.7 }}>
+-             <div style={{ ...styles.cardHeader, color: "#6b7280" }}>
+-               <span style={{ ...styles.dot, background: "#374151" }}></span>
+-               ðŸ‘» Ocultos da Hierarquia
+-               <span
+-                 style={{
+-                   fontSize: "11px",
+-                   color: theme.subtext,
+-                   marginLeft: "8px",
+-                   background: theme.card2,
+-                   border: `1px solid ${theme.border}`,
+-                   borderRadius: "20px",
+-                   padding: "2px 10px",
+-                 }}
+-               >
+-                 VisÃ­vel apenas para Admin/Dono
+-               </span>
+-             </div>
+-             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "10px" }}>
+-               {ocultosAdmin.map((func) => (
+-                   style={{
+-                     background: theme.card2,
+-                     border: `1px solid #374151`,
+-                     borderRadius: "12px",
+-                     padding: "12px 14px",
+-                     display: "flex",
+-                     justifyContent: "space-between",
+-                     alignItems: "center",
+-                   }}
+-                   <div>
+-                     <div style={{ fontWeight: "600", fontSize: "13px", color: "#6b7280" }}>ðŸ‘» {func.nome}</div>
+-                     <div style={{ fontSize: "11px", color: "#4b5563" }}>
+-                       ID: {func.id} Â· {getLabelCargo(func.role)}
+-                     </div>
+-                   </div>
+-                   <button
+-                     onClick={() => toggleOcultoHierarquia(func.id, true)}
+-                     style={{
+-                       background: "#14532d20",
+-                       border: "1px solid #14532d",
+-                       color: "#22c55e",
+-                       padding: "5px 10px",
+-                       borderRadius: "7px",
+-                       cursor: "pointer",
+-                       fontSize: "11px",
+-                       fontWeight: "700",
+-                       marginLeft: "8px",
+-                     }}
+-                   >
+-                     ðŸ‘ï¸ Exibir
+-                   </button>
+-             </div>
+-         )}
+-         {hierarquiaFuncionarios.length === 0 && (
+-           <div style={{ ...styles.whiteCard, textAlign: "center", padding: "50px" }}>
+-             <p style={{ color: theme.subtext }}>Carregando hierarquia...</p>
+-         )}

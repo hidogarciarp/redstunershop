@@ -1,0 +1,9 @@
+﻿+     // { id: "t5", nome: "TransmissÃ£o NÃ­vel 5", preco: 76800, painel: 48000 },
++     // { id: "f5", nome: "Freios NÃ­vel 5", preco: 51200, painel: 32000 },
+-     { id: "t5", nome: "TransmissÃ£o NÃ­vel 5", preco: 76800, painel: 48000 },
+-     { id: "f5", nome: "Freios NÃ­vel 5", preco: 51200, painel: 32000 },
+-   Tunagens: [
+-     { id: "tf1", nome: "Tunagem Full Sem Blindagem", preco: 212800 },
+-     { id: "tf2", nome: "Tunagem Full Com Blindagem", preco: 308800 },
+-     { id: "tf3", nome: "Tunagem Full Sem Blindagem/SuspensÃ£o", preco: 171840 },
+-   ],

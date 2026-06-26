@@ -1,0 +1,2 @@
+﻿+                   <div style={{ color: "#facc15", fontWeight: "700", fontSize: "13px" }}>R$ {Number(c.total_gasto || 0).toLocaleString("pt-BR")}</div>
+-                   <div style={{ color: "#facc15", fontWeight: "700", fontSize: "13px" }}>R$ {Number(c.total).toLocaleString("pt-BR")}</div>

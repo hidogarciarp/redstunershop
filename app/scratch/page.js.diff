@@ -1,0 +1,329 @@
+﻿+ import BotPage from "./components/pages/BotPage";
++     const novoQuadro = { id: `${Date.now()}-${Math.floor(Math.random() * 1000)}`, titulo: "ðŸ“¢ NOVO QUADRO", texto: "Escreva aqui..." };
++     const { data } = await supabase.from("usuarios").select("id, nome, role, telefone").order("nome", { ascending: true });
++     const updateData = { nome: editFuncNome.trim(), role: roleCompleto, telefone: editFuncTelefone || null };
++       if (data) setRankingClientes(data.map((c) => ({ cliente_id: c.id, cliente_nome: c.nome, total_gasto: c.total_gasto || 0, count: 0 })));
++         if (!totais[key]) totais[key] = { cliente_id: s.cliente_id, cliente_nome: s.cliente_nome, total_gasto: 0, count: 0 };
++         totais[key].total_gasto += Number(s.valor_total) || 0;
++         totais[key].count++;
++       setRankingClientes(Object.values(totais).sort((a, b) => b.total_gasto - a.total_gasto).slice(0, 10));
++           totais[s.cliente_id] = { cliente_id: s.cliente_id, cliente_nome: s.cliente_nome, total_gasto: 0, count: 0 };
++         totais[s.cliente_id].total_gasto += Number(s.valor_total) || 0;
++       setMeusTopClientes(Object.values(totais).sort((a, b) => b.total_gasto - a.total_gasto).slice(0, 10));
++     // Valor base in-game: deduz fumaÃ§a, extras e camaleÃ£o (performance nÃ£o Ã© mais deduzida)
++     const valorBaseEsteticaPainel = Math.max(0, Number(valorDigitadoEstetica) - (fumaca ? rules.estetica.painel_fumaca : 0) - somaExtrasPainel - descontoCamaleao);
++     if (valorPainel > 0 && valorPainel < somaExtras + valorFumacaPainel) { alert("âš ï¸ O valor de estÃ©tica puro nÃ£o pode ser menor que o valor dos extras e fumaÃ§a!"); return; }
++     const valorBaseEstetica = Math.max(0, valorPainel - somaExtras - valorFumacaPainel);
++         isDarkMode={isDarkMode}
++         ) : paginaAtual === "bot" ? (
++             <BotPage styles={styles} theme={theme} />
++           userIsAdmin ? (
++           ) : (
++             <div style={{ padding: "40px", textAlign: "center", color: theme.text }}>
++               <h2>ðŸš« Acesso Negado</h2>
++               <button style={{ ...styles.btnPrimary, width: "auto", padding: "12px 28px" }} onClick={() => setPaginaAtual("dashboard")}>Voltar ao Dashboard</button>
++             </div>
++           )
+- import PontoAdminPage from "./components/pages/PontoAdminPage";
+- import RelatorioPage from "./components/pages/RelatorioPage";
+- import NitroAdminPage from "./components/pages/NitroAdminPage";
+-   const [editFuncStatus, setEditFuncStatus] = useState("ativo");
+-   // ===== STATES: NITRO ADMIN =====
+-   const [nitroLogs, setNitroLogs] = useState([]);
+-   const [nitroLogsCarregando, setNitroLogsCarregando] = useState(false);
+-   // ===== STATES: PONTO CIDADE =====
+-   const [registrosCidade,          setRegistrosCidade]          = useState([]);
+-   const [registrosCidadeCarregando, setRegistrosCidadeCarregando] = useState(false);
+-   const [registrosOcultos,         setRegistrosOcultos]         = useState([]);
+-   const [registrosOcultosCarregando, setRegistrosOcultosCarregando] = useState(false);
+-   // ===== STATES: RELATÃ“RIO DE HORAS =====
+-   const [registrosRelatorio,          setRegistrosRelatorio]          = useState([]);
+-   const [registrosRelatorioCarregando, setRegistrosRelatorioCarregando] = useState(false);
+-     const novoQuadro = { id: Date.now().toString(), titulo: "ðŸ“¢ NOVO QUADRO", texto: "Escreva aqui..." };
+-     const { data } = await supabase.from("usuarios").select("id, nome, role, telefone, status").order("nome", { ascending: true });
+-     setEditFuncStatus(func.status || "ativo");
+-     const updateData = { nome: editFuncNome.trim(), role: roleCompleto, telefone: editFuncTelefone || null, status: editFuncStatus };
+-     setEditFuncStatus("ativo");
+-       if (data) setRankingClientes(data.map((c) => ({ cliente_id: c.id, cliente_nome: c.nome, total: c.total_gasto || 0 })));
+-         if (!totais[key]) totais[key] = { cliente_id: s.cliente_id, cliente_nome: s.cliente_nome, total: 0 };
+-         totais[key].total += Number(s.valor_total) || 0;
+-       setRankingClientes(Object.values(totais).sort((a, b) => b.total - a.total).slice(0, 10));
+-   // ===== PONTO ADMIN: IMPORTAÃ‡ÃƒO DE LOGS DA CIDADE =====
+-   // Usa tabela separada (ponto_cidade), independente do ponto declarado (ponto_horas)
+-   const importarSessoesParaBanco = async (sessoes) => {
+-     if (!sessoes || sessoes.length === 0) {
+-       return { inseridos: 0, duplicados: 0, erros: 0 };
+-     let inseridos = 0;
+-     let duplicados = 0;
+-     let erros = 0;
+-     for (const s of sessoes) {
+-       // Verificar duplicata pelo UUID de entrada na tabela ponto_cidade
+-       if (s.uuid_entrada) {
+-         const { data: existente } = await supabase
+-           .from("ponto_cidade")
+-           .select("id")
+-           .eq("uuid_entrada", s.uuid_entrada)
+-           .maybeSingle();
+-         if (existente) {
+-           duplicados++;
+-           continue;
+-       const registro = {
+-         usuario_id: s.usuario_id || null,
+-         nome: s.nome,
+-         nome_personagem: s.nome_personagem,
+-         id_jogo: s.id_jogo,
+-         entrada: s.entrada,
+-         saida: s.saida || null,
+-         data: s.data,
+-         uuid_entrada: s.uuid_entrada || null,
+-         uuid_saida: s.uuid_saida || null,
+-         importado_por: s.importado_por || null,
+-       };
+-       const { error } = await supabase.from("ponto_cidade").insert([registro]);
+-         console.error("Erro ao inserir ponto_cidade:", error.message);
+-         erros++;
+-       } else {
+-         inseridos++;
+-     return { inseridos, duplicados, erros };
+-   const buscarPontoCidade = async ({ nome = "", dataInicio = "", dataFim = "" } = {}) => {
+-     setRegistrosCidadeCarregando(true);
+-     let query = supabase
+-       .from("ponto_cidade")
+-       .or("oculto.is.null,oculto.eq.false")   // exclui registros ocultos
+-       .order("entrada", { ascending: true })
+-       .limit(500);
+-     if (nome.trim()) {
+-       const nomeLike = `%${nome.trim()}%`;
+-       query = query.or(`nome.ilike.${nomeLike},nome_personagem.ilike.${nomeLike},id_jogo.ilike.${nomeLike}`);
+-     if (dataInicio) query = query.gte("data", dataInicio);
+-     if (dataFim)    query = query.lte("data", dataFim);
+-     const { data, error } = await query;
+-     if (!error && data) setRegistrosCidade(data);
+-     setRegistrosCidadeCarregando(false);
+-   const buscarPontoCidadeOcultos = async () => {
+-     setRegistrosOcultosCarregando(true);
+-       .from("ponto_cidade")
+-       .eq("oculto", true)
+-       .order("oculto_em", { ascending: false });
+-     if (data) setRegistrosOcultos(data);
+-     setRegistrosOcultosCarregando(false);
+-   const atualizarPontoCidade = async (id, campos) => {
+-     const { error } = await supabase.from("ponto_cidade").update(campos).eq("id", id);
+-     return { error };
+-   const buscarRelatorio = async ({ dataInicio = "", dataFim = "" } = {}) => {
+-     setRegistrosRelatorioCarregando(true);
+-     let query = supabase
+-       .from("ponto_cidade")
+-       .or("oculto.is.null,oculto.eq.false")
+-       .order("id_jogo", { ascending: true });
+-     if (dataInicio) query = query.gte("data", dataInicio);
+-     if (dataFim)    query = query.lte("data", dataFim);
+-     const { data } = await query;
+-     if (data) setRegistrosRelatorio(data);
+-     setRegistrosRelatorioCarregando(false);
+-   // ===== NITRO ADMIN: INTEGRAÃ‡ÃƒO SUPABASE =====
+-   const buscarNitroLogs = async ({ nome = "", dataInicio = null, dataFim = null } = {}) => {
+-     setNitroLogsCarregando(true);
+-       let query = supabase.from("vendas_nitro_cidade").select("*").order("data_compra", { ascending: false });
+-       
+-       if (dataInicio) {
+-         query = query.gte("data_compra", `${dataInicio}T00:00:00-03:00`);
+-       if (dataFim) {
+-         query = query.lte("data_compra", `${dataFim}T23:59:59-03:00`);
+-       
+-       const { data, error } = await query;
+-       if (error) throw error;
+-       
+-       // Filtragem por nome em memÃ³ria caso precise buscar de lista (como temos ID do jogo gravado, Ã© mais fÃ¡cil usar LIKE pro nome tb)
+-       let res = data || [];
+-       if (nome.trim()) {
+-         const t = nome.toLowerCase();
+-         res = res.filter(r => r.nome_personagem?.toLowerCase().includes(t) || String(r.id_jogo) === t);
+-       
+-       setNitroLogs(res);
+-     } catch (err) {
+-       console.error("Erro ao buscar logs de nitro:", err);
+-     setNitroLogsCarregando(false);
+-   const importarNitroLogsParaBanco = async (sessoesNitro) => {
+-     if (!sessoesNitro || sessoesNitro.length === 0) return { inseridos: 0, duplicados: 0, erros: 0 };
+-     let inseridos = 0; let duplicados = 0; let erros = 0;
+-     for (const compra of sessoesNitro) {
+-       if (!compra.uuid_log) { erros++; continue; }
+-       
+-       // Verifica dup
+-       const { data: ext } = await supabase.from("vendas_nitro_cidade").select("id").eq("uuid_log", compra.uuid_log).maybeSingle();
+-       if (ext) { duplicados++; continue; }
+-       const payload = { ...compra, importado_por: usuarioLogado?.id || null };
+-       const { error } = await supabase.from("vendas_nitro_cidade").insert([payload]);
+-       
+-       if (error) erros++;
+-       else inseridos++;
+-     return { inseridos, duplicados, erros };
+-   const atualizarLinkVendaNitro = async (id, novoLink) => {
+-     return await supabase.from("vendas_nitro_cidade").update({ link_venda: novoLink || null }).eq("id", id);
+-           totais[s.cliente_id] = { cliente_id: s.cliente_id, cliente_nome: s.cliente_nome, total: 0, count: 0 };
+-         totais[s.cliente_id].total += Number(s.valor_total) || 0;
+-       setMeusTopClientes(Object.values(totais).sort((a, b) => b.total - a.total).slice(0, 10));
+-     // Valor base in-game: deduz fumaÃ§a, extras, camaleÃ£o E itens de performance
+-     const valorBaseEsteticaPainel = Math.max(0, Number(valorDigitadoEstetica) - (fumaca ? rules.estetica.painel_fumaca : 0) - somaExtrasPainel - descontoCamaleao - somaPainelPerformance);
+-     if (valorPainel < somaExtras + valorFumacaPainel + somaPainelPerformanceDiscord) { alert("âš ï¸ O valor do painel nÃ£o pode ser menor que extras + fumaÃ§a + peÃ§as de performance!"); return; }
+-     const valorBaseEstetica = valorPainel - somaExtras - valorFumacaPainel - somaPainelPerformanceDiscord;
+-     try {
+-     if (paginaAtual === "ponto-admin" && usuarioLogado) {
+-       buscarListaFuncionarios();
+-       buscarPontoCidade();
+-     if (paginaAtual === "relatorio" && usuarioLogado) {
+-       buscarListaFuncionarios();
+-     if (paginaAtual === "nitro-admin" && usuarioLogado) {
+-       buscarListaFuncionarios();
+-         }
+-       }
+-       .select("*")
+-       .select("*")
+-       }
+-     }
+-       }
+-       if (error) {
+-       }
+-   };
+-     }
+-   };
+-     }
+-     const { data } = await supabase
+-       .select("*")
+-     }
+-   };
+-       }
+-     }
+-     }
+-     }
+-   };
+-     }
+-   };
+-   };
+- 
+- 
+-   };
+- 
+-   };
+- 
+- 
+- 
+- 
+- 
+- 
+- 
+- 
+- 
+- 
+- 
+- 
+- 
+-   // ===== PÃGINA: PONTO ADMIN =====
+-   if (paginaAtual === "ponto-admin") {
+-     if (!userIsAdmin) {
+-       return (
+-         <div style={styles.dashContainer}>
+-           <AppHeaderBar />
+-           <div style={{ padding: "40px", textAlign: "center", color: theme.text }}>
+-             <h2>ðŸš« Acesso Negado</h2>
+-             <button style={{ ...styles.btnPrimary, width: "auto", padding: "12px 28px" }} onClick={() => setPaginaAtual("dashboard")}>Voltar ao Dashboard</button>
+-           </div>
+-         </div>
+-       );
+-     }
+-     return (
+-       <div style={styles.dashContainer}>
+-         <AppHeaderBar />
+-         <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+-           <PontoAdminPage
+-             listaFuncionarios={listaFuncionarios}
+-             importarSessoesParaBanco={importarSessoesParaBanco}
+-             registrosCidade={registrosCidade}
+-             registrosCidadeCarregando={registrosCidadeCarregando}
+-             buscarPontoCidade={buscarPontoCidade}
+-             atualizarPontoCidade={atualizarPontoCidade}
+-             registrosOcultos={registrosOcultos}
+-             registrosOcultosCarregando={registrosOcultosCarregando}
+-             buscarPontoCidadeOcultos={buscarPontoCidadeOcultos}
+-         </main>
+-       </div>
+-     );
+-   }
+- 
+-   // ===== PÃGINA: RELATÃ“RIO =====
+-   if (paginaAtual === "relatorio") {
+-     if (!userIsAdmin) {
+-       return (
+-         <div style={styles.dashContainer}>
+-           <AppHeaderBar />
+-           <div style={{ padding: "40px", textAlign: "center", color: theme.text }}>
+-             <h2>ðŸš« Acesso Negado</h2>
+-             <button style={{ ...styles.btnPrimary, width: "auto", padding: "12px 28px" }} onClick={() => setPaginaAtual("dashboard")}>Voltar ao Dashboard</button>
+-           </div>
+-         </div>
+-       );
+-     }
+-     return (
+-       <div style={styles.dashContainer}>
+-         <AppHeaderBar />
+-         <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+-           <RelatorioPage
+-             usuarioLogado={usuarioLogado}
+-             listaFuncionarios={listaFuncionarios}
+-             buscarRelatorio={buscarRelatorio}
+-             registrosRelatorio={registrosRelatorio}
+-             relatorioCarregando={registrosRelatorioCarregando}
+-         </main>
+-       </div>
+-     );
+-   }
+- 
+-   if (paginaAtual === "nitro-admin") {
+-     if (!userRole || (!userRole.includes("admin") && !userRole.includes("dono") && !userRole.includes("gerente_geral") && !userRole.includes("financeiro"))) {
+-       return (
+-         <div style={styles.dashContainer}>
+-           <AppHeaderBar />
+-           <div style={{ padding: "40px", textAlign: "center", color: theme.text }}>
+-             <h2>ðŸš« Acesso Negado</h2>
+-             <button style={{ ...styles.btnPrimary, width: "auto", padding: "12px 28px" }} onClick={() => setPaginaAtual("dashboard")}>Voltar ao Dashboard</button>
+-           </div>
+-         </div>
+-       );
+-     }
+-     return (
+-       <div style={styles.dashContainer}>
+-         <AppHeaderBar />
+-         <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+-           <NitroAdminPage
+-             usuarioLogado={usuarioLogado}
+-             importarNitroLogsParaBanco={importarNitroLogsParaBanco}
+-             buscarNitroLogs={buscarNitroLogs}
+-             nitroLogs={nitroLogs}
+-             nitroLogsCarregando={nitroLogsCarregando}
+-             atualizarLinkVendaNitro={atualizarLinkVendaNitro}
+-             listaFuncionarios={listaFuncionarios}
+-         </main>
+-       </div>
+-     );
+-   }
+- 
+- 
+- 
+- 
+- 
+- 
+-             theme={theme}
+-           />
+-             styles={styles}
+-             theme={theme}
+-             usuarioLogado={usuarioLogado}
+-             formatarDataHora={formatarDataHora}
+-             calcularDuracao={calcularDuracao}
+-           />
+-               editFuncStatus={editFuncStatus}
+-               setEditFuncStatus={setEditFuncStatus}
+- 
+-             styles={styles}
+-             theme={theme}
+-           />

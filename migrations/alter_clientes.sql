@@ -1,0 +1,1 @@
+ALTER TABLE clientes ADD COLUMN IF NOT EXISTS data_ultimo_servico TIMESTAMPTZ;

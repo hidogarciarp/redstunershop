@@ -1,0 +1,26 @@
+﻿+                   const valorBasePainel = Math.max(0, valorPainel - somaExtrasPainel - valorFumacaPainel - descontoCamaleao);
+-                   const valorBasePainel = Math.max(0, valorPainel - somaExtrasPainel - valorFumacaPainel - descontoCamaleao - somaPainelPerformance);
+-                                 {p.painel > 0 && (
+-                                   <span style={{ color: theme.subtext, fontSize: "11px", marginLeft: "5px" }}>
+-                                     (-R$ {p.painel.toLocaleString("pt-BR")})
+-                                   </span>
+-                                 )}
+-           {/* TUNAGENS FULL */}
+-               <span style={styles.dot}></span> Tunagens Full
+-             {tabelas.Tunagens.map((item) => (
+-               <div key={item.id} style={styles.itemRow}>
+-                 <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "14px" }}>
+-                   <input
+-                     type="checkbox"
+-                     checked={!!servicosSelecionados[item.id]}
+-                     onChange={() => setServicosSelecionados((p) => ({ ...p, [item.id]: !p[item.id] }))}
+-                   />
+-                   {item.nome}
+-                 </label>
+-                 <span style={{ color: theme.green, fontWeight: "700", fontSize: "13px" }}>R$ {item.preco.toLocaleString("pt-BR")}</span>
+-             ))}
+-           <div style={styles.whiteCard}>
+-             <div style={styles.cardHeader}>
+-             </div>
+-           </div>
+-               </div>

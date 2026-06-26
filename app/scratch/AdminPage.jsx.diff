@@ -1,0 +1,17 @@
+﻿+                 <div style={{ textAlign: "right" }}>
++                   <b style={{ color: "#22c55e", fontSize: "14px", display: "block" }}>R$ {(c.total_gasto || 0).toLocaleString("pt-BR")}</b>
++                   {c.count > 0 && <span style={{ fontSize: "10px", color: theme.subtext }}>{c.count} serv.</span>}
++                 </div>
+-   editFuncStatus,
+-   setEditFuncStatus,
+-                         <label style={styles.miniLabel}>STATUS</label>
+-                         <select style={{ ...styles.select, fontSize: "13px", padding: "8px 12px" }} value={editFuncStatus} onChange={(e) => setEditFuncStatus(e.target.value)}>
+-                           <option value="ativo">âœ… Ativo</option>
+-                           <option value="inativo">âŒ Inativo</option>
+-                           <option value="outros">ðŸš« Outros (Staff, etc.)</option>
+-                         </select>
+-                       <div>
+-                           {func.status === "inativo" && <span style={{ marginLeft: "8px", color: "#ef4444", fontWeight: "bold" }}>[INATIVO]</span>}
+-                           {func.status === "outros" && <span style={{ marginLeft: "8px", color: "#f97316", fontWeight: "bold" }}>[OUTROS]</span>}
+-                       </div>
+-                 <b style={{ color: "#22c55e", fontSize: "14px" }}>R$ {(c.total_gasto || 0).toLocaleString("pt-BR")}</b>
