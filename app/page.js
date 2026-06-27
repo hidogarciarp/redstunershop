@@ -40,6 +40,7 @@ import DashboardPage from "./components/pages/DashboardPage";
 import BlacklistPage from "./components/pages/BlacklistPage";
 import PontoAdminPage from "./components/pages/PontoAdminPage";
 import RelatorioPage from "./components/pages/RelatorioPage";
+import RelatorioPublicoPage from "./components/pages/RelatorioPublicoPage";
 import OutrasMecanicasPage from "./components/pages/OutrasMecanicasPage";
 import ControleVendasPage from "./components/pages/ControleVendasPage";
 import BotPage from "./components/pages/BotPage";
@@ -205,6 +206,7 @@ export default function Home() {
   const [filtroPontoStatus, setFiltroPontoStatus] = useState("todos");
   const [filtroPontoDataIni, setFiltroPontoDataIni] = useState("");
   const [filtroPontoDataFim, setFiltroPontoDataFim] = useState("");
+  const [relatorioCompartilhadoId, setRelatorioCompartilhadoId] = useState(null);
 
   // ===== STATES: MAPA DE ROLES PARA NOTIFICAÇÕES =====
   const [usuariosRoleMapa, setUsuariosRoleMapa] = useState({});
@@ -2806,6 +2808,17 @@ export default function Home() {
   // ===== USE EFFECTS =====
 
   useEffect(() => {
+    // Verificar se é uma URL de relatório compartilhado publicamente via hash
+    const hash = window.location.hash;
+    if (hash && hash.startsWith("#/share/comparativo-mecanicas")) {
+      const match = hash.match(/[?&]id=([a-f0-9-]{36})/i);
+      if (match && match[1]) {
+        setRelatorioCompartilhadoId(match[1]);
+        setPaginaAtual("relatorio-publico");
+        return;
+      }
+    }
+
     buscarQuadroAvisos();
     const salvo = localStorage.getItem("reds_session_user");
     const pag = localStorage.getItem("reds_session_page");
@@ -4495,6 +4508,13 @@ export default function Home() {
           />
         </main>
       </div>
+    );
+  }
+
+  // ===== PÁGINA: RELATÓRIO PÚBLICO (SEM LOGIN) =====
+  if (paginaAtual === "relatorio-publico") {
+    return (
+      <RelatorioPublicoPage sharedId={relatorioCompartilhadoId} />
     );
   }
 

@@ -445,6 +445,9 @@ export default function RelatorioPage({
   const [filtroApenasSemCobertura, setFiltroApenasSemCobertura] = useState(false);
   const [visualizacaoCobertura,   setVisualizacaoCobertura]   = useState("linha"); // "linha" | "detalhes"
   const [ocultarManuais, setOcultarManuais] = useState(false);
+  const [modalRelatorioMecanicasAberta, setModalRelatorioMecanicasAberta] = useState(false);
+  const [linksCompartilhados, setLinksCompartilhados] = useState([]);
+  const [gerandoLinkShare, setGerandoLinkShare] = useState(false);
 
   const filtrarManuais = (regs) => {
     if (!ocultarManuais) return regs;
@@ -459,8 +462,73 @@ export default function RelatorioPage({
     setJaGerou(true);
   };
 
+  const buscarLinksCompartilhados = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("relatorios_compartilhados")
+        .select("*")
+        .order("criado_em", { ascending: false });
+      if (!error && data) {
+        setLinksCompartilhados(data);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const criarLinkCompartilhado = async () => {
+    try {
+      setGerandoLinkShare(true);
+      const { inicio, fim } = calcularDatasPeriodo(filtroPeriodo, semanaOffset, filtroDataInicio, filtroDataFim);
+      if (!inicio || !fim) {
+        alert("⚠️ Selecione um período válido antes de gerar o link!");
+        setGerandoLinkShare(false);
+        return;
+      }
+      
+      const { data, error } = await supabase
+        .from("relatorios_compartilhados")
+        .insert({
+          tipo: "comparativo_mecanicas",
+          data_inicio: inicio,
+          data_fim: fim,
+          excluir_manuais: true, // Requisito: desconsiderar pontos manuais
+          criado_por: usuarioLogado?.nome || "Admin"
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      
+      alert("✅ Link público gerado com sucesso! Você pode copiá-lo na lista abaixo.");
+      buscarLinksCompartilhados();
+    } catch (err) {
+      console.error("Erro ao gerar link de compartilhamento:", err);
+      alert("❌ Falha ao gerar link: " + err.message);
+    } finally {
+      setGerandoLinkShare(false);
+    }
+  };
+
+  const deletarLinkCompartilhado = async (id) => {
+    if (!confirm("⚠️ Tem certeza de que deseja apagar este compartilhamento? O link deixará de funcionar imediatamente para pessoas externas.")) return;
+    try {
+      const { error } = await supabase
+        .from("relatorios_compartilhados")
+        .delete()
+        .eq("id", id);
+      if (error) throw error;
+      alert("🗑️ Compartilhamento excluído com sucesso!");
+      buscarLinksCompartilhados();
+    } catch (err) {
+      console.error(err);
+      alert("❌ Falha ao excluir link: " + err.message);
+    }
+  };
+
   React.useEffect(() => {
     aplicarFiltros();
+    buscarLinksCompartilhados();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1656,6 +1724,114 @@ export default function RelatorioPage({
         <div style={{ animation: "fadeIn 0.3s ease-out" }}>
           {jaGerou && !relatorioCarregando ? (
             <>
+              {/* Botão de Relatório Externo e Links de Compartilhamento */}
+              <div style={{ display: "flex", flexDirection: "column", background: "rgba(30, 41, 59, 0.4)", padding: "16px", borderRadius: "12px", border: `1px solid ${theme.border}44`, marginBottom: "24px", gap: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+                  <div>
+                    <h4 style={{ color: theme.text, fontSize: "14px", fontWeight: "700", margin: 0 }}>🔗 Compartilhamento com Pessoas Externas</h4>
+                    <p style={{ color: theme.subtext, fontSize: "12px", margin: "2px 0 0 0" }}>Gere um link web público para pessoas sem login verem este comparativo de cobertura (pontos manuais desconsiderados).</p>
+                  </div>
+                  <div style={{ display: "flex", gap: "10px" }}>
+                    <button
+                      onClick={criarLinkCompartilhado}
+                      disabled={gerandoLinkShare}
+                      style={{
+                        background: "rgba(16, 185, 129, 0.15)",
+                        border: "1px solid rgba(16, 185, 129, 0.3)",
+                        color: "#10b981",
+                        padding: "8px 16px",
+                        borderRadius: "8px",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                        fontWeight: "700",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px"
+                      }}
+                    >
+                      {gerandoLinkShare ? "⏳ Gerando..." : "🔗 Gerar Link Compartilhável"}
+                    </button>
+                    <button
+                      onClick={() => setModalRelatorioMecanicasAberta(true)}
+                      style={{
+                        background: "rgba(56, 189, 248, 0.15)",
+                        border: "1px solid rgba(56, 189, 248, 0.3)",
+                        color: "#38bdf8",
+                        padding: "8px 16px",
+                        borderRadius: "8px",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                        fontWeight: "700",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px"
+                      }}
+                    >
+                      📄 Visualizar Relatório
+                    </button>
+                  </div>
+                </div>
+
+                {/* Listagem de Links Ativos */}
+                {linksCompartilhados.length > 0 && (
+                  <div style={{ marginTop: "10px", borderTop: `1px solid ${theme.border}22`, paddingTop: "12px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: "800", color: theme.subtext, textTransform: "uppercase", display: "block", marginBottom: "8px" }}>Links Compartilhados Ativos:</span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {linksCompartilhados.map(link => {
+                        const urlCompleta = `${window.location.origin}${window.location.pathname}#/share/comparativo-mecanicas?id=${link.id}`;
+                        return (
+                          <div key={link.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.02)", padding: "8px 12px", borderRadius: "8px", border: `1px solid ${theme.border}22` }}>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                              <span style={{ fontSize: "12px", color: theme.text, fontWeight: "600" }}>
+                                Período: {fmtBR(link.data_inicio)} – {fmtBR(link.data_fim)}
+                              </span>
+                              <span style={{ fontSize: "10px", color: theme.subtext }}>
+                                Criado por {link.criado_por} em {new Date(link.criado_em).toLocaleString("pt-BR")}
+                              </span>
+                            </div>
+                            <div style={{ display: "flex", gap: "6px" }}>
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(urlCompleta);
+                                  alert("📋 Link copiado para a área de transferência!");
+                                }}
+                                style={{
+                                  background: "rgba(255,255,255,0.05)",
+                                  border: `1px solid ${theme.border}`,
+                                  color: theme.text,
+                                  padding: "4px 10px",
+                                  borderRadius: "6px",
+                                  fontSize: "11px",
+                                  cursor: "pointer",
+                                  fontWeight: "600"
+                                }}
+                              >
+                                📋 Copiar Link
+                              </button>
+                              <button
+                                onClick={() => deletarLinkCompartilhado(link.id)}
+                                style={{
+                                  background: "rgba(239, 68, 68, 0.15)",
+                                  border: "1px solid rgba(239, 68, 68, 0.3)",
+                                  color: "#ef4444",
+                                  padding: "4px 10px",
+                                  borderRadius: "6px",
+                                  fontSize: "11px",
+                                  cursor: "pointer",
+                                  fontWeight: "600"
+                                }}
+                              >
+                                🗑️ Apagar
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* PODIUM/RANKING DESIGN */}
               <div style={{ textAlign: "center", marginBottom: "32px" }}>
                 <h3 style={{ color: theme.text, fontSize: "20px", fontWeight: "800", marginBottom: "8px" }}>
@@ -2233,6 +2409,363 @@ export default function RelatorioPage({
           textAlign: "left"
         }}>
           {timelineTooltip.content}
+        </div>
+      )}
+
+      {/* MODAL DE RELATÓRIO COMPARATIVO EXTERNO */}
+      {modalRelatorioMecanicasAberta && (
+        <div style={{
+          position: "fixed",
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: "#0f172a", // Slate escuro premium
+          zIndex: 99999,
+          overflowY: "auto",
+          padding: "40px 20px",
+          color: "#f8fafc",
+          fontFamily: "'Outfit', 'Inter', sans-serif"
+        }}>
+          <div style={{ maxWidth: "1200px", margin: "0 auto", position: "relative" }}>
+            
+            {/* Controles de Ações (Escondidos na Impressão) */}
+            <div className="no-print" style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "30px",
+              paddingBottom: "20px",
+              borderBottom: "1px solid rgba(255,255,255,0.1)"
+            }}>
+              <div>
+                <h2 style={{ fontSize: "20px", fontWeight: "800", color: "#38bdf8", margin: 0 }}>
+                  Visualização do Relatório Comparativo Externo
+                </h2>
+                <p style={{ fontSize: "12px", color: "#94a3b8", margin: "4px 0 0 0" }}>
+                  Apenas as tabelas, podiums e a linha do tempo interativa de cobertura das oficinas (sem cabeçalhos do site e menu principal).
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  onClick={() => window.print()}
+                  style={{
+                    background: "#0284c7", color: "#fff", border: "none",
+                    padding: "8px 18px", borderRadius: "8px", cursor: "pointer",
+                    fontSize: "13px", fontWeight: "700", display: "flex", alignItems: "center", gap: "6px"
+                  }}
+                >
+                  🖨️ Imprimir / Salvar PDF
+                </button>
+                <button
+                  onClick={() => setModalRelatorioMecanicasAberta(false)}
+                  style={{
+                    background: "rgba(255,255,255,0.08)", color: "#f8fafc", border: "1px solid rgba(255,255,255,0.15)",
+                    padding: "8px 18px", borderRadius: "8px", cursor: "pointer",
+                    fontSize: "13px", fontWeight: "700"
+                  }}
+                >
+                  Fechar Relatório
+                </button>
+              </div>
+            </div>
+
+            {/* Cabeçalho do Relatório */}
+            <div style={{ marginBottom: "30px" }}>
+              <div style={{ fontSize: "22px", fontWeight: "800", color: "#f8fafc" }}>
+                Relatório Comparativo de Atividades entre Mecânicas
+              </div>
+              <div style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>
+                Período: {periodoInicio ? fmtBR(periodoInicio) : ""} – {periodoFim ? fmtBR(periodoFim) : ""}
+              </div>
+            </div>
+
+            {/* PODIUM/RANKING GERAL */}
+            <div style={{ textAlign: "center", marginBottom: "32px" }}>
+              <h3 style={{ color: "#f8fafc", fontSize: "18px", fontWeight: "800", marginBottom: "8px" }}>
+                🏆 Ranking de Funcionamento Geral (Tempo Aberto)
+              </h3>
+              <p style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "24px" }}>
+                Baseado no percentual de tempo de cobertura em que a oficina teve pelo menos 1 funcionário trabalhando no período completo.
+              </p>
+
+              <div className="podium-container" style={{ 
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "24px",
+                justifyContent: "center",
+                alignItems: "flex-end",
+                maxWidth: "850px",
+                margin: "0 auto 32px auto"
+              }}>
+                {/* 2º LUGAR */}
+                {rankingMecanicas[1] && (
+                  <div style={{
+                    background: "rgba(255,255,255,0.02)",
+                    borderRadius: "16px",
+                    border: "1px solid rgba(192, 192, 192, 0.2)",
+                    padding: "24px 16px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    order: 2,
+                    minHeight: "220px",
+                    justifyContent: "center",
+                    position: "relative",
+                    flex: "1 1 220px",
+                    maxWidth: "240px"
+                  }}>
+                    <div style={{ position: "absolute", top: "-15px", fontSize: "32px" }}>🥈</div>
+                    <span style={{ fontSize: "11px", fontWeight: "800", color: "rgba(192, 192, 192, 0.8)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>2º Lugar</span>
+                    <h4 style={{ color: rankingMecanicas[1].cor, fontSize: "18px", fontWeight: "800", marginBottom: "12px" }}>{rankingMecanicas[1].nome}</h4>
+                    <div style={{ fontSize: "28px", fontWeight: "900", color: "#f8fafc" }}>{rankingMecanicas[1].taxaCobertura.toFixed(1)}%</div>
+                    <span style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>Cobertura total</span>
+                    <span style={{ fontSize: "12px", color: "#f8fafc", fontWeight: "600", marginTop: "12px" }}>Funcionamento: {fmtMin(rankingMecanicas[1].minutosCobertos)}</span>
+                  </div>
+                )}
+
+                {/* 1º LUGAR */}
+                {rankingMecanicas[0] && (
+                  <div style={{
+                    background: "rgba(255,255,255,0.03)",
+                    borderRadius: "20px",
+                    border: "1.5px solid rgba(250, 204, 21, 0.4)",
+                    padding: "32px 20px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    order: 1,
+                    minHeight: "260px",
+                    justifyContent: "center",
+                    position: "relative",
+                    transform: "scale(1.03)",
+                    flex: "1 1 250px",
+                    maxWidth: "280px"
+                  }}>
+                    <div style={{ position: "absolute", top: "-20px", fontSize: "40px" }}>🥇</div>
+                    <span style={{ fontSize: "12px", fontWeight: "900", color: "#facc15", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: "8px" }}>🏆 Campeã</span>
+                    <h4 style={{ color: rankingMecanicas[0].cor, fontSize: "22px", fontWeight: "900", marginBottom: "12px" }}>{rankingMecanicas[0].nome}</h4>
+                    <div style={{ fontSize: "36px", fontWeight: "900", color: "#facc15" }}>{rankingMecanicas[0].taxaCobertura.toFixed(1)}%</div>
+                    <span style={{ fontSize: "11px", color: "rgba(250,204,21,0.8)", marginTop: "4px" }}>Cobertura total</span>
+                    <span style={{ fontSize: "13px", color: "#f8fafc", fontWeight: "700", marginTop: "16px" }}>Funcionamento: {fmtMin(rankingMecanicas[0].minutosCobertos)}</span>
+                  </div>
+                )}
+
+                {/* 3º LUGAR */}
+                {rankingMecanicas[2] && (
+                  <div style={{
+                    background: "rgba(255,255,255,0.01)",
+                    borderRadius: "16px",
+                    border: "1px solid rgba(205, 127, 50, 0.2)",
+                    padding: "20px 16px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    order: 3,
+                    minHeight: "190px",
+                    justifyContent: "center",
+                    position: "relative",
+                    flex: "1 1 220px",
+                    maxWidth: "240px"
+                  }}>
+                    <div style={{ position: "absolute", top: "-15px", fontSize: "28px" }}>🥉</div>
+                    <span style={{ fontSize: "11px", fontWeight: "800", color: "rgba(205, 127, 50, 0.8)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>3º Lugar</span>
+                    <h4 style={{ color: rankingMecanicas[2].cor, fontSize: "16px", fontWeight: "800", marginBottom: "12px" }}>{rankingMecanicas[2].nome}</h4>
+                    <div style={{ fontSize: "24px", fontWeight: "900", color: "#f8fafc" }}>{rankingMecanicas[2].taxaCobertura.toFixed(1)}%</div>
+                    <span style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>Cobertura total</span>
+                    <span style={{ fontSize: "11px", color: "#f8fafc", fontWeight: "600", marginTop: "8px" }}>Funcionamento: {fmtMin(rankingMecanicas[2].minutosCobertos)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* TABELA COMPARATIVA */}
+            <div style={{ background: "rgba(30, 41, 59, 0.7)", borderRadius: "16px", padding: "20px", border: "1px solid rgba(255,255,255,0.05)", overflowX: "auto", marginBottom: "32px" }}>
+              <h4 style={{ color: "#f8fafc", fontSize: "14px", fontWeight: "700", marginBottom: "16px" }}>📋 Tabela Comparativa de Desempenho</h4>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "900px" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)", textAlign: "left" }}>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Mecânica</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Geral</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Tempo Aberto (Geral)</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Obrigatória (19h-22h)</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Falta Obrigatório</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Total Horas Staff</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Sessões</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Funcionários</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankingMecanicas.map((m) => (
+                    <tr key={m.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)", height: "48px" }}>
+                      <td style={{ padding: "10px", fontWeight: "800", color: m.cor }}>{m.nome}</td>
+                      <td style={{ padding: "10px", fontWeight: "700", color: "#f8fafc" }}>{m.taxaCobertura.toFixed(1)}%</td>
+                      <td style={{ padding: "10px", color: "#f8fafc" }}>{fmtMin(m.minutosCobertos)}</td>
+                      <td style={{ padding: "10px", fontWeight: "700", color: "#f8fafc" }}>{m.taxaCoberturaObrigatoria.toFixed(1)}%</td>
+                      <td style={{ padding: "10px", color: "#f87171", fontWeight: "700" }}>{fmtMin(m.minutosObrigatoriosNaoCumpridos)}</td>
+                      <td style={{ padding: "10px", color: "#f8fafc" }}>{fmtMin(m.totalMin)}</td>
+                      <td style={{ padding: "10px", color: "#f8fafc" }}>{m.sessoes}</td>
+                      <td style={{ padding: "10px", color: "#f8fafc" }}>{m.funcionariosAtivos}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* LINHA DO TEMPO COMPARATIVA */}
+            <div style={{ background: "rgba(30, 41, 59, 0.7)", borderRadius: "16px", padding: "20px", border: "1px solid rgba(255,255,255,0.05)", overflowX: "auto" }}>
+              <h4 style={{ color: "#f8fafc", fontSize: "14px", fontWeight: "700", marginBottom: "16px" }}>📅 Comparativo Linear de Cobertura (Linha do Tempo)</h4>
+              <div style={{ minWidth: "920px" }}>
+                
+                {/* Headers */}
+                <div style={{ display: "flex", alignItems: "center", marginBottom: "6px" }}>
+                  <div style={{ width: "160px", flexShrink: 0 }} />
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(48, 1fr)", flex: 1, gap: "3px" }}>
+                    <div style={{ gridColumn: "span 12", background: "rgba(168,85,247,0.03)", border: "1px solid rgba(255,255,255,0.05)", borderBottom: "none", padding: "4px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#c084fc", borderTopLeftRadius: "4px", borderTopRightRadius: "4px" }}>
+                      🌑 Madrugada
+                    </div>
+                    <div style={{ gridColumn: "span 12", background: "rgba(251,191,36,0.03)", border: "1px solid rgba(255,255,255,0.05)", borderBottom: "none", padding: "4px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#fcd34d", borderTopLeftRadius: "4px", borderTopRightRadius: "4px" }}>
+                      🌅 Manhã
+                    </div>
+                    <div style={{ gridColumn: "span 12", background: "rgba(249,115,22,0.03)", border: "1px solid rgba(255,255,255,0.05)", borderBottom: "none", padding: "4px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#fdba74", borderTopLeftRadius: "4px", borderTopRightRadius: "4px" }}>
+                      ☀️ Tarde
+                    </div>
+                    <div style={{ gridColumn: "span 12", background: "rgba(59,130,246,0.03)", border: "1px solid rgba(255,255,255,0.05)", borderBottom: "none", padding: "4px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#60a5fa", borderTopLeftRadius: "4px", borderTopRightRadius: "4px" }}>
+                      🌙 Noite
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", marginBottom: "12px" }}>
+                  <div style={{ width: "160px", fontWeight: "800", fontSize: "11px", color: "#94a3b8" }}>MECÂNICA / DIA</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(48, 1fr)", flex: 1, gap: "3px" }}>
+                    {Array.from({ length: 24 }).map((_, h) => (
+                      <div key={h} style={{ gridColumn: "span 2", textAlign: "left", fontSize: "10px", color: "#38bdf8", borderLeft: "1px solid rgba(255,255,255,0.1)", paddingLeft: "2px" }}>
+                        {String(h).padStart(2, "0")}h
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Rows */}
+                {diasPeriodo.map(dia => {
+                  const dataObj = new Date(`${dia}T12:00:00`);
+                  const diaSemana = dataObj.toLocaleDateString("pt-BR", { weekday: "short" });
+                  const [, mes, diaNum] = dia.split("-");
+                  const labelDia = `${diaSemana.toUpperCase().replace(".", "")} (${diaNum}/{mes})`;
+
+                  const slotsM1 = coberturaComparativa[dia]?.m1 || [];
+                  const slotsM2 = coberturaComparativa[dia]?.m2 || [];
+                  const slotsM3 = coberturaComparativa[dia]?.m3 || [];
+
+                  const renderRowModal = (slots, colorActive, labelMecanica) => {
+                    return (
+                      <div style={{ display: "flex", alignItems: "center", marginBottom: "4px" }}>
+                        <div style={{ width: "160px", display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ 
+                            width: "8px", 
+                            height: "8px", 
+                            borderRadius: "50%", 
+                            background: colorActive 
+                          }} />
+                          <span style={{ fontSize: "10px", color: "#f8fafc", fontWeight: "700" }}>{labelMecanica}</span>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(48, 1fr)", flex: 1, gap: "3px" }}>
+                          {slots.map((slot, idx) => {
+                            const ehObrigatorio = idx >= 38 && idx <= 43;
+                            const tooltipText = `${ehObrigatorio ? "⭐ [Horário Obrigatório 19h-22h] " : ""}${slot.label} (${labelMecanica})\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}`;
+                            
+                            let emptyColor = "";
+                            let emptyBorder = "";
+                            if (idx < 12) {
+                              emptyColor = "rgba(168,85,247,0.03)";
+                              emptyBorder = "rgba(168,85,247,0.15)";
+                            } else if (idx < 24) {
+                              emptyColor = "rgba(251,191,36,0.03)";
+                              emptyBorder = "rgba(251,191,36,0.15)";
+                            } else if (idx < 36) {
+                              emptyColor = "rgba(249,115,22,0.03)";
+                              emptyBorder = "rgba(249,115,22,0.15)";
+                            } else {
+                              emptyColor = "rgba(59,130,246,0.03)";
+                              emptyBorder = "rgba(59,130,246,0.15)";
+                            }
+
+                            return (
+                              <div
+                                key={idx}
+                                title={tooltipText}
+                                style={{
+                                  height: "16px",
+                                  borderRadius: "4px",
+                                  background: slot.coberto ? colorActive : emptyColor,
+                                  border: ehObrigatorio
+                                    ? `2px solid ${slot.coberto ? "#facc15" : "#f87171"}`
+                                    : `1px solid ${slot.coberto ? colorActive : emptyBorder}`,
+                                  boxShadow: ehObrigatorio && !slot.coberto ? "0 0 6px rgba(248,113,113,0.8)" : "none",
+                                  cursor: "pointer",
+                                  position: "relative",
+                                  transition: "transform 0.1s ease, box-shadow 0.1s ease"
+                                }}
+                                onMouseEnter={e => {
+                                  e.currentTarget.style.transform = "scale(1.3)";
+                                  e.currentTarget.style.zIndex = 10;
+                                }}
+                                onMouseLeave={e => {
+                                  e.currentTarget.style.transform = "scale(1)";
+                                  e.currentTarget.style.zIndex = 1;
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  };
+
+                  return (
+                    <div key={dia} style={{ marginBottom: "16px", padding: "12px", background: "rgba(255,255,255,0.01)", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "800", color: "#f8fafc", marginBottom: "8px", borderBottom: "1px solid rgba(255,255,255,0.05)", paddingBottom: "4px" }}>
+                        {labelDia}
+                      </div>
+                      {renderRowModal(slotsM1, "#ef4444", "RED's")}
+                      {renderRowModal(slotsM2, "#eab308", "Harmony")}
+                      {renderRowModal(slotsM3, "#38bdf8", "Dudark")}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+          </div>
+
+          <style dangerouslySetInnerHTML={{__html: `
+            @media print {
+              @page {
+                size: A4 portrait;
+                margin: 8mm 6mm;
+              }
+              .no-print {
+                display: none !important;
+              }
+              body {
+                background: #0f172a !important; /* Mantém a identidade premium escura no PDF */
+                color: #f8fafc !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+              }
+              html, body {
+                height: auto;
+                font-size: 11px; /* Reduz ligeiramente a fonte geral para caber em uma página */
+              }
+              /* Reduzir espaçamentos na impressão */
+              div {
+                page-break-inside: avoid;
+              }
+              /* Ajustar Ranking / Podium para ocupar menos espaço */
+              .podium-container {
+                transform: scale(0.85);
+                margin: 0 auto -20px auto !important;
+              }
+            }
+          `}} />
         </div>
       )}
     </div>

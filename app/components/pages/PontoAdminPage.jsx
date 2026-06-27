@@ -122,6 +122,74 @@ function extrairData(isoStr) {
   return new Date(isoStr).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 }
 
+// ===== PARSER DISCORD LOG MESSAGES =====
+function parseDiscordLogContent(content, logType) {
+  if (!content) return null;
+  const lines = content.split('\n');
+  let idJogo = null;
+  let nome = "";
+  let item = "";
+  let qtd = 0;
+  let tipoLog = logType; // 'bau' ou 'bancada'
+  let dataStr = "";
+  let bauId = "";
+
+  lines.forEach(line => {
+    const l = line.trim();
+    if (logType === 'bau') {
+      const mId = l.match(/^\[ID\]:\s*(\d+)\s*(.*)/i);
+      if (mId) {
+        idJogo = mId[1];
+        nome = mId[2].trim();
+      }
+      const mBau = l.match(/^\[ID BA[ÚU]\]:\s*(.+)/i);
+      if (mBau) {
+        bauId = mBau[1].trim();
+      }
+      const mRetirou = l.match(/^\[RETIROU\]:\s*(\d+)x\s*(.+)/i);
+      if (mRetirou) {
+        qtd = parseInt(mRetirou[1]);
+        item = mRetirou[2].trim();
+      }
+    } else if (logType === 'bancada') {
+      const mId = l.match(/^\[ID\]:\s*(\d+)/i);
+      if (mId) {
+        idJogo = mId[1];
+      }
+      const mNome = l.match(/^\[NOME COMPLETO\]:\s*(.+)/i);
+      if (mNome) {
+        nome = mNome[1].trim();
+      }
+      const mItem = l.match(/^\[ITEMNAME\]:\s*(.+)/i);
+      if (mItem) {
+        item = mItem[1].trim();
+      }
+      const mQtd = l.match(/^\[QUANTIDADE\]:\s*(\d+)/i);
+      if (mQtd) {
+        qtd = parseInt(mQtd[1]);
+      }
+    }
+
+    const mData = l.match(/^\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}:\d{2}:\d{2})/);
+    if (mData) {
+      const [, dd, mm, aaaa, hora] = mData;
+      dataStr = `${aaaa}-${mm}-${dd}T${hora}-03:00`;
+    }
+  });
+
+  if (!idJogo) return null;
+
+  return {
+    idJogo,
+    nome,
+    item,
+    qtd,
+    tipoLog,
+    dataStr,
+    bauId
+  };
+}
+
 // ===== COMPONENTE =====
 export default function PontoAdminPage({
   styles,
@@ -180,11 +248,20 @@ export default function PontoAdminPage({
   const [registrosExtraDoBanco, setRegistrosExtraDoBanco] = useState([]);
   const todosRegistrosBanco = [...registrosCidade, ...registrosExtraDoBanco];
 
+  // ===== ESTADOS: AUDITORIA DE BAÚ =====
+  const [auditoriaCarregando, setAuditoriaCarregando] = useState(false);
+  const [auditoriaAlertas, setAuditoriaAlertas] = useState([]);
+  const [tempoLimiteAuditoria, setTempoLimiteAuditoria] = useState(15);
+  const [filtroMecanicaAuditoria, setFiltroMecanicaAuditoria] = useState("todas");
+  const [ocultarReleveisAuditoria, setOcultarReleveisAuditoria] = useState(false);
+
+
   // ===== ESTADOS DE FILTRO DO HISTÓRICO =====
   const [filtroNome,       setFiltroNome]       = useState(filtroNomeInicial || "");
   const [filtroPeriodo,    setFiltroPeriodo]    = useState("semana");  // 'hoje'|'semana'|'mes'|'custom'
   const [filtroDataInicio, setFiltroDataInicio] = useState("");
   const [filtroDataFim,    setFiltroDataFim]    = useState("");
+  const [modalRelatorioExternoAberta, setModalRelatorioExternoAberta] = useState(false);
   const [semanaOffset,     setSemanaOffset]     = useState(() => {
     const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     return agora.getDay() === 0 ? 0 : -1;
@@ -237,14 +314,202 @@ export default function PontoAdminPage({
     buscarPontoCidade({ nome, dataInicio: inicio, dataFim: fim });
   };
 
-  // Carregar com filtro padrão (mês) ao montar
-  React.useEffect(() => {
+  useEffect(() => {
     aplicarFiltros();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const executarAuditoria = async () => {
+    setAuditoriaCarregando(true);
+    try {
+      const { inicio, fim } = calcularDatasPeriodo(filtroPeriodo, semanaOffset);
+      if (!inicio || !fim) {
+        alert("Selecione um período válido.");
+        return;
+      }
+      
+      const inicioISO = new Date(`${inicio}T00:00:00-03:00`).toISOString();
+      const fimISO = new Date(`${fim}T23:59:59-03:00`).toISOString();
+
+      // 1. Buscar registros de ponto das três mecânicas para o período
+      const [resReds, resHarmony, resDudark] = await Promise.all([
+        supabase.from("ponto_cidade").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false),
+        supabase.from("ponto_cidade_mecanica_2").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false),
+        supabase.from("ponto_cidade_mecanica_3").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false)
+      ]);
+
+      let todosPontos = [];
+      if (resReds.data) {
+        todosPontos = [...todosPontos, ...resReds.data.map(p => ({ ...p, mec: "Reds", mechanic_id: "reds" }))];
+      }
+      if (resHarmony.data) {
+        todosPontos = [...todosPontos, ...resHarmony.data.map(p => ({ ...p, mec: "Harmony", mechanic_id: "harmony" }))];
+      }
+      if (resDudark.data) {
+        todosPontos = [...todosPontos, ...resDudark.data.map(p => ({ ...p, mec: "Dudark", mechanic_id: "dudark" }))];
+      }
+
+      // Filtrar pontos curtos (< tempoLimiteAuditoria OU sem saída / pontos abertos)
+      const pontosCurtos = todosPontos.filter(p => {
+        if (!p.entrada) return false;
+        
+        let satisfiesTime = false;
+        if (p.saida) {
+          const diffMin = (new Date(p.saida) - new Date(p.entrada)) / 60000;
+          satisfiesTime = diffMin > 0 && diffMin < tempoLimiteAuditoria;
+        } else {
+          // Ponto aberto é considerado elegível para auditoria
+          satisfiesTime = true;
+        }
+        
+        const satisfiesMec = filtroMecanicaAuditoria === "todas" || p.mechanic_id === filtroMecanicaAuditoria;
+        return satisfiesTime && satisfiesMec;
+      });
+
+      if (pontosCurtos.length === 0) {
+        setAuditoriaAlertas([]);
+        setAuditoriaCarregando(false);
+        return;
+      }
+
+      // 2. Buscar logs de discord_log_messages correspondentes ao mesmo período
+      const bufferInicioMs = new Date(inicioISO).getTime() - 5 * 60 * 1000;
+      const bufferFimMs = new Date(fimISO).getTime() + 5 * 60 * 1000;
+
+      const distinctIds = Array.from(new Set(pontosCurtos.map(p => String(p.id_jogo))));
+
+      // Para contornar limites de PostgREST da API (geralmente limitado a 1000 registros no servidor),
+      // dividimos a busca do período em pedaços de no máximo 7 dias.
+      const seteDiasMs = 7 * 24 * 60 * 60 * 1000;
+      const intervalos = [];
+      let atualMs = bufferInicioMs;
+
+      while (atualMs < bufferFimMs) {
+        const proximoMs = Math.min(atualMs + seteDiasMs, bufferFimMs);
+        intervalos.push({
+          inicio: new Date(atualMs).toISOString(),
+          fim: new Date(proximoMs).toISOString()
+        });
+        atualMs = proximoMs;
+      }
+
+      // Executar buscas em paralelo para cada intervalo de tempo
+      const queries = intervalos.map(inter => {
+        let q = supabase
+          .from("discord_log_messages")
+          .select("content, log_type, created_at, mechanic_id")
+          .in("log_type", ["bau", "bancada"])
+          .gte("created_at", inter.inicio)
+          .lte("created_at", inter.fim)
+          .limit(10000);
+
+        if (distinctIds.length > 0 && distinctIds.length < 80) {
+          const orFilter = distinctIds.map(id => `content.ilike.%[ID]: ${id}%`).join(',');
+          q = q.or(orFilter);
+        }
+        return q;
+      });
+
+      const resultadosQuery = await Promise.all(queries);
+      
+      let logsDiscord = [];
+      resultadosQuery.forEach(res => {
+        if (res.data) {
+          logsDiscord = [...logsDiscord, ...res.data];
+        }
+        if (res.error) {
+          throw res.error;
+        }
+      });
+
+      // 3. Parsear cada log
+      const logsProcessados = [];
+      logsDiscord.forEach(log => {
+        const parsed = parseDiscordLogContent(log.content, log.log_type);
+        if (parsed) {
+          const ts = parsed.dataStr ? new Date(parsed.dataStr).getTime() : new Date(log.created_at).getTime();
+          logsProcessados.push({
+            ...parsed,
+            timestamp: ts,
+            mecanicaLog: log.mechanic_id
+          });
+        }
+      });
+
+      // 4. Cruzar os dados: para cada ponto curto, verificar se o funcionário realizou retiradas durante aquela sessão
+      const alertas = [];
+      pontosCurtos.forEach(p => {
+        const entradaMs = new Date(p.entrada).getTime();
+        // Se for ponto aberto, buscamos retiradas ocorridas até a duração limite estipulada
+        const saidaMs = p.saida ? new Date(p.saida).getTime() : (entradaMs + tempoLimiteAuditoria * 60000);
+        const idJogoStr = String(p.id_jogo);
+
+        const logsCorrespondentes = logsProcessados.filter(log => {
+          return String(log.idJogo) === idJogoStr &&
+                 log.timestamp >= (entradaMs - 60000) &&
+                 log.timestamp <= (saidaMs + 60000);
+        });
+
+        if (logsCorrespondentes.length > 0) {
+          const sessoesProximas = todosPontos.filter(outro => {
+            if (outro.id === p.id) return false;
+            if (String(outro.id_jogo) !== idJogoStr) return false;
+            if (!outro.entrada || !outro.saida) return false;
+            
+            const diffMs = Math.abs(new Date(outro.entrada).getTime() - entradaMs);
+            const dentroDe24Horas = diffMs <= 24 * 60 * 60 * 1000;
+            
+            const duracaoOutro = (new Date(outro.saida) - new Date(outro.entrada)) / 60000;
+            const ehSessaoLonga = duracaoOutro >= 30;
+            
+            return dentroDe24Horas && ehSessaoLonga;
+          }).map(outro => {
+            const diffMs = Math.abs(new Date(outro.entrada).getTime() - entradaMs);
+            const dur = (new Date(outro.saida) - new Date(outro.entrada)) / 60000;
+            const h = Math.floor(dur / 60);
+            const m = Math.round(dur % 60);
+            return {
+              entrada: outro.entrada,
+              saida: outro.saida,
+              duracaoStr: `${h}h ${m}min`,
+              mec: outro.mec,
+              diffMs
+            };
+          });
+
+          // Ordenar pelo mais próximo e pegar apenas o primeiro (mais próximo temporalmente)
+          sessoesProximas.sort((a, b) => a.diffMs - b.diffMs);
+          const sessaoMaisProxima = sessoesProximas.slice(0, 1);
+
+          alertas.push({
+            ponto: p,
+            logs: logsCorrespondentes,
+            duracaoMin: p.saida ? Math.round((saidaMs - entradaMs) / 60000) : null,
+            sessoesProximas: sessaoMaisProxima
+          });
+        }
+      });
+
+      alertas.sort((a, b) => new Date(b.ponto.entrada) - new Date(a.ponto.entrada));
+      setAuditoriaAlertas(alertas);
+
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao executar auditoria: " + err.message);
+    } finally {
+      setAuditoriaCarregando(false);
+    }
+  };
+
   // ===== ESTADOS: ABA ATIVA =====
   const [abaAtiva, setAbaAtiva] = useState("registros"); // 'registros' | 'log-bruto' | 'cobertura'
+
+  useEffect(() => {
+    if (abaAtiva === "auditoria") {
+      executarAuditoria();
+    }
+  }, [abaAtiva, filtroPeriodo, semanaOffset, tempoLimiteAuditoria, filtroMecanicaAuditoria, filtroDataInicio, filtroDataFim]);
+
   const [ocultarManuaisPontoAdmin, setOcultarManuaisPontoAdmin] = useState(false);
   const [excluirDonos, setExcluirDonos] = useState(false);
   const [ocultarDonos, setOcultarDonos] = useState(false);
@@ -459,7 +724,8 @@ export default function PontoAdminPage({
       mapa[dia] = slots.map(slot => {
         const funcionariosTrabalhando = [];
         
-        const todosRegistrosFiltrados = filtrarManuaisLocal(todosRegistrosBanco);
+        // O relatório externo e a grade de cobertura sempre desconsideram pontos manuais (ou seja, apenas registros com entrada e saída automáticas, contendo UUID de entrada e saída)
+        const todosRegistrosFiltrados = todosRegistrosBanco.filter(r => r.uuid_entrada && r.uuid_saida);
         todosRegistrosFiltrados.forEach(reg => {
           if (reg.oculto) return;
           if (!reg.entrada) return;
@@ -1875,6 +2141,7 @@ export default function PontoAdminPage({
                 { id: "cobertura",   label: "📅 Cobertura" },
                 { id: "conciliacao", label: "⚖️ Conciliação" },
                 { id: "bonificacao", label: "🎁 Bonificação" },
+                { id: "auditoria",   label: "🔍 Auditoria de Baú" },
               ].map(({ id, label }) => (
                 <button
                   key={id}
@@ -3318,7 +3585,27 @@ export default function PontoAdminPage({
                   )}
 
                   {/* Botão de abrir/fechar config */}
-                  <div style={{ marginLeft: "auto" }}>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: "10px" }}>
+                    <button
+                      onClick={() => setModalRelatorioExternoAberta(true)}
+                      style={{
+                        background: "rgba(56, 189, 248, 0.15)",
+                        border: "1px solid rgba(56, 189, 248, 0.3)",
+                        color: "#38bdf8",
+                        padding: "7px 16px",
+                        borderRadius: "10px",
+                        cursor: "pointer",
+                        fontSize: "13px",
+                        fontWeight: "700",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        height: "34px",
+                      }}
+                    >
+                      📄 Gerar Relatório Externo
+                    </button>
+
                     <button
                       onClick={() => setConfigBonificacaoAberta(!configBonificacaoAberta)}
                       style={{
@@ -3617,6 +3904,386 @@ export default function PontoAdminPage({
           })()}
 
 
+          {/* ------ ABA AUDITORIA DE BAÚ ------ */}
+          {abaAtiva === "auditoria" && (() => {
+            const periodosLabels = {
+              hoje: "Hoje",
+              semana: "Seg → Dom",
+              mes: "Mês",
+              custom: "Customizado"
+            };
+
+            const formatarDiscordWarn = (alerta) => {
+              const { ponto, logs, duracaoMin } = alerta;
+              const dataFormatada = new Date(ponto.entrada).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+              const horaEntrada = new Date(ponto.entrada).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" });
+              const horaSaida = new Date(ponto.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" });
+              
+              let listItens = logs.map(l => `• ${l.qtd}x ${l.item} (${l.tipoLog === 'bau' ? `Baú: ${l.bauId || 'Geral'}` : 'Bancada'}) às ${new Date(l.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" })}`).join("\n");
+              
+              return `⚠️ **ADVERTÊNCIA DE SERVIÇO** ⚠️\n` +
+                     `**Funcionário:** ${ponto.nome} [ID: ${ponto.id_jogo}]\n` +
+                     `**Infração:** Entrou em serviço e saiu em menos de 30 minutos (limite da auditoria: ${tempoLimiteAuditoria}min) realizando retiradas/compras.\n\n` +
+                     `📅 **Data:** ${dataFormatada}\n` +
+                     `⏱️ **Tempo em serviço:** ${duracaoMin}min (Entrada: ${horaEntrada} | Saída: ${horaSaida})\n` +
+                     `📦 **Atividades detectadas:**\n${listItens}\n\n` +
+                     `*Atenção: É obrigatório cumprir o tempo mínimo de serviço de 30 minutos ao entrar.*`;
+            };
+
+            const handleCopiarAdvertencia = (alerta) => {
+              const texto = formatarDiscordWarn(alerta);
+              navigator.clipboard.writeText(texto)
+                .then(() => alert("✅ Advertência copiada para a área de transferência!"))
+                .catch(() => alert("❌ Erro ao copiar advertência."));
+            };
+
+            // Cálculo das estatísticas da auditoria
+            const totalSuspeitos = auditoriaAlertas.length;
+            const totalItensRetirados = auditoriaAlertas.reduce((acc, a) => acc + a.logs.length, 0);
+
+            return (
+              <div style={{ padding: "20px" }}>
+                {/* CONFIGURAÇÃO DA AUDITORIA */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", alignItems: "flex-end", marginBottom: "20px", background: "rgba(255,255,255,0.02)", padding: "16px", borderRadius: "12px", border: `1px solid ${theme.border}` }}>
+                  
+                  {/* Tempo limite slider */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: "1 1 240px" }}>
+                    <label style={{ fontSize: "11px", color: theme.subtext, fontWeight: "700", textTransform: "uppercase", display: "flex", justifyContent: "space-between" }}>
+                      <span>Duração Máxima do Ponto:</span>
+                      <span style={{ color: theme.accent, fontWeight: "800" }}>{tempoLimiteAuditoria} minutos</span>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="5" 
+                      max="30" 
+                      value={tempoLimiteAuditoria} 
+                      onChange={(e) => setTempoLimiteAuditoria(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: theme.accent, cursor: "pointer" }}
+                    />
+                  </div>
+
+                  {/* Filtro por Mecânica */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "3px", width: "180px" }}>
+                    <label style={{ fontSize: "10px", color: theme.subtext, fontWeight: "700", textTransform: "uppercase" }}>Filtrar por Mecânica</label>
+                    <select 
+                      value={filtroMecanicaAuditoria} 
+                      onChange={(e) => setFiltroMecanicaAuditoria(e.target.value)}
+                      style={{ ...inputSmall, width: "100%", background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, borderRadius: "8px", height: "34px" }}
+                    >
+                      <option value="todas">⚙️ Todas as Mecânicas</option>
+                      <option value="reds">🔴 Reds Tunnershop</option>
+                      <option value="harmony">🟣 Harmony</option>
+                      <option value="dudark">🟠 Dudark</option>
+                    </select>
+                  </div>
+
+                  {/* Período de Análise */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                    <label style={{ fontSize: "10px", color: theme.subtext, fontWeight: "700", textTransform: "uppercase" }}>Período selecionado</label>
+                    <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", alignItems: "center" }}>
+                      {[
+                        { val: "hoje",   label: "Hoje" },
+                        { val: "semana", label: "Semana" },
+                        { val: "mes",    label: "Mês" },
+                        { val: "custom", label: "Custom" },
+                      ].map(({ val, label }) => (
+                        <button
+                          key={val}
+                          onClick={() => {
+                            setFiltroPeriodo(val);
+                            if (val === "semana") {
+                              const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+                              const defaultOffset = agora.getDay() === 0 ? 0 : -1;
+                              setSemanaOffset(defaultOffset);
+                              aplicarFiltros(undefined, val, defaultOffset);
+                            } else if (val === "custom") {
+                              const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+                              const hoje = agora.toLocaleDateString("en-CA");
+                              const seteDiasAtras = new Date(agora);
+                              seteDiasAtras.setDate(agora.getDate() - 7);
+                              const inicio = seteDiasAtras.toLocaleDateString("en-CA");
+                              setFiltroDataInicio(inicio);
+                              setFiltroDataFim(hoje);
+                            } else {
+                              aplicarFiltros(undefined, val);
+                            }
+                          }}
+                          style={{
+                            padding: "6px 12px", borderRadius: "8px", border: "none", cursor: "pointer",
+                            fontSize: "12px", fontWeight: "700",
+                            background: filtroPeriodo === val ? theme.accent : theme.card2,
+                            color: filtroPeriodo === val ? "#fff" : theme.subtext,
+                            transition: "all 0.15s",
+                            height: "34px"
+                          }}
+                        >{label}</button>
+                      ))}
+
+                      {filtroPeriodo === "semana" && (
+                        <div style={{ display: "flex", gap: "4px" }}>
+                          <button
+                            onClick={() => {
+                              const n = semanaOffset - 1;
+                              setSemanaOffset(n);
+                              aplicarFiltros(undefined, "semana", n);
+                            }}
+                            style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, width: "30px", height: "34px", borderRadius: "8px", cursor: "pointer" }}
+                          >←</button>
+                          <button
+                            onClick={() => {
+                              const n = semanaOffset + 1;
+                              setSemanaOffset(n);
+                              aplicarFiltros(undefined, "semana", n);
+                            }}
+                            disabled={semanaOffset >= 0}
+                            style={{ background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, width: "30px", height: "34px", borderRadius: "8px", cursor: semanaOffset >= 0 ? "not-allowed" : "pointer", opacity: semanaOffset >= 0 ? 0.4 : 1 }}
+                          >→</button>
+                        </div>
+                      )}
+
+                      {filtroPeriodo === "custom" && (
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <input
+                            type="date"
+                            value={filtroDataInicio}
+                            onChange={(e) => setFiltroDataInicio(e.target.value)}
+                            style={{ ...inputSmall, width: "135px", background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, borderRadius: "8px", padding: "0 8px" }}
+                          />
+                          <span style={{ color: theme.subtext, fontSize: "12px" }}>até</span>
+                          <input
+                            type="date"
+                            value={filtroDataFim}
+                            onChange={(e) => setFiltroDataFim(e.target.value)}
+                            style={{ ...inputSmall, width: "135px", background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`, borderRadius: "8px", padding: "0 8px" }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Ocultar Toleráveis Checkbox */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", height: "34px", paddingBottom: "2px" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "12px", color: theme.text, fontWeight: "600" }}>
+                      <input 
+                        type="checkbox" 
+                        checked={ocultarReleveisAuditoria} 
+                        onChange={(e) => setOcultarReleveisAuditoria(e.target.checked)}
+                        style={{ width: "16px", height: "16px", accentColor: theme.accent, cursor: "pointer" }}
+                      />
+                      Ocultar Toleráveis (Crashes)
+                    </label>
+                  </div>
+
+                  {/* Botão Atualizar/Recarregar */}
+                  <button
+                    onClick={executarAuditoria}
+                    disabled={auditoriaCarregando}
+                    style={{
+                      background: "linear-gradient(135deg, #b40d0d, #ef4444)",
+                      color: "#fff", border: "none", padding: "0 18px", borderRadius: "10px",
+                      fontWeight: "700", fontSize: "13px", height: "34px", cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto"
+                    }}
+                  >
+                    🔄 {auditoriaCarregando ? "Carregando..." : "Atualizar"}
+                  </button>
+                </div>
+
+                {/* ESTATÍSTICAS DA AUDITORIA */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px", marginBottom: "20px" }}>
+                  {[
+                    { label: "Casos Suspeitos", valor: totalSuspeitos, cor: "#ef4444", emoji: "🚨" },
+                    { label: "Retiradas / Compras Suspeitas", valor: totalItensRetirados, cor: "#fbbf24", emoji: "📦" },
+                    { label: "Mecânica Selecionada", valor: filtroMecanicaAuditoria === "todas" ? "Todas" : filtroMecanicaAuditoria.toUpperCase(), cor: "#38bdf8", emoji: "⚙️" },
+                  ].map(({ label, valor, cor, emoji }) => (
+                    <div key={label} style={{ ...styles.whiteCard, padding: "14px 18px", borderLeft: `3px solid ${cor}`, textAlign: "center" }}>
+                      <div style={{ fontSize: "20px" }}>{emoji}</div>
+                      <div style={{ fontSize: "22px", fontWeight: "800", color: cor, marginTop: "4px" }}>{valor}</div>
+                      <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600", marginTop: "2px" }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* RELATÓRIO / RESULTADOS */}
+                <div style={{ ...styles.whiteCard, padding: "0", overflow: "hidden" }}>
+                  <div style={{ padding: "16px 20px", borderBottom: `1px solid ${theme.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: "14px", fontWeight: "800", color: theme.text }}>
+                      🚨 Ocorrências de Entrada e Saída Rápidas com Retirada
+                    </div>
+                    <span style={{ fontSize: "11px", color: theme.subtext }}>
+                      Período: {fmtBR(calcularDatasPeriodo(filtroPeriodo, semanaOffset).inicio)} a {fmtBR(calcularDatasPeriodo(filtroPeriodo, semanaOffset).fim)}
+                    </span>
+                  </div>
+                  {auditoriaCarregando ? (
+                    <div style={{ padding: "40px", textAlign: "center", color: theme.subtext }}>
+                      ⏳ Consultando banco de dados e cruzando logs...
+                    </div>
+                  ) : (
+                    auditoriaAlertas.filter(a => !(ocultarReleveisAuditoria && a.sessoesProximas && a.sessoesProximas.length > 0)).length === 0 ? (
+                      <div style={{ padding: "40px", textAlign: "center", color: theme.subtext, opacity: 0.7 }}>
+                        <div style={{ fontSize: "36px", marginBottom: "8px" }}>✅</div>
+                        Nenhuma infração detectada para os filtros e período selecionados.
+                      </div>
+                    ) : (
+                      <div style={{ overflowX: "auto" }}>
+
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                        <thead>
+                          <tr style={{ background: theme.card2 }}>
+                            {["Funcionário", "Mecânica", "Serviço (Entrada → Saída)", "Duração", "Itens Retirados / Compras Realizadas", "Ações"].map(col => (
+                              <th key={col} style={{ padding: "10px 14px", textAlign: "left", color: theme.subtext, fontWeight: "700", fontSize: "11px", textTransform: "uppercase", borderBottom: `1px solid ${theme.border}` }}>{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {auditoriaAlertas
+                            .filter(alerta => !(ocultarReleveisAuditoria && alerta.sessoesProximas && alerta.sessoesProximas.length > 0))
+                            .map((alerta, i) => {
+                              const { ponto, logs, duracaoMin } = alerta;
+                              const temSessaoLongaProxima = alerta.sessoesProximas && alerta.sessoesProximas.length > 0;
+                              return (
+                                <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : `${theme.card2}55`, borderBottom: `1px solid ${theme.border}44` }}>
+                                  {/* FUNCIONÁRIO */}
+                                  <td style={{ padding: "12px 14px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                      <span style={{ fontWeight: "700", color: theme.text }}>{ponto.nome}</span>
+                                      {temSessaoLongaProxima && (
+                                        <span style={{
+                                          fontSize: "9px",
+                                          fontWeight: "800",
+                                          background: "rgba(56,189,248,0.15)",
+                                          color: "#38bdf8",
+                                          padding: "2px 6px",
+                                          borderRadius: "4px",
+                                          border: "1px solid rgba(56,189,248,0.3)"
+                                        }} title="Possui sessão de serviço >= 30 minutos nas últimas 24 horas (provável crash ou tolerância)">
+                                          Tolerável (Crash?)
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div style={{ fontSize: "11px", color: theme.subtext }}>ID Jogo: #{ponto.id_jogo}</div>
+                                  </td>
+
+                                  {/* MECÂNICA */}
+                                  <td style={{ padding: "12px 14px" }}>
+                                  <span style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    padding: "2px 8px",
+                                    borderRadius: "12px",
+                                    fontSize: "10px",
+                                    fontWeight: "800",
+                                    background: (ponto.mechanic_id === "harmony" ? "#a855f7" : ponto.mechanic_id === "dudark" ? "#f97316" : "#ef4444") + "22",
+                                    color: ponto.mechanic_id === "harmony" ? "#a855f7" : ponto.mechanic_id === "dudark" ? "#f97316" : "#ef4444",
+                                    border: `1px solid ${ponto.mechanic_id === "harmony" ? "#a855f7" : ponto.mechanic_id === "dudark" ? "#f97316" : "#ef4444"}55`
+                                  }}>
+                                    ⚙️ {ponto.mec}
+                                  </span>
+                                </td>
+
+                                  {/* SERVIÇO */}
+                                 <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
+                                   <div style={{ fontSize: "12px" }}>
+                                     <span style={{ color: "#22c55e", fontWeight: "700" }}>▶ {new Date(ponto.entrada).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" })}</span>
+                                     <span style={{ color: theme.subtext, margin: "0 6px" }}>→</span>
+                                     {ponto.saida ? (
+                                       <span style={{ color: "#ef4444", fontWeight: "700" }}>⏹ {new Date(ponto.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" })}</span>
+                                     ) : (
+                                       <span style={{ background: "rgba(250,204,21,0.15)", color: "#facc15", padding: "1px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>🔓 Aberto</span>
+                                     )}
+                                   </div>
+                                   <div style={{ fontSize: "11px", color: theme.subtext, marginTop: "2px" }}>
+                                     📅 {new Date(ponto.entrada).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}
+                                   </div>
+                                 </td>
+
+                                 {/* DURAÇÃO */}
+                                 <td style={{ padding: "12px 14px" }}>
+                                   {ponto.saida ? (
+                                     <span style={{ color: "#ef4444", fontWeight: "800" }}>
+                                       ⏱️ {duracaoMin} min
+                                     </span>
+                                   ) : (
+                                     <span style={{ color: "#facc15", fontWeight: "800" }}>
+                                       Aberto
+                                     </span>
+                                   )}
+                                 </td>
+
+                                  {/* ITENS RETIRADOS */}
+                                  <td style={{ padding: "12px 14px" }}>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                      {logs.map((log, lIdx) => (
+                                        <div key={lIdx} style={{ fontSize: "12px", background: theme.card2, padding: "4px 8px", borderRadius: "6px", border: `1px solid ${theme.border}55` }}>
+                                          <span style={{ fontWeight: "800", color: theme.accent }}>{log.qtd}x</span> {log.item} 
+                                          <span style={{ color: theme.subtext, fontSize: "10px", marginLeft: "6px" }}>
+                                            ({log.tipoLog === 'bau' ? `📦 Baú: ${log.bauId}` : '🛠️ Bancada'}) às {new Date(log.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" })}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    {alerta.sessoesProximas && alerta.sessoesProximas.length > 0 && (
+                                      <div style={{ marginTop: "8px", background: "rgba(56,189,248,0.06)", border: "1px solid rgba(56,189,248,0.2)", borderRadius: "8px", padding: "8px 12px" }}>
+                                        <div style={{ fontSize: "10px", fontWeight: "800", color: "#38bdf8", textTransform: "uppercase", marginBottom: "4px" }}>
+                                          ℹ️ Sessão Longa Próxima Encontrada (Possível Crash):
+                                        </div>
+                                        {alerta.sessoesProximas.map((s, sIdx) => {
+                                          const dtEntrada = new Date(s.entrada);
+                                          const dtSaida = new Date(s.saida);
+                                          const dia = String(dtEntrada.getDate()).padStart(2, '0');
+                                          const mes = String(dtEntrada.getMonth() + 1).padStart(2, '0');
+                                          const horaEntrada = dtEntrada.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
+                                          const horaSaida = dtSaida.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
+                                          
+                                          return (
+                                            <div key={sIdx} style={{ fontSize: "11px", color: theme.subtext, marginTop: "2px" }}>
+                                              • 📅 {dia}/{mes} - {horaEntrada} às {horaSaida} — Duração: <b>{s.duracaoStr}</b> ({s.mec})
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </td>
+
+
+
+                                {/* AÇÕES */}
+                                <td style={{ padding: "12px 14px" }}>
+                                  <button
+                                    onClick={() => handleCopiarAdvertencia(alerta)}
+                                    style={{
+                                      background: "rgba(56,189,248,0.15)",
+                                      border: "1px solid #38bdf8",
+                                      color: "#38bdf8",
+                                      padding: "6px 12px",
+                                      borderRadius: "8px",
+                                      cursor: "pointer",
+                                      fontWeight: "700",
+                                      fontSize: "12px",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: "4px"
+                                    }}
+                                  >
+                                    💬 Copiar Advertência
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    )
+                  )}
+
+                </div>
+              </div>
+            );
+          })()}
+
+
+
       {/* ===== SEÇÃO DE REGISTROS OCULTOS ===== */}
       <div style={{ marginTop: "16px" }}>
         <button
@@ -3706,6 +4373,293 @@ export default function PontoAdminPage({
           <div style={{ fontSize: "13px", color: theme.subtext, marginTop: "6px" }}>
             Ajuste os filtros ou cole um novo log acima.
           </div>
+        </div>
+      )}
+      {/* MODAL DE RELATÓRIO EXTERNO DE COBERTURA */}
+      {modalRelatorioExternoAberta && (
+        <div style={{
+          position: "fixed",
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: "#0f172a", // Slate escuro premium
+          zIndex: 9999,
+          overflowY: "auto",
+          padding: "40px 20px",
+          color: "#f8fafc",
+          fontFamily: "'Outfit', 'Inter', sans-serif"
+        }}>
+          {/* Container do Relatório */}
+          <div style={{ maxWidth: "1200px", margin: "0 auto", position: "relative" }}>
+            
+            {/* Controles de Ações do Modal (Escondidos na Impressão) */}
+            <div className="no-print" style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "30px",
+              paddingBottom: "20px",
+              borderBottom: "1px solid rgba(255,255,255,0.1)"
+            }}>
+              <div>
+                <h2 style={{ fontSize: "20px", fontWeight: "800", color: "#38bdf8", margin: 0 }}>
+                  Visualização do Relatório Externo
+                </h2>
+                <p style={{ fontSize: "12px", color: "#94a3b8", margin: "4px 0 0 0" }}>
+                  Apenas a grade de cobertura interativa (sem pontos manuais e sem cabeçalhos administrativos).
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  onClick={() => window.print()}
+                  style={{
+                    background: "#0284c7", color: "#fff", border: "none",
+                    padding: "8px 18px", borderRadius: "8px", cursor: "pointer",
+                    fontSize: "13px", fontWeight: "700", display: "flex", alignItems: "center", gap: "6px"
+                  }}
+                >
+                  🖨️ Imprimir / Salvar PDF
+                </button>
+                <button
+                  onClick={() => setModalRelatorioExternoAberta(false)}
+                  style={{
+                    background: "rgba(255,255,255,0.08)", color: "#f8fafc", border: "1px solid rgba(255,255,255,0.15)",
+                    padding: "8px 18px", borderRadius: "8px", cursor: "pointer",
+                    fontSize: "13px", fontWeight: "700"
+                  }}
+                >
+                  Fechar Relatório
+                </button>
+              </div>
+            </div>
+
+            {/* Cabeçalho do Relatório para Impressão */}
+            <div style={{ marginBottom: "30px" }}>
+              <div style={{ fontSize: "22px", fontWeight: "800", color: "#f8fafc" }}>
+                Relatório de Cobertura de Serviço
+              </div>
+              <div style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>
+                Período: {(() => {
+                  const { inicio, fim } = calcularDatasPeriodo(filtroPeriodo, semanaOffset);
+                  return `${inicio ? fmtBR(inicio) : ""} – ${fim ? fmtBR(fim) : ""}`;
+                })()}
+              </div>
+            </div>
+
+            {/* Linha do tempo de cobertura (Grade Interativa) */}
+            <div style={{ background: "rgba(30, 41, 59, 0.7)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: "12px", padding: "24px", overflowX: "auto" }}>
+              <div style={{ minWidth: "980px" }}>
+                
+                {/* Linha de Turnos */}
+                <div style={{ display: "flex", alignItems: "center", marginBottom: "16px" }}>
+                  <div style={{ width: "120px", flexShrink: 0, fontWeight: "800", fontSize: "11px", color: "#94a3b8", textTransform: "uppercase" }}>
+                    Dia da Semana
+                  </div>
+                  <div style={{ display: "flex", flex: 1, gap: "2px" }}>
+                    <div style={{ flex: "12 1 0%", borderLeft: "1px solid rgba(255,255,255,0.05)", borderRight: "1px solid rgba(255,255,255,0.05)", background: "rgba(168,85,247,0.05)", padding: "6px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#c084fc", marginRight: "8px", borderRadius: "4px" }}>
+                      🌑 Madrugada (00h-06h)
+                    </div>
+                    <div style={{ flex: "12 1 0%", borderLeft: "1px solid rgba(255,255,255,0.05)", borderRight: "1px solid rgba(255,255,255,0.05)", background: "rgba(251,191,36,0.05)", padding: "6px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#fcd34d", marginRight: "8px", borderRadius: "4px" }}>
+                      🌅 Manhã (06h-12h)
+                    </div>
+                    <div style={{ flex: "12 1 0%", borderLeft: "1px solid rgba(255,255,255,0.05)", borderRight: "1px solid rgba(255,255,255,0.05)", background: "rgba(249,115,22,0.05)", padding: "6px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#fdba74", marginRight: "8px", borderRadius: "4px" }}>
+                      ☀️ Tarde (12h-18h)
+                    </div>
+                    <div style={{ flex: "12 1 0%", borderLeft: "1px solid rgba(255,255,255,0.05)", borderRight: "1px solid rgba(255,255,255,0.05)", background: "rgba(59,130,246,0.05)", padding: "6px 2px", textAlign: "center", fontSize: "10px", fontWeight: "800", color: "#60a5fa", borderRadius: "4px" }}>
+                      🌙 Noite (18h-00h)
+                    </div>
+                  </div>
+                </div>
+
+                {/* Cada dia do período */}
+                {diasPeriodoBonificacao.map(dia => {
+                  const dataObj = new Date(`${dia}T12:00:00`);
+                  const diaSemana = dataObj.toLocaleDateString("pt-BR", { weekday: "short" });
+                  const slots = slotsCoberturaBonificacao[dia] || [];
+                  const [ano, mes, diaNum] = dia.split("-");
+
+                  return (
+                    <div key={dia} style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
+                      {/* Nome do dia */}
+                      <div style={{ width: "120px", flexShrink: 0, fontWeight: "700", fontSize: "12px", color: "#f8fafc" }}>
+                        <span style={{ textTransform: "capitalize", fontWeight: "800" }}>{diaSemana.replace(".", "")}</span>
+                        <span style={{ color: "#94a3b8", marginLeft: "4px", fontSize: "11px" }}>({diaNum}/{mes})</span>
+                      </div>
+
+                      {/* Blocos horizontais */}
+                      <div style={{ display: "flex", flex: 1, gap: "2px" }}>
+                        {slots.map((slot, idx) => {
+                          const tooltipText = `${slot.label}\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : "🔴 Sem cobertura"}`;
+                          
+                          let emptyColor = "";
+                          let emptyBorder = "";
+                          if (idx < 12) {
+                            emptyColor = "rgba(168,85,247,0.03)";
+                            emptyBorder = "rgba(168,85,247,0.15)";
+                          } else if (idx < 24) {
+                            emptyColor = "rgba(251,191,36,0.03)";
+                            emptyBorder = "rgba(251,191,36,0.15)";
+                          } else if (idx < 36) {
+                            emptyColor = "rgba(249,115,22,0.03)";
+                            emptyBorder = "rgba(249,115,22,0.15)";
+                          } else {
+                            emptyColor = "rgba(59,130,246,0.03)";
+                            emptyBorder = "rgba(59,130,246,0.15)";
+                          }
+
+                          const isLastOfShift = idx === 11 || idx === 23 || idx === 35;
+                          const marginRight = isLastOfShift ? "8px" : "0px";
+
+                          return (
+                            <div
+                              key={idx}
+                              title={tooltipText}
+                              style={{
+                                height: "30px",
+                                borderRadius: "5px",
+                                flex: "1 1 0%",
+                                background: slot.coberto ? "#1b5e20" : emptyColor,
+                                border: `1px solid ${slot.coberto ? "rgba(34, 197, 94, 0.3)" : emptyBorder}`,
+                                cursor: "pointer",
+                                position: "relative",
+                                marginRight: marginRight,
+                                transition: "transform 0.1s ease, box-shadow 0.1s ease"
+                              }}
+                              onMouseEnter={e => {
+                                e.currentTarget.style.transform = "scale(1.18)";
+                                e.currentTarget.style.zIndex = 10;
+                                e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.25)";
+                              }}
+                              onMouseLeave={e => {
+                                e.currentTarget.style.transform = "scale(1)";
+                                e.currentTarget.style.zIndex = 1;
+                                e.currentTarget.style.boxShadow = "none";
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Comparativo das Mecânicas (Classificação por Turnos) */}
+            <div style={{ marginTop: "30px", marginBottom: "30px" }}>
+              <div style={{ fontSize: "16px", fontWeight: "800", color: "#f8fafc", marginBottom: "16px" }}>
+                📊 Comparativo das Mecânicas e Ranking por Turno
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "16px" }}>
+                {(() => {
+                  const dataBonificacao = calcularAcumuladoBonificacao;
+                  const periodosList = [
+                    { key: "manha", label: "Manhã", emoji: "🌅", horas: "06:00 às 12:00" },
+                    { key: "tarde", label: "Tarde", emoji: "☀️", horas: "12:00 às 18:00" },
+                    { key: "noite", label: "Noite", emoji: "🌙", horas: "18:00 às 00:00" },
+                    { key: "madrugada", label: "Madrugada", emoji: "🌑", horas: "00:00 às 06:00" },
+                  ];
+
+                  return periodosList.map(p => {
+                    const ranking = dataBonificacao.rankings[p.key] || [];
+                    const winners = dataBonificacao.winners[p.key] || [];
+                    const limitMinutos = configBonificacao[p.key].horasMinimas * 60;
+                    
+                    const totalMinsPeriodo = ranking.reduce((sum, colab) => {
+                      const func = listaFuncionarios.find(f => String(f.id) === String(colab.idJogo));
+                      const colabIsDono = func?.role ? (func.role.split('|')[0] === 'dono' || func.role.split('|').includes('dono_secundario')) : false;
+                      if (excluirDonos && colabIsDono) return sum;
+                      return sum + (colab[p.key] || 0);
+                    }, 0);
+
+                    return (
+                      <div key={p.key} style={{ background: "rgba(30, 41, 59, 0.7)", border: "1px solid rgba(255,255,255,0.05)", padding: "16px", borderRadius: "12px" }}>
+                        <div style={{ borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "10px", marginBottom: "12px" }}>
+                          <div style={{ fontSize: "14px", fontWeight: "800", color: "#f8fafc", display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span>{p.emoji}</span>
+                            <span>{p.label}</span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                            Meta: {configBonificacao[p.key].horasMinimas}h · Total no Turno: {formatarMinutos(totalMinsPeriodo)}
+                          </div>
+                        </div>
+
+                        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                          {ranking.length === 0 ? (
+                            <div style={{ fontSize: "11px", color: "#94a3b8", opacity: 0.6, padding: "12px 0", textAlign: "center" }}>
+                              Nenhum registro.
+                            </div>
+                          ) : (
+                            ranking.map((colab) => {
+                              const totalMins = colab[p.key] || 0;
+                              const isWinner = winners.some(w => w.idJogo === colab.idJogo);
+                              const atingiuMeta = totalMins >= limitMinutos;
+                              const pct = Math.min(100, (totalMins / (limitMinutos || 1)) * 100);
+
+                              const func = listaFuncionarios.find(f => String(f.id) === String(colab.idJogo));
+                              const colabIsDono = func?.role ? (func.role.split('|')[0] === 'dono' || func.role.split('|').includes('dono_secundario')) : false;
+                              const deveApagarCard = excluirDonos && colabIsDono;
+
+                              if (deveApagarCard) return null;
+
+                              return (
+                                <div key={colab.idJogo} style={{ background: isWinner ? "rgba(34,197,94,0.04)" : "transparent", border: isWinner ? "1px solid rgba(34,197,94,0.15)" : "1px solid transparent", borderRadius: "8px", padding: "8px 10px" }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "4px" }}>
+                                    <div style={{ maxWidth: "70%" }}>
+                                      <div style={{ fontWeight: "700", fontSize: "11px", color: "#f8fafc", display: "flex", alignItems: "center", gap: "4px" }}>
+                                        {isWinner && <span title="Vencedor do período">🏆</span>}
+                                        <span style={{ textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>{colab.nome}</span>
+                                      </div>
+                                      <div style={{ fontSize: "9px", color: "#94a3b8" }}>ID: #{colab.idJogo}</div>
+                                    </div>
+                                    <div style={{ textAlign: "right" }}>
+                                      <div style={{ fontSize: "11px", fontWeight: "800", color: isWinner ? "#22c55e" : "#f8fafc" }}>
+                                        {formatarMinutos(totalMins)}
+                                      </div>
+                                      {atingiuMeta ? (
+                                        <span style={{ fontSize: "8px", background: "rgba(34,197,94,0.2)", color: "#22c55e", padding: "1px 4px", borderRadius: "3px", fontWeight: "800" }}>META OK</span>
+                                      ) : (
+                                        <span style={{ fontSize: "8px", background: "rgba(239,68,68,0.1)", color: "#ef4444", padding: "1px 4px", borderRadius: "3px", fontWeight: "800" }}>PENDENTE</span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Barra de Progresso */}
+                                  <div style={{ width: "100%", height: "4px", background: "rgba(255,255,255,0.05)", borderRadius: "2px", overflow: "hidden" }}>
+                                    <div style={{
+                                      width: `${pct}%`,
+                                      height: "100%",
+                                      background: atingiuMeta ? "linear-gradient(90deg, #16a34a, #22c55e)" : "linear-gradient(90deg, #b40d0d, #ef4444)",
+                                      transition: "width 0.3s ease"
+                                    }} />
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+
+          </div>
+
+          {/* Regra CSS para esconder controles na impressão */}
+          <style dangerouslySetInnerHTML={{__html: `
+            @media print {
+              .no-print {
+                display: none !important;
+              }
+              body {
+                background: #ffffff !important;
+                color: #000000 !important;
+              }
+              html, body {
+                height: auto;
+              }
+            }
+          `}} />
         </div>
       )}
     </div>
