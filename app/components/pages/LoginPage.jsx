@@ -393,23 +393,6 @@ export default function LoginPage({
 
       <div className="premium-bg">
         <div className="glow-left"></div>
-        {/* Indicador visual de teste de deploy */}
-        <div
-          title="Versão de Teste Vercel"
-          style={{
-            position: "fixed",
-            top: "20px",
-            right: "20px",
-            width: "14px",
-            height: "14px",
-            borderRadius: "50%",
-            backgroundColor: "#22c55e",
-            boxShadow: "0 0 12px #22c55e",
-            zIndex: 9999,
-            border: "2px solid #ffffff",
-            cursor: "pointer"
-          }}
-        />
         <div className="container">
           
           <div className="left-col">
