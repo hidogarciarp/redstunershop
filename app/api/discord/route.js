@@ -3,8 +3,8 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 const DEFAULT_WEBHOOKS = {
-  pagamentos: "https://discord.com/api/webhooks/1548094427736842380/QHPePaYzRom5b3h_NeDZ_BMesADa4o7CgznFcUxg7sHpB88OuZgv9MrXwnleQfsJP1PI",
-  caixa2: "https://discord.com/api/webhooks/1548094427736842380/QHPePaYzRom5b3h_NeDZ_BMesADa4o7CgznFcUxg7sHpB88OuZgv9MrXwnleQfsJP1PI",
+  pagamentos: "https://discord.com/api/webhooks/1548095936264413216/sJTh7Hki2NfbE6znTKgjF0PGYI_S_vQuk07OvYLVpbVfxDVA0GKOTrmWN53wM0SY_xIT",
+  caixa2: "https://discord.com/api/webhooks/1548095936264413216/sJTh7Hki2NfbE6znTKgjF0PGYI_S_vQuk07OvYLVpbVfxDVA0GKOTrmWN53wM0SY_xIT",
   rodas: "https://discord.com/api/webhooks/1548094643743228016/5ZoAEi-RmYYjhhdf32p6rG5uVSu9IwVTSI_1OxE455tTuFPsJAiY4Am8exLOo5n43Yrw",
   report: "https://discord.com/api/webhooks/1548094785573617768/grgXpJw1AaCLkqgaBR298iXEzBuCHTk6zP2qHa3WNOU_pbEFNr7lp79ANT_LnIvJRpJF",
   reboque: "https://discord.com/api/webhooks/1548095041657110631/8xGF7xp98CJD-hg6TXTmTurJ-vrFp6tlCWgw8E5fnmYNCK2zF92HE1x3iX93flDERoJG",
