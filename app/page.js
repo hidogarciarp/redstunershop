@@ -62,6 +62,49 @@ const PAGINAS_OCULTAS = new Set([
   "evento-triathlon", "pagamentos"
 ]);
 
+async function otimizarImagem(file) {
+  if (!file || typeof window === "undefined" || !file.type || !file.type.startsWith("image/")) return file;
+  if (file.size <= 2 * 1024 * 1024) return file;
+  try {
+    return await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let { width, height } = img;
+        const maxDim = 1920;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (blob && blob.size < file.size) {
+              resolve(new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" }));
+            } else {
+              resolve(file);
+            }
+          },
+          "image/jpeg",
+          0.85
+        );
+      };
+      img.onerror = () => resolve(file);
+      img.src = URL.createObjectURL(file);
+    });
+  } catch (_) {
+    return file;
+  }
+}
+
 export default function Home() {
   // ===== STATES =====
   const [paginaAtual, setPaginaAtual] = useState("login");
@@ -3240,16 +3283,21 @@ export default function Home() {
         footer: { text: "RED'S TUNERSHOP - Sistema de Logs" }, timestamp: new Date()
       };
 
+      const img1 = await otimizarImagem(arquivoImagem);
+      const img2 = await otimizarImagem(arquivoImagem2);
+
       const formData = new FormData();
       formData.append("payload_json", JSON.stringify({ embeds: [discordEmbed] }));
-      if (arquivoImagem) formData.append("files[0]", arquivoImagem, "print_veiculo.png");
-      if (arquivoImagem2) formData.append("files[1]", arquivoImagem2, "resultado_cliente.png");
+      if (img1) formData.append("files[0]", img1, "print_veiculo.png");
+      if (img2) formData.append("files[1]", img2, "resultado_cliente.png");
 
       let response = { ok: true };
       let linkDiscord = "";
 
       if (webhookDestino) {
-        response = await fetch(webhookDestino + "?wait=true", { method: "POST", body: formData });
+        const separador = webhookDestino.includes("?") ? "&" : "?";
+        const urlFinal = webhookDestino.includes("wait=") ? webhookDestino : `${webhookDestino}${separador}wait=true`;
+        response = await fetch(urlFinal, { method: "POST", body: formData });
         if (response.ok) {
           try {
             const data = await response.json();
@@ -3265,6 +3313,20 @@ export default function Home() {
               linkDiscord = data.attachments[0].url;
             }
           } catch (e) { console.log("Erro ao ler JSON do Discord", e); }
+        } else {
+          const erroTexto = await response.text().catch(() => "");
+          console.error("Erro no envio para o Discord:", response.status, erroTexto);
+          let msgAmigavel = `Erro ${response.status} ao enviar para o Discord.`;
+          if (response.status === 413) {
+            msgAmigavel = "A imagem selecionada é muito pesada (acima do limite). Tente tirar um print com resolução menor.";
+          } else if (erroTexto) {
+            try {
+              const j = JSON.parse(erroTexto);
+              if (j.error) msgAmigavel = j.error;
+            } catch (_) {}
+          }
+          alert("❌ " + msgAmigavel);
+          return;
         }
       }
 
@@ -3302,8 +3364,6 @@ export default function Home() {
         buscarNotificacaoPendente();
         alert(temReboque ? "✅ Apreensão / Reboque registrado com sucesso!" : "✅ Serviço registrado com sucesso!");
         limparFormulario();
-      } else {
-        alert("❌ Erro ao enviar para o Discord.");
       }
 
       if (temItensVenda && WEBHOOK_VENDAS) {
