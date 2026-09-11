@@ -467,8 +467,20 @@ export default function ClientesPage({
                   <div style={{ marginTop: "8px" }}>
                     <strong style={{ color: theme.subtext, display: "block", marginBottom: "8px" }}>Foto do Serviço:</strong>
                     <a href={servicoSelecionado.link_imagem} target="_blank" rel="noopener noreferrer">
-                      <img src={servicoSelecionado.link_imagem} alt="Foto do Serviço" style={{ width: "100%", maxHeight: "250px", objectFit: "contain", borderRadius: "8px", border: `1px solid ${theme.border}` }} />
+                      <img 
+                        src={servicoSelecionado.link_imagem} 
+                        alt="Foto do Serviço" 
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                          const errDiv = e.currentTarget.parentElement?.nextElementSibling;
+                          if (errDiv) errDiv.style.display = 'block';
+                        }}
+                        style={{ width: "100%", maxHeight: "250px", objectFit: "contain", borderRadius: "8px", border: `1px solid ${theme.border}` }} 
+                      />
                     </a>
+                    <div style={{ display: "none", padding: "12px", textAlign: "center", background: "rgba(239, 68, 68, 0.08)", borderRadius: "8px", color: "#f87171", border: "1px dashed rgba(239, 68, 68, 0.3)", fontSize: "12px" }}>
+                      ⚠️ A imagem deste registro antigo expirou ou foi removida pelo Discord.
+                    </div>
                   </div>
                 ) : (
                   <div style={{ marginTop: "8px", padding: "16px", textAlign: "center", background: "rgba(255,255,255,0.02)", borderRadius: "8px", color: theme.subtext, border: `1px dashed ${theme.border}` }}>

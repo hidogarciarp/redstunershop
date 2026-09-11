@@ -888,7 +888,15 @@ export default function DashboardPage({
                   </span>
                   {imagemPreview && (
                     <>
-                      <img src={imagemPreview} alt="preview" style={{ borderRadius: "12px", maxHeight: "230px", maxWidth: "100%" }} />
+                      <img 
+                        src={imagemPreview} 
+                        alt="preview" 
+                        onError={() => {
+                          console.warn("Imagem indisponível ou expirada no Discord:", imagemPreview);
+                          if (typeof setImagemPreview === "function") setImagemPreview(null);
+                        }}
+                        style={{ borderRadius: "12px", maxHeight: "230px", maxWidth: "100%" }} 
+                      />
                       <p style={{ color: theme.green, fontWeight: "700", margin: 0, fontSize: "13px" }}>✅ Imagem pronta!</p>
                     </>
                   )}
@@ -904,7 +912,15 @@ export default function DashboardPage({
                   <span style={{ fontSize: "10px", fontWeight: "700", color: theme.subtext, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "2px", display: "block" }}>🚗 Foto do Resultado / Carro do Cliente <span style={{ color: theme.subtext, fontWeight: "400", textTransform: "none", fontSize: "10px" }}>(opcional)</span></span>
                   {imagemPreview2 && (
                     <>
-                      <img src={imagemPreview2} alt="preview resultado" style={{ borderRadius: "12px", maxHeight: "230px", maxWidth: "100%" }} />
+                      <img 
+                        src={imagemPreview2} 
+                        alt="preview resultado" 
+                        onError={() => {
+                          console.warn("Imagem de resultado indisponível ou expirada no Discord:", imagemPreview2);
+                          if (typeof setImagemPreview2 === "function") setImagemPreview2(null);
+                        }}
+                        style={{ borderRadius: "12px", maxHeight: "230px", maxWidth: "100%" }} 
+                      />
                       <p style={{ color: theme.green, fontWeight: "700", margin: 0, fontSize: "13px" }}>✅ Foto do resultado pronta!</p>
                     </>
                   )}
