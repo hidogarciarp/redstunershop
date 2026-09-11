@@ -2,28 +2,38 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
+const DEFAULT_WEBHOOKS = {
+  pagamentos: "https://discord.com/api/webhooks/1548094427736842380/QHPePaYzRom5b3h_NeDZ_BMesADa4o7CgznFcUxg7sHpB88OuZgv9MrXwnleQfsJP1PI",
+  caixa2: "https://discord.com/api/webhooks/1548094427736842380/QHPePaYzRom5b3h_NeDZ_BMesADa4o7CgznFcUxg7sHpB88OuZgv9MrXwnleQfsJP1PI",
+  rodas: "https://discord.com/api/webhooks/1548094643743228016/5ZoAEi-RmYYjhhdf32p6rG5uVSu9IwVTSI_1OxE455tTuFPsJAiY4Am8exLOo5n43Yrw",
+  report: "https://discord.com/api/webhooks/1548094785573617768/grgXpJw1AaCLkqgaBR298iXEzBuCHTk6zP2qHa3WNOU_pbEFNr7lp79ANT_LnIvJRpJF",
+  reboque: "https://discord.com/api/webhooks/1548095041657110631/8xGF7xp98CJD-hg6TXTmTurJ-vrFp6tlCWgw8E5fnmYNCK2zF92HE1x3iX93flDERoJG",
+  guincho: "https://discord.com/api/webhooks/1548095342900158487/Bi3uzFAN45H0v4KAV4Wt5T6OCCd9OJZVHtzEXbXKffFPN91aeK4FM9r-fGJnecRrGAIX",
+  vendas: "https://discord.com/api/webhooks/1548095432339624099/HAtNIYDsrsK5lc1Q34v1hDoC4FkPosf-c4wewqOgeSvEhn5uBi9ir51BptEFN92l9Gnn",
+  tunagem: "https://discord.com/api/webhooks/1548095528578056318/yiHKnkcIA-V_q_6XvoytZtKsqzia8dk32E8JUWupRfvPKC2U0OdSPXl1Fu1Myya9w8rR",
+  estetica: "https://discord.com/api/webhooks/1548095664645214288/qL3OPKKozmSM2GpcT1u3ABNzQW4DP5KvRWbQCSK7EmhH_V-Wd9O3jq9ZK0uje_3i3bME",
+};
+
 const getWebhookUrl = (tipo) => {
-  const map = {
+  const envMap = {
     estetica: process.env.DISCORD_WEBHOOK_ESTETICA || process.env.NEXT_PUBLIC_WEBHOOK_ESTETICA,
     tunagem: process.env.DISCORD_WEBHOOK_TUNAGEM || process.env.NEXT_PUBLIC_WEBHOOK_TUNAGEM,
     vendas: process.env.DISCORD_WEBHOOK_VENDAS || process.env.NEXT_PUBLIC_WEBHOOK_VENDAS,
     guincho: process.env.DISCORD_WEBHOOK_GUINCHO || process.env.NEXT_PUBLIC_WEBHOOK_GUINCHO,
-    reboque:
-      process.env.DISCORD_WEBHOOK_REBOQUE ||
-      process.env.NEXT_PUBLIC_WEBHOOK_REBOQUE ||
-      "https://discord.com/api/webhooks/1547358481122590870/iiYd9HgKm_Sk7Li67mNzlcdqOyXNsY-V2pSu13bqmAqeKfCSkZ4F2Vg-2aJoLI6X893V",
+    reboque: process.env.DISCORD_WEBHOOK_REBOQUE || process.env.NEXT_PUBLIC_WEBHOOK_REBOQUE,
     rodas: process.env.DISCORD_WEBHOOK_RODAS || process.env.NEXT_PUBLIC_WEBHOOK_RODAS,
     report: process.env.DISCORD_WEBHOOK_REPORT || process.env.NEXT_PUBLIC_WEBHOOK_REPORT,
     pagamentos: process.env.DISCORD_WEBHOOK_PAGAMENTOS || process.env.NEXT_PUBLIC_WEBHOOK_PAGAMENTOS,
     caixa2: process.env.DISCORD_WEBHOOK_CAIXA2 || process.env.NEXT_PUBLIC_WEBHOOK_CAIXA2,
   };
 
-  let url = map[tipo];
+  let url = envMap[tipo] || DEFAULT_WEBHOOKS[tipo];
   if (!url) {
-    if (tipo === "tunagem") url = map.estetica;
-    else if (tipo === "estetica") url = map.tunagem;
-    else if (tipo === "reboque") url = map.guincho || map.estetica;
-    else if (tipo === "caixa2") url = map.pagamentos;
+    if (tipo === "tunagem") url = envMap.estetica || DEFAULT_WEBHOOKS.estetica;
+    else if (tipo === "estetica") url = envMap.tunagem || DEFAULT_WEBHOOKS.tunagem;
+    else if (tipo === "reboque") url = envMap.guincho || DEFAULT_WEBHOOKS.guincho;
+    else if (tipo === "caixa2") url = envMap.pagamentos || DEFAULT_WEBHOOKS.pagamentos;
+    else if (tipo === "rodas") url = envMap.report || DEFAULT_WEBHOOKS.report;
   }
   return url;
 };
