@@ -63,6 +63,7 @@ export default function DashboardPage({
   formatarTextoAvisos,
   calcularTotal,
   enviarParaDiscord,
+  salvandoServico = false,
   historicoNitroRecente = [],
   formatarHorario,
   formatarDataHora,
@@ -882,7 +883,9 @@ export default function DashboardPage({
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px", alignItems: "stretch" }}>
               <div style={{ ...styles.uploadArea, outline: "none", minWidth: 0 }} tabIndex={0} onPaste={handlePasteEstetica}>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
-                  <span style={{ fontSize: "10px", fontWeight: "700", color: theme.subtext, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "2px", display: "block" }}>📸 Foto do VTuning / Referência</span>
+                  <span style={{ fontSize: "10px", fontWeight: "700", color: theme.subtext, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "2px", display: "block" }}>
+                    {reboque ? "📸 Foto do Veículo Apreendido / Reboque" : "📸 Foto do VTuning / Referência"}
+                  </span>
                   {imagemPreview && (
                     <>
                       <img src={imagemPreview} alt="preview" style={{ borderRadius: "12px", maxHeight: "230px", maxWidth: "100%" }} />
@@ -890,7 +893,7 @@ export default function DashboardPage({
                     </>
                   )}
                   <label style={styles.uploadBtnLabel}>
-                    {imagemPreview ? "🔄 Trocar imagem" : "📂 Clique ou COLE (Ctrl+V) o print"}
+                    {imagemPreview ? "🔄 Trocar imagem" : (reboque ? "📂 Clique ou COLE a foto do reboque" : "📂 Clique ou COLE (Ctrl+V) o print")}
                     <input type="file" accept="image/*" hidden onChange={handleFileChange} />
                   </label>
                 </div>
@@ -921,10 +924,14 @@ export default function DashboardPage({
               <span style={styles.dot}></span> Guincho / Atendimento
               <label style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "7px", cursor: "pointer", color: reboque ? theme.green : theme.subtext, fontSize: "12px", fontWeight: "800", textTransform: "none" }}>
                 <input type="checkbox" checked={reboque} onChange={(e) => setReboque(e.target.checked)} />
-                Serviço de Reboque
+                🚨 Serviço de Reboque (Apreensão)
               </label>
             </div>
-            {reboque && <div style={{ marginBottom: "12px", padding: "10px 12px", borderRadius: "9px", background: "rgba(59,130,246,0.1)", border: "1px solid rgba(59,130,246,0.3)", color: "#93c5fd", fontSize: "12px" }}>Para registrar o reboque, somente a foto do serviço é obrigatória.</div>}
+            {reboque && (
+              <div style={{ marginBottom: "12px", padding: "10px 12px", borderRadius: "9px", background: "rgba(59,130,246,0.1)", border: "1px solid rgba(59,130,246,0.3)", color: "#93c5fd", fontSize: "12px" }}>
+                🚨 <b>Solicitação de Apreensão de Veículo pela Polícia:</b> somente a foto do serviço é obrigatória. Não é necessário informar dados do cliente.
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "14px", opacity: reboque ? 0.45 : 1 }}>
               <div>
                 <label style={styles.miniLabel}>Distância (KM)</label>
@@ -1156,8 +1163,16 @@ export default function DashboardPage({
           <br />
           <b style={{ color: theme.accent, fontSize: "24px", fontWeight: "800" }}>R$ {calcularTotal().toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</b>
         </div>
-        <button onClick={enviarParaDiscord} style={styles.btnRegister}>
-          Registrar Serviço →
+        <button
+          onClick={enviarParaDiscord}
+          disabled={salvandoServico}
+          style={{
+            ...styles.btnRegister,
+            opacity: salvandoServico ? 0.7 : 1,
+            cursor: salvandoServico ? "not-allowed" : "pointer"
+          }}
+        >
+          {salvandoServico ? "Registrando..." : (reboque ? "Registrar Apreensão →" : "Registrar Serviço →")}
         </button>
       </footer>
     </>

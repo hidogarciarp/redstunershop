@@ -166,6 +166,7 @@ export default function Home() {
   const [qtdReparos, setQtdReparos] = useState(0);
   const [qtdPneus, setQtdPneus] = useState(0);
   const [reboque, setReboque] = useState(false);
+  const [salvandoServico, setSalvandoServico] = useState(false);
 
   const [pontoAtivo, setPontoAtivo] = useState(null);
   // O cronômetro é atualizado localmente apenas nos componentes que o exibem.
@@ -520,6 +521,7 @@ export default function Home() {
   const WEBHOOK_CAIXA2 = process.env.NEXT_PUBLIC_WEBHOOK_CAIXA2;
 
   const tabelas = TABELA_PRECOS;
+  const rules = REGRAS_PRECOS;
 
   const listaExtras = Array.from({ length: 30 }, (_, i) => ({
     id: `extra_${i + 1}`,
@@ -1167,7 +1169,7 @@ export default function Home() {
       funcionario_id: usuarioLogado.id,
       funcionario_nome: usuarioLogado.nome,
       cliente_id: passaporte ? Number(passaporte) : null,
-      cliente_nome: cliente || null,
+      cliente_nome: cliente || (detalhesServico?.includes("Apreensão") || detalhesServico?.includes("Reboque") ? "Apreensão Policial" : null),
       tipo,
       valor_total: valorTotal,
       data: hoje,
@@ -3042,143 +3044,157 @@ export default function Home() {
   };
 
   const enviarParaDiscord = async () => {
-    if (reportBugs) {
-      if (!passaporte) { alert("⚠️ Informe o ID do cliente!"); return; }
-      if (!imagemBugs) { alert("⚠️ Envie a imagem!"); return; }
-      if (!nomeVeiculoBugs) { alert("⚠️ Informe o nome do veículo!"); return; }
-      const formData = new FormData();
-      const embedFields = [
-        { name: "🚗 Veículo", value: nomeVeiculoBugs },
-        { name: "👤 Cliente", value: `${cliente} (ID: ${passaporte})` },
-        { name: "👨‍🔧 Mecânico", value: nomeMecanico },
-      ];
-      if (descricaoBug.trim()) embedFields.push({ name: "📝 Descrição do Bug", value: descricaoBug });
-      const embed = { title: "🚨 VEÍCULO COM BUGS ", color: 16711680, fields: embedFields, image: { url: "attachment://veiculo.png" }, timestamp: new Date() };
-      formData.append("payload_json", JSON.stringify({ embeds: [embed] }));
-      formData.append("files[0]", imagemBugs, "veiculo.png");
-      const response = await fetch(WEBHOOK_REPORT, { method: "POST", body: formData });
-      await fetch(WEBHOOK_RODAS, { method: "POST", body: formData });
-      if (!response.ok) { alert("❌ Erro ao enviar report!"); return; }
-      alert("✅ Report enviado!");
-      setReportBugs(false); setNomeVeiculoBugs(""); setDescricaoBug(""); setImagemBugs(null); setPreviewBugs(null);
-      return;
-    }
-
-    const temReboque = Boolean(reboque);
-    if (!temReboque && (!cliente || !passaporte)) { alert("⚠️ Preencha o nome e o ID do cliente antes de registrar!"); return; }
-    if (temReboque && !arquivoImagem) { alert("⚠️ Envie a foto do serviço de reboque!"); return; }
-
-    // Verificação de Blacklist
-    if (passaporte && isClienteBanido(passaporte)) {
-      const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
-      alert(`🚫 OPERAÇÃO BLOQUEADA!\n\nEste cliente está na BLACKLIST.\nMotivo: ${banInfo?.motivo || "Não informado"}`);
-      return;
-    }
-
-    const temGuincho = temReboque || Number(kmGuincho) > 0 || Number(qtdReparos) > 0 || Number(qtdPneus) > 0;
-    const temEstetica = Number(valorDigitadoEstetica) > 0 || camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca;
-    const temAlgumaPeca = Object.values(servicosSelecionados).some((v) => v === true);
-    const total = calcularTotal();
-    if (cliente && passaporte) await salvarCliente(total);
-
-    const soGuincho = temGuincho && !temEstetica && !temAlgumaPeca;
-    const temItensVenda = servicosSelecionados["n1"] || servicosSelecionados["d1"] || servicosSelecionados["rd1"];
-    const temPerformance = Object.keys(servicosSelecionados).some((id) => servicosSelecionados[id] && id !== "n1" && id !== "d1" && id !== "rd1");
-
-    const roleBase = usuarioLogado?.role?.split("|")[0]?.toLowerCase()?.trim();
-    if ((roleBase === "estagiario" || roleBase === "jovem_aprendiz") && temPerformance && !autorizadoPor.trim()) {
-      alert("⚠️ Estagiários e Jovens Aprendizes precisam preencher quem liberou a tunagem de Performance no campo 'Autorizado Por'!");
-      return;
-    }
-
-    if (!temEstetica && !temAlgumaPeca && !temGuincho) { alert("⚠️ O formulário está vazio!"); return; }
-    if ((temEstetica || temPerformance) && !arquivoImagem) { alert("⚠️ É obrigatório enviar uma imagem para serviços de estética ou tunagem!"); return; }
-    if ((camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca) && Number(valorDigitadoEstetica) <= 0) { alert("⚠️ Ao selecionar Camaleão ou outros extras, informe o valor do painel in-game."); return; }
-
-    const somaExtras = quantidadeExtras * 1000;
-    const somaExtrasFinal = somaExtras * 1.5;
-    const valorFumacaPainel = fumaca ? 5000 : 0;
-    const valorFumacaFinal = fumaca ? 5000 * 1.4 : 0;
-    const valorPainel = Number(valorDigitadoEstetica) || 0;
-
-    // Soma o valor de painel dos itens de performance selecionados
-    const todasPecasDiscord = Object.values(tabelas).flat();
-    const somaPainelPerformanceDiscord = Object.keys(servicosSelecionados).reduce((acc, id) => {
-      if (!servicosSelecionados[id]) return acc;
-      const p = todasPecasDiscord.find((x) => x.id === id);
-      return acc + (p?.painel || 0);
-    }, 0);
-
-    const qtdCamaleaoDiscord = [camaleao1, camaleao2, camaleaoRodas].filter(Boolean).length;
-    const descontoCamaleaoDiscord = qtdCamaleaoDiscord * (rules.estetica?.painel_camaleao || 500);
-    const custoMinimoPainel = somaExtras + valorFumacaPainel + descontoCamaleaoDiscord + somaPainelPerformanceDiscord;
-
-    if (valorPainel > 0 && valorPainel < custoMinimoPainel) {
-      alert(`⚠️ Inconsistência matemática: O valor do painel in-game (R$ ${valorPainel.toLocaleString("pt-BR")}) não cobre o custo dos itens selecionados (R$ ${custoMinimoPainel.toLocaleString("pt-BR")})! Fumaça, camaleão ou performance excedem o valor pago.`);
-      return;
-    }
-
-    const valorBaseEstetica = Math.max(0, valorPainel - custoMinimoPainel);
-    let valorAdicionalCamaleao = 0;
-    if (camaleao1) valorAdicionalCamaleao += 6000;
-    if (camaleao2) valorAdicionalCamaleao += 6000;
-    if (camaleaoRodas) valorAdicionalCamaleao += 6000;
-    const valorEsteticaFinal = valorBaseEstetica * 4 + valorAdicionalCamaleao + somaExtrasFinal + valorFumacaFinal;
-
-    const todasPeças = Object.values(tabelas).flat();
-    const nomesServicos = Object.keys(servicosSelecionados).filter((id) => servicosSelecionados[id]).map((id) => todasPeças.find((p) => p.id === id)?.nome).join(", ");
-
-    let webhookDestino = WEBHOOK_ESTETICA;
-    if (temReboque) webhookDestino = WEBHOOK_REBOQUE;
-    else if (soGuincho) webhookDestino = WEBHOOK_GUINCHO;
-    else if (temItensVenda && !temPerformance) webhookDestino = null;
-    else if (temPerformance) webhookDestino = WEBHOOK_TUNAGEM;
-
-    const tituloRelatorio = temReboque ? "🚚 CONTROLE DE REBOQUE" : soGuincho ? "🚗 CONTROLE DE GUINCHO" : temPerformance ? "🛠️ RELATÓRIO DE PERFORMANCE" : "🎨 RELATÓRIO DE ESTÉTICA";
-    const corEmbed = temPerformance ? 15105570 : 3447003;
-
-    const camaleoesSelecionados = [
-      camaleao1 ? "Primária" : null,
-      camaleao2 ? "Secundária" : null,
-      camaleaoRodas ? "Rodas" : null,
-    ].filter(Boolean);
-
-    const embedVendas = {
-      title: "💰 REGISTRO DE VENDA", color: 5763719,
-      fields: [
-        { name: "👤 Cliente", value: `${cliente} (ID: ${passaporte})`, inline: true },
-        { name: "👨‍🔧 Mecânico", value: nomeMecanico, inline: true },
-        { name: "📦 Produto", value: [servicosSelecionados["n1"] ? "Nitro" : null, servicosSelecionados["d1"] ? "Kit Drift" : null, servicosSelecionados["rd1"] ? "Removedor Kit Drift" : null].filter(Boolean).join(", ") },
-        { name: "💰 Valor Total", value: `R$ ${total.toLocaleString("pt-BR")}` },
-      ],
-      timestamp: new Date(),
-    };
-
-    const fields = [
-      { name: "👨‍🔧 Mecânico", value: nomeMecanico, inline: true },
-      { name: "👤 Cliente", value: cliente && passaporte ? `${cliente} (ID: ${passaporte})` : "Não informado", inline: true },
-      { name: "✅ Autorizado por", value: autorizadoPor || "N/A", inline: true },
-      { name: "💰 Total Final", value: `**R$ ${total.toLocaleString("pt-BR")}**`, inline: false },
-    ];
-    if (!soGuincho) fields.push({ name: "🎨 Estética", value: `R$ ${valorEsteticaFinal.toLocaleString("pt-BR")}`, inline: true });
-    if (camaleoesSelecionados.length > 0) fields.push({ name: "🦎 Camaleão", value: camaleoesSelecionados.join(", "), inline: true });
-    if (temPerformance) fields.push({ name: "⚙️ Peças Instaladas", value: nomesServicos || "Nenhuma", inline: false });
-    if (temReboque) fields.push({ name: "🚚 Tipo de atendimento", value: "Reboque", inline: true });
-    else if (temGuincho) fields.push({ name: "🚗 Guincho", value: `${kmGuincho} KM (x2)`, inline: true }, { name: "🔧 Reparos", value: `${qtdReparos}`, inline: true }, { name: "🛞 Pneus", value: `${qtdPneus}`, inline: true });
-
-    const discordEmbed = {
-      title: tituloRelatorio, color: corEmbed, fields,
-      image: { url: "attachment://print_veiculo.png" },
-      ...(arquivoImagem2 ? { thumbnail: { url: "attachment://resultado_cliente.png" } } : {}),
-      footer: { text: "RED'S TUNERSHOP - Sistema de Logs" }, timestamp: new Date()
-    };
-
-    const formData = new FormData();
-    formData.append("payload_json", JSON.stringify({ embeds: [discordEmbed] }));
-    if (arquivoImagem) formData.append("files[0]", arquivoImagem, "print_veiculo.png");
-    if (arquivoImagem2) formData.append("files[1]", arquivoImagem2, "resultado_cliente.png");
-
+    if (salvandoServico) return;
     try {
+      if (reportBugs) {
+        if (!passaporte) { alert("⚠️ Informe o ID do cliente!"); return; }
+        if (!imagemBugs) { alert("⚠️ Envie a imagem!"); return; }
+        if (!nomeVeiculoBugs) { alert("⚠️ Informe o nome do veículo!"); return; }
+        setSalvandoServico(true);
+        const formData = new FormData();
+        const embedFields = [
+          { name: "🚗 Veículo", value: nomeVeiculoBugs },
+          { name: "👤 Cliente", value: `${cliente} (ID: ${passaporte})` },
+          { name: "👨‍🔧 Mecânico", value: nomeMecanico || usuarioLogado?.nome || "Mecânico" },
+        ];
+        if (descricaoBug.trim()) embedFields.push({ name: "📝 Descrição do Bug", value: descricaoBug });
+        const embed = { title: "🚨 VEÍCULO COM BUGS ", color: 16711680, fields: embedFields, image: { url: "attachment://veiculo.png" }, timestamp: new Date() };
+        formData.append("payload_json", JSON.stringify({ embeds: [embed] }));
+        formData.append("files[0]", imagemBugs, "veiculo.png");
+        const response = await fetch(WEBHOOK_REPORT, { method: "POST", body: formData });
+        if (WEBHOOK_RODAS) await fetch(WEBHOOK_RODAS, { method: "POST", body: formData });
+        if (!response.ok) { alert("❌ Erro ao enviar report!"); setSalvandoServico(false); return; }
+        alert("✅ Report enviado!");
+        setReportBugs(false); setNomeVeiculoBugs(""); setDescricaoBug(""); setImagemBugs(null); setPreviewBugs(null);
+        setSalvandoServico(false);
+        return;
+      }
+
+      const temReboque = Boolean(reboque);
+      if (!temReboque && (!cliente || !passaporte)) { alert("⚠️ Preencha o nome e o ID do cliente antes de registrar!"); return; }
+      if (temReboque && !arquivoImagem) { alert("⚠️ Envie a foto da apreensão / serviço de reboque!"); return; }
+
+      // Verificação de Blacklist
+      if (passaporte && isClienteBanido(passaporte)) {
+        const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
+        alert(`🚫 OPERAÇÃO BLOQUEADA!\n\nEste cliente está na BLACKLIST.\nMotivo: ${banInfo?.motivo || "Não informado"}`);
+        return;
+      }
+
+      const temGuincho = temReboque || Number(kmGuincho) > 0 || Number(qtdReparos) > 0 || Number(qtdPneus) > 0;
+      const temEstetica = Number(valorDigitadoEstetica) > 0 || camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca;
+      const temAlgumaPeca = Object.values(servicosSelecionados).some((v) => v === true);
+      const total = calcularTotal();
+      if (cliente && passaporte) await salvarCliente(total);
+
+      const soGuincho = temGuincho && !temEstetica && !temAlgumaPeca;
+      const temItensVenda = servicosSelecionados["n1"] || servicosSelecionados["d1"] || servicosSelecionados["rd1"];
+      const temPerformance = Object.keys(servicosSelecionados).some((id) => servicosSelecionados[id] && id !== "n1" && id !== "d1" && id !== "rd1");
+
+      const roleBase = usuarioLogado?.role?.split("|")[0]?.toLowerCase()?.trim();
+      if ((roleBase === "estagiario" || roleBase === "jovem_aprendiz") && temPerformance && !autorizadoPor.trim()) {
+        alert("⚠️ Estagiários e Jovens Aprendizes precisam preencher quem liberou a tunagem de Performance no campo 'Autorizado Por'!");
+        return;
+      }
+
+      if (!temEstetica && !temAlgumaPeca && !temGuincho) { alert("⚠️ O formulário está vazio!"); return; }
+      if ((temEstetica || temPerformance) && !arquivoImagem) { alert("⚠️ É obrigatório enviar uma imagem para serviços de estética ou tunagem!"); return; }
+      if ((camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca) && Number(valorDigitadoEstetica) <= 0) { alert("⚠️ Ao selecionar Camaleão ou outros extras, informe o valor do painel in-game."); return; }
+
+      setSalvandoServico(true);
+
+      const rulesLocal = REGRAS_PRECOS;
+      const somaExtras = quantidadeExtras * 1000;
+      const somaExtrasFinal = somaExtras * 1.5;
+      const valorFumacaPainel = fumaca ? 5000 : 0;
+      const valorFumacaFinal = fumaca ? 5000 * 1.4 : 0;
+      const valorPainel = Number(valorDigitadoEstetica) || 0;
+
+      // Soma o valor de painel dos itens de performance selecionados
+      const todasPecasDiscord = Object.values(tabelas).flat();
+      const somaPainelPerformanceDiscord = Object.keys(servicosSelecionados).reduce((acc, id) => {
+        if (!servicosSelecionados[id]) return acc;
+        const p = todasPecasDiscord.find((x) => x.id === id);
+        return acc + (p?.painel || 0);
+      }, 0);
+
+      const qtdCamaleaoDiscord = [camaleao1, camaleao2, camaleaoRodas].filter(Boolean).length;
+      const descontoCamaleaoDiscord = qtdCamaleaoDiscord * (rulesLocal.estetica?.painel_camaleao || 500);
+      const custoMinimoPainel = somaExtras + valorFumacaPainel + descontoCamaleaoDiscord + somaPainelPerformanceDiscord;
+
+      if (valorPainel > 0 && valorPainel < custoMinimoPainel) {
+        alert(`⚠️ Inconsistência matemática: O valor do painel in-game (R$ ${valorPainel.toLocaleString("pt-BR")}) não cobre o custo dos itens selecionados (R$ ${custoMinimoPainel.toLocaleString("pt-BR")})! Fumaça, camaleão ou performance excedem o valor pago.`);
+        setSalvandoServico(false);
+        return;
+      }
+
+      const valorBaseEstetica = Math.max(0, valorPainel - custoMinimoPainel);
+      let valorAdicionalCamaleao = 0;
+      if (camaleao1) valorAdicionalCamaleao += 6000;
+      if (camaleao2) valorAdicionalCamaleao += 6000;
+      if (camaleaoRodas) valorAdicionalCamaleao += 6000;
+      const valorEsteticaFinal = valorBaseEstetica * 4 + valorAdicionalCamaleao + somaExtrasFinal + valorFumacaFinal;
+
+      const todasPeças = Object.values(tabelas).flat();
+      const nomesServicos = Object.keys(servicosSelecionados).filter((id) => servicosSelecionados[id]).map((id) => todasPeças.find((p) => p.id === id)?.nome).join(", ");
+
+      let webhookDestino = WEBHOOK_ESTETICA;
+      if (temReboque) webhookDestino = WEBHOOK_REBOQUE || WEBHOOK_GUINCHO || WEBHOOK_ESTETICA;
+      else if (soGuincho) webhookDestino = WEBHOOK_GUINCHO || WEBHOOK_ESTETICA;
+      else if (temItensVenda && !temPerformance) webhookDestino = null;
+      else if (temPerformance) webhookDestino = WEBHOOK_TUNAGEM || WEBHOOK_ESTETICA;
+
+      const tituloRelatorio = temReboque
+        ? "🚨 APREENSÃO DE VEÍCULO (REBOQUE)"
+        : soGuincho
+        ? "🚗 CONTROLE DE GUINCHO"
+        : temPerformance
+        ? "🛠️ RELATÓRIO DE PERFORMANCE"
+        : "🎨 RELATÓRIO DE ESTÉTICA";
+
+      const corEmbed = temReboque ? 3447003 : temPerformance ? 15105570 : 3447003;
+
+      const camaleoesSelecionados = [
+        camaleao1 ? "Primária" : null,
+        camaleao2 ? "Secundária" : null,
+        camaleaoRodas ? "Rodas" : null,
+      ].filter(Boolean);
+
+      const embedVendas = {
+        title: "💰 REGISTRO DE VENDA", color: 5763719,
+        fields: [
+          { name: "👤 Cliente", value: cliente && passaporte ? `${cliente} (ID: ${passaporte})` : "Não informado", inline: true },
+          { name: "👨‍🔧 Mecânico", value: nomeMecanico || usuarioLogado?.nome || "Mecânico", inline: true },
+          { name: "📦 Produto", value: [servicosSelecionados["n1"] ? "Nitro" : null, servicosSelecionados["d1"] ? "Kit Drift" : null, servicosSelecionados["rd1"] ? "Removedor Kit Drift" : null].filter(Boolean).join(", ") },
+          { name: "💰 Valor Total", value: `R$ ${total.toLocaleString("pt-BR")}` },
+        ],
+        timestamp: new Date(),
+      };
+
+      const fields = [
+        { name: "👨‍🔧 Mecânico", value: nomeMecanico || usuarioLogado?.nome || "Mecânico", inline: true },
+        { name: "👤 Cliente", value: cliente && passaporte ? `${cliente} (ID: ${passaporte})` : (temReboque ? "Solicitação Policial (Apreensão)" : "Não informado"), inline: true },
+        { name: "✅ Autorizado por", value: autorizadoPor || (temReboque ? "Polícia Militar / Civil" : "N/A"), inline: true },
+        { name: "💰 Total Final", value: temReboque ? "**R$ 0,00 (Apreensão)**" : `**R$ ${total.toLocaleString("pt-BR")}**`, inline: false },
+      ];
+      if (temReboque) fields.push({ name: "🚨 Tipo de Atendimento", value: "Apreensão de Veículo (Reboque)", inline: true });
+      else if (!soGuincho) fields.push({ name: "🎨 Estética", value: `R$ ${valorEsteticaFinal.toLocaleString("pt-BR")}`, inline: true });
+      if (camaleoesSelecionados.length > 0) fields.push({ name: "🦎 Camaleão", value: camaleoesSelecionados.join(", "), inline: true });
+      if (temPerformance) fields.push({ name: "⚙️ Peças Instaladas", value: nomesServicos || "Nenhuma", inline: false });
+      if (!temReboque && temGuincho) fields.push({ name: "🚗 Guincho", value: `${kmGuincho} KM (x2)`, inline: true }, { name: "🔧 Reparos", value: `${qtdReparos}`, inline: true }, { name: "🛞 Pneus", value: `${qtdPneus}`, inline: true });
+
+      const discordEmbed = {
+        title: tituloRelatorio, color: corEmbed, fields,
+        image: { url: "attachment://print_veiculo.png" },
+        ...(arquivoImagem2 ? { thumbnail: { url: "attachment://resultado_cliente.png" } } : {}),
+        footer: { text: "RED'S TUNERSHOP - Sistema de Logs" }, timestamp: new Date()
+      };
+
+      const formData = new FormData();
+      formData.append("payload_json", JSON.stringify({ embeds: [discordEmbed] }));
+      if (arquivoImagem) formData.append("files[0]", arquivoImagem, "print_veiculo.png");
+      if (arquivoImagem2) formData.append("files[1]", arquivoImagem2, "resultado_cliente.png");
+
       let response = { ok: true };
       let linkDiscord = "";
 
@@ -3206,7 +3222,7 @@ export default function Home() {
         // Gerar detalhes do serviço
         let detalhesServico = "";
         if (temReboque) {
-          detalhesServico = "Serviço de Reboque";
+          detalhesServico = "Apreensão de Veículo (Reboque Policial)";
         } else if (soGuincho) {
           detalhesServico = `Guincho: ${kmGuincho}KM | Reparos: ${qtdReparos} | Pneus: ${qtdPneus}`;
         } else if (temItensVenda && !temPerformance && !temEstetica) {
@@ -3234,13 +3250,21 @@ export default function Home() {
         }
 
         buscarNotificacaoPendente();
-        alert("✅ Serviço registrado com sucesso!");
+        alert(temReboque ? "✅ Apreensão / Reboque registrado com sucesso!" : "✅ Serviço registrado com sucesso!");
         limparFormulario();
-      } else { alert("❌ Erro ao enviar para o Discord."); }
-    } catch { alert("❌ Erro de conexão ao enviar."); }
+      } else {
+        alert("❌ Erro ao enviar para o Discord.");
+      }
 
-    if (temItensVenda)
-      await fetch(WEBHOOK_VENDAS, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ embeds: [embedVendas] }) });
+      if (temItensVenda && WEBHOOK_VENDAS) {
+        await fetch(WEBHOOK_VENDAS, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ embeds: [embedVendas] }) });
+      }
+    } catch (err) {
+      console.error("Erro ao registrar serviço:", err);
+      alert("❌ Erro ao registrar serviço: " + (err?.message || "Falha desconhecida"));
+    } finally {
+      setSalvandoServico(false);
+    }
   };
 
   // ===== USE EFFECTS =====
@@ -5879,6 +5903,7 @@ export default function Home() {
             formatarTextoAvisos={formatarTextoAvisos}
             calcularTotal={calcularTotal}
             enviarParaDiscord={enviarParaDiscord}
+            salvandoServico={salvandoServico}
             historicoNitroRecente={historicoNitroRecente}
             formatarHorario={formatarHorario}
             formatarDataHora={formatarDataHora}
