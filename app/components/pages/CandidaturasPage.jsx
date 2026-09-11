@@ -103,7 +103,7 @@ export default function CandidaturasPage({
     }
 
     // Bloqueio de segurança no envio
-    if (vagasAtivas[vagaSelecionada] === false && !isAdminOuDono) {
+    if (vagasAtivas[vagaSelecionada] === false && !userPodeControlarVagas) {
       return alert("Esta vaga não está mais aceitando candidaturas.");
     }
 
@@ -124,7 +124,10 @@ export default function CandidaturasPage({
   };
 
   const minhasCandidaturas = candidaturas.filter(c => c.usuario_id === usuarioLogado?.id);
-  const userPodeGerenciar = isAdminOuDono(usuarioLogado?.role) || usuarioLogado?.atribuicoes?.includes("gerente_rh") || usuarioLogado?.atribuicoes?.includes("resp_rh");
+  const primaryRole = usuarioLogado?.role ? usuarioLogado.role.split("|")[0] : "";
+  const isGerenteGeral = primaryRole === "gerente_geral";
+  const userPodeGerenciar = isAdminOuDono(usuarioLogado?.role) || isGerenteGeral || usuarioLogado?.atribuicoes?.includes("gerente_rh") || usuarioLogado?.atribuicoes?.includes("resp_rh");
+  const userPodeControlarVagas = userIsAdmin || isGerenteGeral;
 
   return (
     <div style={styles.dashContainer}>
@@ -163,7 +166,7 @@ export default function CandidaturasPage({
         {abaAtiva === "vagas" && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: "20px" }}>
             {Object.entries(AREAS_DESCRICAO)
-              .filter(([key]) => isAdminOuDono || vagasAtivas[key] !== false)
+              .filter(([key]) => userPodeControlarVagas || vagasAtivas[key] !== false)
               .map(([key, info]) => (
                 <div key={key} className="card-vaga" onClick={() => vagasAtivas[key] !== false ? setVagaSelecionada(key) : null} style={{ opacity: vagasAtivas[key] === false ? 0.6 : 1, cursor: vagasAtivas[key] === false ? "not-allowed" : "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
@@ -233,7 +236,7 @@ export default function CandidaturasPage({
           <div style={{ display: "flex", flexDirection: "column", gap: "25px" }}>
             
             {/* CONTROLE DE VAGAS */}
-            {isAdminOuDono && (
+            {userPodeControlarVagas && (
               <div style={styles.whiteCard}>
                 <div style={styles.cardHeader}><span style={{ ...styles.dot, background: "#facc15" }}></span> Disponibilidade de Vagas (Site)</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "15px" }}>
@@ -391,16 +394,16 @@ export default function CandidaturasPage({
               />
 
               <button
-                disabled={enviando || (vagasAtivas[vagaSelecionada] === false && !isAdminOuDono)}
+                disabled={enviando || (vagasAtivas[vagaSelecionada] === false && !userPodeControlarVagas)}
                 onClick={handleEnviar}
                 style={{ 
                   ...styles.btnPrimary, 
                   margin: "10px 0 0",
-                  background: (vagasAtivas[vagaSelecionada] === false && !isAdminOuDono) ? "#666" : styles.btnPrimary.background,
-                  cursor: (vagasAtivas[vagaSelecionada] === false && !isAdminOuDono) ? "not-allowed" : "pointer"
+                  background: (vagasAtivas[vagaSelecionada] === false && !userPodeControlarVagas) ? "#666" : styles.btnPrimary.background,
+                  cursor: (vagasAtivas[vagaSelecionada] === false && !userPodeControlarVagas) ? "not-allowed" : "pointer"
                 }}
               >
-                {enviando ? "ENVIANDO..." : (vagasAtivas[vagaSelecionada] === false && !isAdminOuDono) ? "VAGA INDISPONÍVEL" : "ENVIAR MINHA CANDIDATURA"}
+                {enviando ? "ENVIANDO..." : (vagasAtivas[vagaSelecionada] === false && !userPodeControlarVagas) ? "VAGA INDISPONÍVEL" : "ENVIAR MINHA CANDIDATURA"}
               </button>
             </div>
           </div>

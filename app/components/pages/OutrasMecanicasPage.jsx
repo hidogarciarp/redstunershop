@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useRef, useEffect } from "react";
 import { supabase } from "../../utils/supabaseClient";
+import { getHorarioObrigatorioParaData } from "../../utils/helpers";
 
 // ===== PARSER DE LOGS =====
 function parseLogCidade(texto, mecanicaSelecionada) {
@@ -559,7 +560,24 @@ export default function OutrasMecanicasPage({ styles, theme, usuarioLogado }) {
         if (reg.oculto || !reg.entrada) return;
         
         const entradaDate = new Date(reg.entrada);
-        const saidaDate = reg.saida ? new Date(reg.saida) : new Date();
+        let saidaDate = null;
+        if (reg.saida) {
+          const dS = new Date(reg.saida);
+          if (!isNaN(dS.getTime()) && dS >= entradaDate) {
+            const maxS = new Date(entradaDate.getTime() + 12 * 3600000);
+            saidaDate = dS > maxS ? maxS : dS;
+          }
+        } else if (typeof reg.tempo === "number" && reg.tempo > 0) {
+          saidaDate = new Date(entradaDate.getTime() + reg.tempo * 60000);
+        } else {
+          const agora = Date.now();
+          const diffHoras = (agora - entradaDate.getTime()) / 3600000;
+          if (diffHoras >= 0 && diffHoras <= 2) {
+            saidaDate = new Date(agora);
+          }
+        }
+
+        if (!saidaDate) return;
         
         if (entradaDate < slot.end && saidaDate > slot.start) {
           const funcNome = reg.nome || reg.nome_personagem || `ID: ${reg.id_jogo}`;
@@ -887,8 +905,9 @@ export default function OutrasMecanicasPage({ styles, theme, usuarioLogado }) {
                           </div>
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(48, 1fr)", flex: 1, gap: "3px" }}>
                             {slots.map((slot, idx) => {
-                              const ehObrigatorio = idx >= 38 && idx <= 43;
-                              const tooltipText = `${ehObrigatorio ? "⭐ [Horário Obrigatório 19h-22h] " : ""}${slot.label}\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}`;
+                              const infoObr = getHorarioObrigatorioParaData(dia);
+                              const ehObrigatorio = idx >= infoObr.slotInicioIdx && idx <= infoObr.slotFimIdx;
+                              const tooltipText = `${ehObrigatorio ? `⭐ [Horário Obrigatório ${infoObr.labelCurto}] ` : ""}${slot.label}\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}`;
                               return (
                                 <div
                                   key={idx}
@@ -964,7 +983,8 @@ export default function OutrasMecanicasPage({ styles, theme, usuarioLogado }) {
                           .filter(s => !filtroApenasSemCobertura || !s.coberto)
                           .map((slot, idx) => {
                             const sHours = slot.start.getHours();
-                            const ehObrigatorio = sHours >= 19 && sHours <= 21;
+                            const infoObr = getHorarioObrigatorioParaData(diaSelecionado);
+                            const ehObrigatorio = sHours >= infoObr.horaInicioNum && sHours < infoObr.horaFimNum;
                             return (
                               <div key={idx} style={{ 
                                 ...styles.whiteCard, 

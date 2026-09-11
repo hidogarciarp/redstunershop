@@ -36,6 +36,8 @@ export default function AdminPage({
   setEditFuncStatus,
   editFuncAdmissao,
   setEditFuncAdmissao,
+  editFuncDemissao,
+  setEditFuncDemissao,
   isAdminOuDono,
   getPrimaryRole,
   editFuncAtribuicoes,
@@ -208,16 +210,28 @@ export default function AdminPage({
                         <select style={{ ...styles.select, fontSize: "13px", padding: "8px 12px" }} value={editFuncStatus} onChange={(e) => setEditFuncStatus(e.target.value)}>
                           <option value="ativo">✅ Ativo</option>
                           <option value="inativo">❌ Inativo</option>
+                          <option value="demitido">👋 Demitido</option>
                           <option value="outros">🚫 Outros (Staff, etc.)</option>
                         </select>
                       </div>
                       <div>
                         <label style={styles.miniLabel}>DATA DE ADMISSÃO</label>
                         <input
-                          type="date"
+                          type="text"
+                          placeholder="Ex: 2025-01-01, 2026-06-15"
                           style={{ ...styles.input, fontSize: "13px", padding: "8px 12px" }}
                           value={editFuncAdmissao}
                           onChange={(e) => setEditFuncAdmissao(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label style={styles.miniLabel}>DATA DE DEMISSÃO</label>
+                        <input
+                          type="text"
+                          placeholder="Ex: 2025-06-01, 2026-06-29"
+                          style={{ ...styles.input, fontSize: "13px", padding: "8px 12px" }}
+                          value={editFuncDemissao}
+                          onChange={(e) => setEditFuncDemissao(e.target.value)}
                         />
                       </div>
                       <div>
@@ -268,7 +282,12 @@ export default function AdminPage({
                           ID: {func.id}
                           {func.telefone && <span style={{ marginLeft: "8px", color: "#38bdf8" }}>📞 {func.telefone}</span>}
                           {func.status === "inativo" && <span style={{ marginLeft: "8px", color: "#ef4444", fontWeight: "bold" }}>[INATIVO]</span>}
+                          {func.status === "demitido" && <span style={{ marginLeft: "8px", color: "#ef4444", fontWeight: "bold" }}>[DEMITIDO]</span>}
                           {func.status === "outros" && <span style={{ marginLeft: "8px", color: "#f97316", fontWeight: "bold" }}>[OUTROS]</span>}
+                        </div>
+                        <div style={{ fontSize: "10px", color: theme.subtext, marginTop: "2px", opacity: 0.8 }}>
+                          {func.data_admissao && <span style={{ marginRight: "8px" }}>📅 Admissão: {new Date(func.data_admissao + "T12:00:00").toLocaleDateString("pt-BR")}</span>}
+                          {func.data_demissao && <span>📅 Demissão: {new Date(func.data_demissao + "T12:00:00").toLocaleDateString("pt-BR")}</span>}
                         </div>
                         {(func.ids_antigos || func.nomes_antigos) && (
                           <div style={{ fontSize: "10px", color: theme.subtext, marginTop: "2px", opacity: 0.8 }}>

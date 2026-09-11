@@ -1,6 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import { supabase } from "../../utils/supabaseClient";
+import { getHorarioObrigatorioParaData, sincronizarPontosDiscordParaReds } from "../../utils/helpers";
 
 // ===== HELPERS LOCAIS =====
 function calcularDatasPeriodo(periodo, offset = 0, filtroDataInicio = "", filtroDataFim = "") {
@@ -77,6 +78,35 @@ function obterLabelSemana(dataStr) {
   };
 }
 
+function obterSaidaValida(reg) {
+  if (!reg || !reg.entrada || reg.oculto) return null;
+  const dEntrada = new Date(reg.entrada);
+  if (isNaN(dEntrada.getTime())) return null;
+
+  if (reg.saida) {
+    const dSaida = new Date(reg.saida);
+    if (!isNaN(dSaida.getTime())) {
+      if (dSaida < dEntrada) return null;
+      const maxSaida = new Date(dEntrada.getTime() + 12 * 3600000);
+      return dSaida > maxSaida ? maxSaida : dSaida;
+    }
+  }
+
+  if (typeof reg.tempo === "number" && reg.tempo > 0) {
+    const dSaidaCalc = new Date(dEntrada.getTime() + reg.tempo * 60000);
+    const maxSaida = new Date(dEntrada.getTime() + 12 * 3600000);
+    return dSaidaCalc > maxSaida ? maxSaida : dSaidaCalc;
+  }
+
+  const agora = Date.now();
+  const diffHoras = (agora - dEntrada.getTime()) / 3600000;
+  if (diffHoras >= 0 && diffHoras <= 2) {
+    return new Date(agora);
+  }
+
+  return null;
+}
+
 function calcularMetricasMecanica(registros, diasPeriodo) {
   let totalMin = 0;
   const pessoasUnicas = new Set();
@@ -86,7 +116,8 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
     if (reg.oculto) return;
     if (reg.entrada) {
       const dEntrada = new Date(reg.entrada);
-      const dSaida = reg.saida ? new Date(reg.saida) : new Date();
+      const dSaida = obterSaidaValida(reg);
+      if (!dSaida) return;
       const diff = (dSaida - dEntrada) / 60000;
       if (diff > 0) {
         totalMin += diff;
@@ -101,7 +132,7 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
   let slotsCobertos = 0;
   let slotsObrigatoriosCobertos = 0;
   const totalSlots = diasPeriodo.length * 48;
-  const totalSlotsObrigatorios = diasPeriodo.length * 6;
+  const totalSlotsObrigatorios = diasPeriodo.reduce((acc, dia) => acc + getHorarioObrigatorioParaData(dia).totalSlots30Min, 0);
 
   if (totalSlots > 0) {
     diasPeriodo.forEach(dia => {
@@ -126,11 +157,12 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
 
         for (let i = 0; i < registros.length; i++) {
           const reg = registros[i];
-          if (reg.oculto) continue;
-          if (!reg.entrada) continue;
+          if (reg.oculto || !reg.entrada) continue;
 
           const tEntrada = new Date(reg.entrada).getTime();
-          const tSaida = reg.saida ? new Date(reg.saida).getTime() : Date.now();
+          const dSaidaVal = obterSaidaValida(reg);
+          if (!dSaidaVal) continue;
+          const tSaida = dSaidaVal.getTime();
 
           if (Math.max(tEntrada, start1) < Math.min(tSaida, end1)) {
             coberto1 = true;
@@ -142,7 +174,8 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
           if (coberto1 && coberto2) break;
         }
 
-        const ehObrigatorio = h >= 19 && h <= 21;
+        const infoObr = getHorarioObrigatorioParaData(dia);
+        const ehObrigatorio = h >= infoObr.horaInicioNum && h < infoObr.horaFimNum;
 
         if (coberto1) {
           slotsCobertos++;
@@ -209,11 +242,11 @@ function calcularSlotsGenerico(registros, dia) {
     const funcionariosTrabalhando = [];
     
     registros.forEach(reg => {
-      if (reg.oculto) return;
-      if (!reg.entrada) return;
+      if (reg.oculto || !reg.entrada) return;
       
       const entradaDate = new Date(reg.entrada);
-      const GlenOut = reg.saida ? new Date(reg.saida) : new Date();
+      const GlenOut = obterSaidaValida(reg);
+      if (!GlenOut) return;
       
       const startT = slot.start.getTime();
       const endT = slot.end.getTime();
@@ -256,29 +289,133 @@ export default function RelatorioPage({
   const [logsCompletosFunc, setLogsCompletosFunc] = useState([]);
   const [carregandoLogsFunc, setCarregandoLogsFunc] = useState(false);
   const [funcModal,       setFuncModal]       = useState(null); // { func, status }
+  const [sessaoAuditModal, setSessaoAuditModal] = useState(null); // Detalhes de atividades da sessão clicada
   const [timelineTooltip, setTimelineTooltip] = useState({ visible: false, x: 0, y: 0, content: "" });
+  const [esconderResumoSemanal, setEsconderResumoSemanal] = useState(true);
 
   const fetchAllLogsFunc = async (func) => {
+    if (!func) return;
     setCarregandoLogsFunc(true);
     try {
+      const idVal = func.id_jogo || func.idJogo || func.id;
+
+      // 1. Tentar buscar da tabela consolidada de auditoria com atividades (tunagens, bancada, bau)
+      let queryAuditoria = supabase
+        .from("sessoes_ponto_auditoria_reds")
+        .select("*")
+        .order("entrada", { ascending: false })
+        .limit(2000);
+
+      const conditionsAud = [];
+      if (idVal && !isNaN(Number(idVal))) {
+        conditionsAud.push(`id_jogo.eq.${idVal}`);
+      }
+      if (func.id && String(func.id) !== String(idVal) && !isNaN(Number(func.id))) {
+        conditionsAud.push(`id_jogo.eq.${func.id}`);
+      }
+      if (func.nome) {
+        conditionsAud.push(`nome.ilike.%${func.nome.trim()}%`);
+      }
+      if (conditionsAud.length > 0) {
+        queryAuditoria = queryAuditoria.or(conditionsAud.join(","));
+      }
+
+      const { data: dataAud, error: errAud } = await queryAuditoria;
+
+      let formatadosAud = [];
+      if (!errAud && dataAud && dataAud.length > 0) {
+        formatadosAud = dataAud.map((r) => {
+          const det = r.detalhes_json || { bau: [], bancada: [], tunagens: [] };
+          const totTun = r.total_tunagens || (det.tunagens ? det.tunagens.length : 0);
+          const totBanc = r.total_bancada || (det.bancada ? det.bancada.length : 0);
+          const totBau = r.total_bau || (det.bau ? det.bau.length : 0);
+          const valTun = r.valor_tunagens || (det.tunagens ? det.tunagens.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0) : 0);
+          const valBanc = r.valor_bancada || (det.bancada ? det.bancada.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0) : 0);
+
+          return {
+            ...r,
+            id: r.id_jogo,
+            id_jogo: r.id_jogo,
+            usuario_id: r.id_jogo,
+            nome: r.nome,
+            nome_personagem: r.nome,
+            uuid_entrada: r.uuid_sessao,
+            uuid_saida: r.saida ? r.uuid_sessao : null,
+            observacao: r.justificativa || r.motivo_crash || null,
+            detalhes: det,
+            totalTunagens: totTun,
+            valorTunagens: valTun,
+            totalBancada: totBanc,
+            valorBancada: valBanc,
+            totalBau: totBau,
+            infracao30min: r.infracao_30min,
+            duracaoMin: r.duracao_min || ((r.entrada && r.saida) ? Math.round((new Date(r.saida) - new Date(r.entrada)) / 60000) : 0),
+            statusPonto: r.status_ponto
+          };
+        });
+      }
+
+      // Buscar sempre da tabela/view ponto_cidade_reds (para trazer sessões recentes e em tempo real)
       let query = supabase
-        .from("ponto_cidade")
+        .from("ponto_cidade_reds")
         .select("*")
         .or("oculto.is.null,oculto.eq.false")
-        .order("entrada", { ascending: false });
+        .order("entrada", { ascending: false })
+        .limit(10000);
 
-      if (func.id && func.nome) {
-        query = query.or(`usuario_id.eq.${func.id},nome.ilike.%${func.nome.trim()}%`);
+      const conditions = [];
+      if (idVal && !isNaN(Number(idVal))) {
+        conditions.push(`usuario_id.eq.${idVal}`);
+        conditions.push(`id_jogo.eq.${idVal}`);
       } else if (func.id) {
-        query = query.eq("usuario_id", func.id);
-      } else if (func.nome) {
-        query = query.ilike("nome", `%${func.nome.trim()}%`);
+        conditions.push(`usuario_id.eq.${func.id}`);
+      }
+
+      if (func.nome) {
+        const nomeTrim = func.nome.trim();
+        conditions.push(`nome.ilike.%${nomeTrim}%`);
+        conditions.push(`nome_personagem.ilike.%${nomeTrim}%`);
+        const partes = nomeTrim.split(/\s+/).filter(Boolean);
+        if (partes.length >= 2) {
+          conditions.push(`nome.ilike.%${partes[0]}%${partes[partes.length - 1]}%`);
+          conditions.push(`nome_personagem.ilike.%${partes[0]}%${partes[partes.length - 1]}%`);
+        }
+      }
+
+      if (conditions.length > 0) {
+        query = query.or(conditions.join(","));
       }
 
       const { data, error } = await query;
-      if (!error && data) {
-        setLogsCompletosFunc(data);
-      }
+      const logsPontoCidade = data || [];
+
+      // Unir as sessões de ponto_cidade_reds com as sessões auditadas sem perder nada
+      const mapaLogs = new Map();
+
+      // 1. Insere as auditadas
+      formatadosAud.forEach((aud) => {
+        const key = String(aud.uuid_entrada || aud.uuid_sessao || `${aud.id_jogo}_${aud.entrada}`);
+        mapaLogs.set(key, aud);
+      });
+
+      // 2. Mescla as do ponto_cidade_reds
+      logsPontoCidade.forEach((reg) => {
+        const key = String(reg.uuid_entrada || `${reg.id_jogo || reg.id}_${reg.entrada}`);
+        const existente = mapaLogs.get(key);
+        if (!existente) {
+          mapaLogs.set(key, reg);
+        } else {
+          mapaLogs.set(key, {
+            ...reg,
+            ...existente,
+            saida: reg.saida || existente.saida,
+            tempo: reg.tempo || existente.tempo
+          });
+        }
+      });
+
+      const listaFinal = Array.from(mapaLogs.values()).sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
+      setLogsCompletosFunc(listaFinal);
     } catch (err) {
       console.error(err);
     } finally {
@@ -305,22 +442,28 @@ export default function RelatorioPage({
       dataLimite.setDate(agora.getDate() - 60);
       const dataLimiteStr = dataLimite.toLocaleDateString("en-CA");
       
-      // Alinha a data de início da consulta com a segunda-feira da semana de 60 dias atrás
-      // para garantir que não cortamos a primeira semana ao meio no banco de dados.
       const { key: dataLimiteSemanaInicio } = obterLabelSemana(dataLimiteStr);
       const dataQueryInicio = dataLimiteSemanaInicio || dataLimiteStr;
 
+      // 1. Buscar registros consolidados de auditoria (histórico dos meses anteriores)
+      const { data: dataAud } = await supabase
+        .from("sessoes_ponto_auditoria_reds")
+        .select("id_jogo, nome, entrada, saida, uuid_sessao")
+        .gte("entrada", `${dataQueryInicio}T00:00:00`)
+        .limit(20000);
+
+      // 2. Buscar registros em tempo real de ponto_cidade_reds
       let allData = [];
       let page = 0;
       const pageSize = 1000;
       let hasMore = true;
       while (hasMore && allData.length < 50000) {
         const { data, error } = await supabase
-          .from("ponto_cidade")
-          .select("usuario_id, nome, entrada, saida, data")
+          .from("ponto_cidade_reds")
+          .select("id, usuario_id, id_jogo, nome, nome_personagem, entrada, saida, uuid_entrada")
           .or("oculto.is.null,oculto.eq.false")
-          .gte("data", dataQueryInicio)
-          .order("id", { ascending: true })
+          .gte("entrada", `${dataQueryInicio}T00:00:00`)
+          .order("entrada", { ascending: true })
           .range(page * pageSize, (page + 1) * pageSize - 1);
 
         if (error) throw error;
@@ -332,7 +475,36 @@ export default function RelatorioPage({
           hasMore = false;
         }
       }
-      setLogs60Dias(allData);
+
+      // Unir as duas fontes sem duplicatas
+      const mapaLogs = new Map();
+      (dataAud || []).forEach(aud => {
+        const key = String(aud.uuid_sessao || `${aud.id_jogo}_${aud.entrada}`);
+        mapaLogs.set(key, {
+          usuario_id: aud.id_jogo,
+          id_jogo: aud.id_jogo,
+          nome: aud.nome,
+          nome_personagem: aud.nome,
+          entrada: aud.entrada,
+          saida: aud.saida
+        });
+      });
+
+      allData.forEach(reg => {
+        const key = String(reg.uuid_entrada || `${reg.id_jogo || reg.id}_${reg.entrada}`);
+        const existente = mapaLogs.get(key);
+        if (!existente) {
+          mapaLogs.set(key, reg);
+        } else {
+          mapaLogs.set(key, {
+            ...reg,
+            ...existente,
+            saida: reg.saida || existente.saida
+          });
+        }
+      });
+
+      setLogs60Dias(Array.from(mapaLogs.values()));
     } catch (err) {
       console.error("Erro ao buscar logs de 60 dias:", err);
     } finally {
@@ -342,6 +514,10 @@ export default function RelatorioPage({
 
   React.useEffect(() => {
     fetchLogs60Dias();
+    // Sincroniza silenciosamente pontos novos do Discord para a tabela pontos_reds
+    sincronizarPontosDiscordParaReds(supabase)
+      .then(() => fetchLogs60Dias())
+      .catch(() => {});
   }, []);
 
   const idsInativosAlerta = React.useMemo(() => {
@@ -352,9 +528,21 @@ export default function RelatorioPage({
     const hojeStr = agora.toLocaleDateString("en-CA");
 
     listaFuncionarios.forEach(func => {
+      // Cargos de liderança e donos não têm alerta de inatividade de metas
+      const roleNorm = String(func.role || "").split("|")[0].toLowerCase().trim();
+      if (roleNorm === "dono" || roleNorm === "admin" || roleNorm === "gerente" || roleNorm === "gerente_geral" || roleNorm === "gerente_rh") {
+        return;
+      }
+
       const logsFunc = logs60Dias.filter(reg => {
-        if (reg.usuario_id && String(reg.usuario_id) === String(func.id)) return true;
-        if (reg.nome && func.nome && reg.nome.toLowerCase().trim() === func.nome.toLowerCase().trim()) return true;
+        const uid = reg.usuario_id || reg.id_jogo || reg.id;
+        const fid = func.idJogo || func.id_jogo || func.id;
+        if (uid && fid && String(uid) === String(fid)) return true;
+        if (func.id && uid && String(uid) === String(func.id)) return true;
+
+        const regNome = (reg.nome_personagem || reg.nome || "").toLowerCase().replace(/\s+/g, " ").trim();
+        const funcNome = (func.nome || "").toLowerCase().replace(/\s+/g, " ").trim();
+        if (regNome && funcNome && (regNome === funcNome || regNome.includes(funcNome) || funcNome.includes(regNome))) return true;
         return false;
       });
 
@@ -363,7 +551,7 @@ export default function RelatorioPage({
       if (func.data_admissao) {
         dataInicio = new Date(`${func.data_admissao}T12:00:00`);
       } else if (logsFunc.length > 0) {
-        const datas = logsFunc.map(r => r.data).filter(Boolean);
+        const datas = logsFunc.map(r => r.entrada ? r.entrada.substring(0, 10) : r.data).filter(Boolean);
         if (datas.length > 0) {
           datas.sort();
           dataInicio = new Date(`${datas[0]}T12:00:00`);
@@ -394,7 +582,8 @@ export default function RelatorioPage({
 
       logsFunc.forEach(reg => {
         if (!reg.entrada || !reg.saida) return;
-        const { key } = obterLabelSemana(reg.data);
+        const dataRegStr = reg.entrada ? reg.entrada.substring(0, 10) : reg.data;
+        const { key } = obterLabelSemana(dataRegStr);
         if (key && semanasPossiveis[key] !== undefined) {
           const diff = (new Date(reg.saida) - new Date(reg.entrada)) / 60000;
           if (diff > 0) {
@@ -444,14 +633,19 @@ export default function RelatorioPage({
   const [diaSelecionado,  setDiaSelecionado]  = useState("");
   const [filtroApenasSemCobertura, setFiltroApenasSemCobertura] = useState(false);
   const [visualizacaoCobertura,   setVisualizacaoCobertura]   = useState("linha"); // "linha" | "detalhes"
-  const [ocultarManuais, setOcultarManuais] = useState(false);
+  const [ocultarManuais, setOcultarManuais] = useState(true);
+  const [ocultarDemitidos, setOcultarDemitidos] = useState(false);
   const [modalRelatorioMecanicasAberta, setModalRelatorioMecanicasAberta] = useState(false);
   const [linksCompartilhados, setLinksCompartilhados] = useState([]);
   const [gerandoLinkShare, setGerandoLinkShare] = useState(false);
 
   const filtrarManuais = (regs) => {
     if (!ocultarManuais) return regs;
-    return regs.filter(r => r.uuid_entrada && r.uuid_saida);
+    return regs.filter(r => {
+      const ehAutomaticoCompleto = r.uuid_entrada && r.uuid_saida;
+      const ehEstimadoPorBancada = r.uuid_entrada && r.observacao && r.observacao.toLowerCase().includes("bancada");
+      return ehAutomaticoCompleto || ehEstimadoPorBancada;
+    });
   };
 
   const aplicarFiltros = (overridePeriodo, overrideOffset) => {
@@ -532,32 +726,38 @@ export default function RelatorioPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Agrupar registros por usuario_id e fallback por nome
+  // Agrupar registros por usuario_id / id_jogo / id e fallback por nome
   const byUid = {};
   const byNome = {};
   const registrosRelatorioFiltrados = filtrarManuais(registrosRelatorio);
   registrosRelatorioFiltrados.forEach(reg => {
-    if (reg.usuario_id) {
-      const uid = String(reg.usuario_id);
-      if (!byUid[uid]) byUid[uid] = [];
-      byUid[uid].push(reg);
+    const uid = reg.usuario_id || reg.id_jogo || reg.id;
+    if (uid) {
+      const uidStr = String(uid);
+      if (!byUid[uidStr]) byUid[uidStr] = [];
+      byUid[uidStr].push(reg);
     }
-    if (reg.nome) {
-      const n = reg.nome.toLowerCase().trim();
-      if (!byNome[n]) byNome[n] = [];
-      byNome[n].push(reg);
+    const nomeNorm = (reg.nome_personagem || reg.nome || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (nomeNorm) {
+      if (!byNome[nomeNorm]) byNome[nomeNorm] = [];
+      byNome[nomeNorm].push(reg);
     }
   });
 
   const processarFuncion = (func) => {
-    const regsVinculados = byUid[String(func.id)] || [];
-    const regsOrfaos = func.nome ? (byNome[func.nome.toLowerCase().trim()] || []) : [];
+    const fid = func.idJogo || func.id_jogo || func.id;
+    const regsVinculados = [
+      ...(fid && byUid[String(fid)] ? byUid[String(fid)] : []),
+      ...(func.id && byUid[String(func.id)] && String(func.id) !== String(fid) ? byUid[String(func.id)] : [])
+    ];
+    const funcNomeNorm = (func.nome || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const regsOrfaos = funcNomeNorm ? (byNome[funcNomeNorm] || []) : [];
     
-    // Evita duplicatas ao mesclar por ID ou UUID
+    // Evita duplicatas ao mesclar por ID ou UUID (não usando reg.id pois reg.id é o passaporte)
     let todosRegs = [];
     const vistos = new Set();
     [...regsVinculados, ...regsOrfaos].forEach(reg => {
-      const key = String(reg.id || reg.uuid_entrada || reg.entrada);
+      const key = String(reg.uuid_entrada || reg.uuid || `${reg.usuario_id || reg.id}_${reg.entrada}_${reg.saida}`);
       if (!vistos.has(key)) {
         vistos.add(key);
         todosRegs.push(reg);
@@ -578,10 +778,75 @@ export default function RelatorioPage({
     return { ...func, totalMin, sessoes, abertas, idJogo };
   };
 
-  // Funcionários ATIVOS no relatório
+  const { inicio: periodoInicio, fim: periodoFim } = calcularDatasPeriodo(
+    filtroPeriodo, semanaOffset, filtroDataInicio, filtroDataFim
+  );
+  const dataFimLimite = periodoFim ? new Date(`${periodoFim}T23:59:59`) : null;
+
+  // Funcionários que estavam contratados ou trabalharam no período do relatório
   const funcionariosAtivos = listaFuncionarios
-    .filter(f => !f.status || f.status === "ativo")
-    .map(processarFuncion);
+    .map(processarFuncion)
+    .filter(f => {
+      // Regra especial: se a opção de ocultar demitidos estiver ativa e ele não for ativo hoje
+      const estaAtivoHoje = !f.status || f.status === "ativo";
+      if (ocultarDemitidos && !estaAtivoHoje) {
+        return false;
+      }
+
+      // 1. Se trabalhou (teve horas ou sessões) no período, sempre deve aparecer
+      const trabalhouNoPeriodo = f.totalMin > 0 || f.sessoes > 0 || f.abertas > 0;
+      if (trabalhouNoPeriodo) {
+        return true;
+      }
+
+      // 2. Se não trabalhou, verifica se ele estava sob contrato (ativo) em algum momento do período filtrado
+      if (periodoInicio && periodoFim) {
+        const pInicio = new Date(`${periodoInicio}T00:00:00`);
+        const pFim = new Date(`${periodoFim}T23:59:59`);
+
+        const admissoes = f.data_admissao ? f.data_admissao.split(",").map(d => d.trim()).filter(Boolean) : [];
+        const demissoes = f.data_demissao ? f.data_demissao.split(",").map(d => d.trim()).filter(Boolean) : [];
+
+        // Montar os intervalos de contratação
+        // Para cada admissão, o seu fim correspondente é a demissão de mesmo índice, ou Infinity se não houver
+        const estavaContratado = admissoes.some((admStr, idx) => {
+          const dAdmissao = new Date(`${admStr}T00:00:00`);
+          const demStr = demissoes[idx];
+          const dDemissao = demStr ? new Date(`${demStr}T23:59:59`) : null;
+
+          // Se a admissão é posterior ao fim do período, este intervalo não conta
+          if (dAdmissao > pFim) return false;
+
+          // Se houve demissão e ela é anterior ao início do período, este intervalo já terminou
+          if (dDemissao && dDemissao < pInicio) return false;
+
+          // Se o funcionário está demitido/inativo hoje e não há data de demissão para este intervalo, não exibimos
+          const estaAtivoHoje = !f.status || f.status === "ativo";
+          if (!estaAtivoHoje && !dDemissao) {
+            return false;
+          }
+
+          // Caso contrário, o intervalo de contratação sobrepõe o período filtrado!
+          return true;
+        });
+
+        if (estavaContratado) {
+          return true;
+        }
+
+        // Se ele tem datas de admissão cadastradas mas nenhuma sobrepõe o período, ele não era contratado nesta época
+        if (admissoes.length > 0) {
+          return false;
+        }
+      }
+
+      // 3. Se não tem data de admissão cadastrada e não trabalhou, mas está ativo hoje, mantemos na lista por garantia
+      if (estaAtivoHoje) {
+        return true;
+      }
+
+      return false;
+    });
 
   if (ordenacao === "horas") {
     funcionariosAtivos.sort((a, b) => b.totalMin - a.totalMin);
@@ -606,12 +871,13 @@ export default function RelatorioPage({
     const mapa = {};
     const registrosRelatorioFiltradosLocal = filtrarManuais(registrosRelatorio);
     registrosRelatorioFiltradosLocal.forEach(reg => {
-      const foiVinculadoPorId = reg.usuario_id && linkedIds.has(String(reg.usuario_id));
-      const foiVinculadoPorNome = !reg.usuario_id && reg.nome && linkedNomes.has(reg.nome.toLowerCase().trim());
+      const uid = reg.usuario_id || reg.id || reg.id_jogo;
+      const foiVinculadoPorId = uid && linkedIds.has(String(uid));
+      const foiVinculadoPorNome = reg.nome && linkedNomes.has(reg.nome.toLowerCase().trim());
 
       if (!foiVinculadoPorId && !foiVinculadoPorNome) {
-        const key = reg.id_jogo || reg.nome;
-        if (!mapa[key]) mapa[key] = { id_jogo: reg.id_jogo, nome: reg.nome, totalMin: 0, sessoes: 0 };
+        const key = reg.id_jogo || reg.id || reg.nome;
+        if (!mapa[key]) mapa[key] = { id_jogo: reg.id_jogo || reg.id, nome: reg.nome, totalMin: 0, sessoes: 0 };
         if (reg.entrada && reg.saida) {
           const diff = (new Date(reg.saida) - new Date(reg.entrada)) / 60000;
           if (diff > 0) { mapa[key].totalMin += diff; mapa[key].sessoes++; }
@@ -625,9 +891,7 @@ export default function RelatorioPage({
   const funcAtivos    = dadosFuncionarios.filter(r => r.totalMin > 0).length;
   const totalSessoes  = dadosFuncionarios.reduce((acc, r) => acc + r.sessoes, 0);
 
-  const { inicio: periodoInicio, fim: periodoFim } = calcularDatasPeriodo(
-    filtroPeriodo, semanaOffset, filtroDataInicio, filtroDataFim
-  );
+
 
   const diasPeriodo = React.useMemo(() => {
     if (!periodoInicio || !periodoFim) return [];
@@ -688,8 +952,9 @@ export default function RelatorioPage({
 
       // Iterar pelos dias do período para calcular a intersecção com o horário obrigatório (19h às 22h) do dia
       diasPeriodo.forEach(dia => {
-        const limiteInicio = new Date(`${dia}T19:00:00-03:00`);
-        const limiteFim = new Date(`${dia}T22:00:00-03:00`);
+        const infoObr = getHorarioObrigatorioParaData(dia);
+        const limiteInicio = new Date(`${dia}T${infoObr.horaInicio}-03:00`);
+        const limiteFim = new Date(`${dia}T${infoObr.horaFim}-03:00`);
 
         const startIntersect = Math.max(tEntrada.getTime(), limiteInicio.getTime());
         const endIntersect = Math.min(tSaida.getTime(), limiteFim.getTime());
@@ -787,11 +1052,11 @@ export default function RelatorioPage({
       const registrosRelatorioFiltradosLocal = filtrarManuais(registrosRelatorio);
       
       registrosRelatorioFiltradosLocal.forEach(reg => {
-        if (reg.oculto) return;
-        if (!reg.entrada) return;
+        if (reg.oculto || !reg.entrada) return;
         
         const entradaDate = new Date(reg.entrada);
-        const saidaDate = reg.saida ? new Date(reg.saida) : new Date();
+        const saidaDate = obterSaidaValida(reg);
+        if (!saidaDate) return;
         
         if (entradaDate < slot.end && saidaDate > slot.start) {
           let funcNome = reg.nome || reg.nome_personagem || `ID: ${reg.id_jogo}`;
@@ -848,14 +1113,19 @@ export default function RelatorioPage({
     const { func, status } = funcModal;
     
     // Filtrar registros deste funcionário específico
-    const regsVinculados = byUid[String(func.id)] || [];
-    const regsOrfaos = func.nome ? (byNome[func.nome.toLowerCase().trim()] || []) : [];
+    const fid = func.idJogo || func.id_jogo || func.id;
+    const regsVinculados = [
+      ...(fid && byUid[String(fid)] ? byUid[String(fid)] : []),
+      ...(func.id && byUid[String(func.id)] && String(func.id) !== String(fid) ? byUid[String(func.id)] : [])
+    ];
+    const funcNomeNorm = (func.nome || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const regsOrfaos = funcNomeNorm ? (byNome[funcNomeNorm] || []) : [];
     
-    // Evita duplicatas ao mesclar por ID ou UUID
+    // Evita duplicatas ao mesclar por ID ou UUID (não usando reg.id pois reg.id é o passaporte)
     let todosRegs = [];
     const vistos = new Set();
     [...regsVinculados, ...regsOrfaos].forEach(reg => {
-      const key = String(reg.id || reg.uuid_entrada || reg.entrada);
+      const key = String(reg.uuid_entrada || reg.uuid || `${reg.usuario_id || reg.id}_${reg.entrada}_${reg.saida}`);
       if (!vistos.has(key)) {
         vistos.add(key);
         todosRegs.push(reg);
@@ -864,6 +1134,36 @@ export default function RelatorioPage({
 
     if (status === "aberto") {
       todosRegs = todosRegs.filter(r => r.entrada && !r.saida);
+    }
+
+    // Enriquecer registros com os dados detalhados de auditoria se disponíveis em logsCompletosFunc
+    if (logsCompletosFunc && logsCompletosFunc.length > 0) {
+      todosRegs = todosRegs.map((reg) => {
+        const matched = logsCompletosFunc.find((l) => {
+          if (reg.uuid_entrada && (l.uuid_sessao === reg.uuid_entrada || l.uuid_entrada === reg.uuid_entrada)) return true;
+          if (l.entrada && reg.entrada) {
+            const diff = Math.abs(new Date(l.entrada).getTime() - new Date(reg.entrada).getTime());
+            if (diff < 180000) return true;
+          }
+          return false;
+        });
+        if (matched) {
+          return {
+            ...reg,
+            ...matched,
+            uuid_entrada: reg.uuid_entrada || matched.uuid_entrada || matched.uuid_sessao,
+            uuid_saida: reg.uuid_saida || matched.uuid_saida,
+            observacao: reg.observacao || matched.observacao,
+            detalhes: matched.detalhes || reg.detalhes || { tunagens: [], bancada: [], bau: [] },
+            totalTunagens: matched.totalTunagens ?? reg.totalTunagens ?? (matched.detalhes?.tunagens?.length || 0),
+            valorTunagens: matched.valorTunagens ?? reg.valorTunagens ?? (matched.detalhes?.tunagens?.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0) || 0),
+            totalBancada: matched.totalBancada ?? reg.totalBancada ?? (matched.detalhes?.bancada?.length || 0),
+            valorBancada: matched.valorBancada ?? reg.valorBancada ?? (matched.detalhes?.bancada?.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0) || 0),
+            totalBau: matched.totalBau ?? reg.totalBau ?? (matched.detalhes?.bau?.length || 0),
+          };
+        }
+        return reg;
+      });
     }
 
     todosRegs.sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
@@ -877,7 +1177,16 @@ export default function RelatorioPage({
     if (func.data_admissao) {
       dataInicio = new Date(`${func.data_admissao}T12:00:00`);
     } else if (logsCompletosFiltrados.length > 0) {
-      const datas = logsCompletosFiltrados.map(r => r.data).filter(Boolean);
+      const datas = logsCompletosFiltrados.map(r => {
+        if (r.entrada) {
+          try {
+            return new Date(r.entrada).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+          } catch (e) {
+            return r.entrada.substring(0, 10);
+          }
+        }
+        return r.data;
+      }).filter(Boolean);
       if (datas.length > 0) {
         datas.sort();
         dataInicio = new Date(`${datas[0]}T12:00:00`);
@@ -908,7 +1217,17 @@ export default function RelatorioPage({
 
     logsCompletosFiltrados.forEach((reg) => {
       if (!reg.entrada || !reg.saida) return;
-      const { key, label } = obterLabelSemana(reg.data);
+      let dataRegStr = "";
+      if (reg.entrada) {
+        try {
+          dataRegStr = new Date(reg.entrada).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+        } catch (e) {
+          dataRegStr = reg.entrada.substring(0, 10);
+        }
+      } else {
+        dataRegStr = reg.data;
+      }
+      const { key, label } = obterLabelSemana(dataRegStr);
       if (!key) return;
 
       const diffMin = (new Date(reg.saida) - new Date(reg.entrada)) / 60000;
@@ -928,7 +1247,7 @@ export default function RelatorioPage({
           <div style={{ padding: "20px 30px", borderBottom: `1px solid ${theme.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: theme.card2 }}>
             <div>
               <h3 style={{ margin: 0, color: theme.text, fontSize: "18px", fontWeight: "800" }}>Histórico de Sessões</h3>
-              <div style={{ color: theme.accent, fontSize: "12px", fontWeight: "700", marginTop: "2px" }}>
+              <div style={{ color: "#38bdf8", fontSize: "12px", fontWeight: "700", marginTop: "2px" }}>
                 {func.nome} (ID: {func.idJogo || func.id}){func.data_admissao && ` · Contratação: ${fmtBR(func.data_admissao)}`}
               </div>
             </div>
@@ -940,22 +1259,40 @@ export default function RelatorioPage({
               <div style={{ padding: "24px", textAlign: "center", color: theme.subtext }}>⏳ Carregando histórico completo de todas as semanas...</div>
             ) : resumosSemanais.length > 0 ? (
               <div style={{ marginBottom: "20px", padding: "16px", background: "rgba(255, 255, 255, 0.02)", borderRadius: "14px", border: `1px solid ${theme.border}44` }}>
-                <div style={{ fontSize: "11px", fontWeight: "800", color: theme.subtext, textTransform: "uppercase", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
-                  📊 Resumo de Horas por Semana (Total)
+                <div style={{ fontSize: "11px", fontWeight: "800", color: theme.subtext, textTransform: "uppercase", marginBottom: "8px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+                  <span>📊 Resumo de Horas por Semana (Total)</span>
+                  <button 
+                    onClick={() => setEsconderResumoSemanal(!esconderResumoSemanal)}
+                    style={{
+                      background: "rgba(255,255,255,0.05)",
+                      border: `1px solid ${theme.border}`,
+                      color: theme.text,
+                      padding: "4px 8px",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      fontSize: "10px",
+                      fontWeight: "700"
+                    }}
+                  >
+                    {esconderResumoSemanal ? "👁️ Mostrar" : "🙈 Ocultar"}
+                  </button>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "8px" }}>
-                  {resumosSemanais.map((sem, idx) => {
-                    const h = Math.floor(sem.totalMinutos / 60);
-                    const m = Math.round(sem.totalMinutos % 60);
-                    const totalStr = `${h}h ${String(m).padStart(2, "0")}min`;
-                    return (
-                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: theme.text, background: "rgba(255,255,255,0.01)", padding: "8px 12px", borderRadius: "8px", border: `1px solid ${theme.border}22` }}>
-                        <span style={{ color: theme.subtext }}>{sem.label}</span>
-                        <b style={{ color: theme.accent }}>{totalStr}</b>
-                      </div>
-                    );
-                  })}
-                </div>
+                {!esconderResumoSemanal && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "8px" }}>
+                    {resumosSemanais.map((sem, idx) => {
+                      const h = Math.floor(sem.totalMinutos / 60);
+                      const m = Math.round(sem.totalMinutos % 60);
+                      const totalStr = `${h}h ${String(m).padStart(2, "0")}min`;
+                      const corHoras = sem.totalMinutos >= 240 ? "#22c55e" : sem.totalMinutos > 0 ? "#facc15" : theme.subtext;
+                      return (
+                        <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: theme.text, background: "rgba(255,255,255,0.01)", padding: "8px 12px", borderRadius: "8px", border: `1px solid ${theme.border}22` }}>
+                          <span style={{ color: theme.subtext }}>{sem.label}</span>
+                          <b style={{ color: corHoras }}>{totalStr}</b>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ) : null}
 
@@ -969,18 +1306,139 @@ export default function RelatorioPage({
                     <th style={{ padding: "10px", color: theme.subtext, fontSize: "10px", textTransform: "uppercase" }}>Saída</th>
                     <th style={{ padding: "10px", color: theme.subtext, fontSize: "10px", textTransform: "uppercase" }}>Duração</th>
                     <th style={{ padding: "10px", color: theme.subtext, fontSize: "10px", textTransform: "uppercase" }}>Status</th>
+                    <th style={{ padding: "10px", color: theme.subtext, fontSize: "10px", textTransform: "uppercase" }}>Atividades no Período</th>
+                    <th style={{ padding: "10px", color: theme.subtext, fontSize: "10px", textTransform: "uppercase", textAlign: "right" }}>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
                   {todosRegs.map((reg, idx) => {
                     const dur = (reg.entrada && reg.saida) ? (new Date(reg.saida) - new Date(reg.entrada)) / 60000 : 0;
+                    const totTun = reg.totalTunagens || reg.detalhes?.tunagens?.length || 0;
+                    const totBanc = reg.totalBancada || reg.detalhes?.bancada?.length || 0;
+                    const totBau = reg.totalBau || reg.detalhes?.bau?.length || 0;
+                    const temAtividade = totTun > 0 || totBanc > 0 || totBau > 0;
+
                     return (
-                      <tr key={idx} style={{ borderBottom: `1px solid ${theme.border}33` }}>
+                      <tr 
+                        key={idx} 
+                        style={{ borderBottom: `1px solid ${theme.border}33`, transition: "background 0.15s" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.03)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
                         <td style={{ padding: "12px 10px", color: theme.text, fontSize: "13px" }}>{new Date(reg.entrada).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</td>
                         <td style={{ padding: "12px 10px", color: reg.saida ? theme.text : "#ef4444", fontSize: "13px" }}>{reg.saida ? new Date(reg.saida).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "EM ABERTO"}</td>
-                        <td style={{ padding: "12px 10px", color: theme.accent, fontWeight: "700" }}>{dur > 0 ? fmtMin(dur) : "—"}</td>
+                        <td style={{ padding: "12px 10px", color: dur >= 30 ? "#22c55e" : dur > 0 ? "#facc15" : theme.subtext, fontWeight: "700" }}>
+                          {dur > 0 ? fmtMin(dur) : "—"}
+                          {reg.observacao && (
+                            <span 
+                              title={reg.observacao} 
+                              style={{ marginLeft: "6px", cursor: "help", fontSize: "11px", opacity: 0.7 }}
+                            >
+                              ℹ️
+                            </span>
+                          )}
+                        </td>
                         <td style={{ padding: "12px 10px" }}>
-                          {reg.verificado ? <span style={{ color: "#22c55e", fontSize: "11px" }}>✅ Verificado</span> : <span style={{ color: theme.subtext, fontSize: "11px" }}>⏳ Pendente</span>}
+                          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                            {reg.uuid_saida ? (
+                              <span style={{ background: "rgba(34,197,94,0.12)", color: "#22c55e", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", display: "inline-block", width: "fit-content" }}>✅ Completo</span>
+                            ) : reg.saida ? (
+                              (() => {
+                                const obsLower = (reg.observacao || "").toLowerCase();
+                                if (obsLower.includes("bancada")) {
+                                  return (
+                                    <span title={reg.observacao} style={{ background: "rgba(168,85,247,0.12)", color: "#c084fc", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", display: "inline-block", width: "fit-content", cursor: "help" }}>🛠️ Log de Bancada</span>
+                                  );
+                                }
+                                if (obsLower.includes("tunagem")) {
+                                  return (
+                                    <span title={reg.observacao} style={{ background: "rgba(236,72,153,0.12)", color: "#f472b6", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", display: "inline-block", width: "fit-content", cursor: "help" }}>🔧 Log de Tunagem</span>
+                                  );
+                                }
+                                if (obsLower.includes("reconex") || obsLower.includes("entrada")) {
+                                  return (
+                                    <span title={reg.observacao} style={{ background: "rgba(14,165,233,0.12)", color: "#38bdf8", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", display: "inline-block", width: "fit-content", cursor: "help" }}>🔄 Outra Entrada</span>
+                                  );
+                                }
+
+                                // Detecção dinâmica caso o registro venha sem observação gravada
+                                const tSaida = new Date(reg.saida).getTime();
+                                const temProximaEntrada = (todosRegs || []).some(outro => {
+                                  if (outro.uuid_entrada && reg.uuid_entrada && outro.uuid_entrada === reg.uuid_entrada) return false;
+                                  if (outro.entrada === reg.entrada) return false;
+                                  const tOutraEntrada = new Date(outro.entrada).getTime();
+                                  return Math.abs(tOutraEntrada - tSaida) <= 120000;
+                                });
+
+                                if (temProximaEntrada) {
+                                  const horaStr = new Date(reg.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
+                                  return (
+                                    <span title={`Fechado automaticamente por identificação de nova entrada às ${horaStr}.`} style={{ background: "rgba(14,165,233,0.12)", color: "#38bdf8", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", display: "inline-block", width: "fit-content", cursor: "help" }}>🔄 Outra Entrada</span>
+                                  );
+                                }
+
+                                return (
+                                  <span title={reg.observacao || "Saída registrada manualmente."} style={{ background: "rgba(249,115,22,0.12)", color: "#f97316", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", display: "inline-block", width: "fit-content", cursor: "help" }}>✏️ Manual</span>
+                                );
+                              })()
+                            ) : (
+                              <span style={{ background: "rgba(250,204,21,0.12)", color: "#facc15", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", display: "inline-block", width: "fit-content" }}>🔓 Sem saída</span>
+                            )}
+                            
+                            {(reg.verificado || (reg.uuid_entrada && reg.uuid_saida)) ? (
+                              <span style={{ color: "#22c55e", fontSize: "10px", fontWeight: "600" }}>✓ Verificado</span>
+                            ) : (
+                              <span style={{ color: theme.subtext, fontSize: "10px", opacity: 0.7 }}>⏳ Pendente</span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* ATIVIDADES NO PERÍODO */}
+                        <td style={{ padding: "12px 10px" }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+                            {totTun > 0 && (
+                              <span style={{ background: "rgba(34, 197, 94, 0.15)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                                🚗 {totTun}x
+                              </span>
+                            )}
+                            {totBanc > 0 && (
+                              <span style={{ background: "rgba(192, 132, 252, 0.15)", color: "#c084fc", border: "1px solid rgba(192, 132, 252, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                                🛠️ {totBanc}x
+                              </span>
+                            )}
+                            {totBau > 0 && (
+                              <span style={{ background: "rgba(251, 191, 36, 0.15)", color: "#fbbf24", border: "1px solid rgba(251, 191, 36, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                                📦 {totBau}x
+                              </span>
+                            )}
+                            {!temAtividade && (
+                              <span style={{ color: theme.subtext, fontSize: "11px" }}>—</span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* AÇÃO AUDITORIA */}
+                        <td style={{ padding: "12px 10px", textAlign: "right" }}>
+                          <button
+                            onClick={() => setSessaoAuditModal(reg)}
+                            style={{
+                              background: temAtividade ? "rgba(56, 189, 248, 0.15)" : "rgba(255, 255, 255, 0.05)",
+                              border: `1px solid ${temAtividade ? "#38bdf8" : theme.border}`,
+                              color: temAtividade ? "#38bdf8" : theme.text,
+                              padding: "5px 10px",
+                              borderRadius: "6px",
+                              fontSize: "11px",
+                              fontWeight: "700",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              transition: "all 0.15s"
+                            }}
+                            title="Clique para ver todas as atividades detalhadas desta sessão"
+                          >
+                            🔍 Ver Atividades
+                          </button>
                         </td>
                       </tr>
                     );
@@ -990,6 +1448,195 @@ export default function RelatorioPage({
             )}
           </div>
         </div>
+
+        {/* SUB-MODAL DE AUDITORIA DE ATIVIDADES DA SESSÃO */}
+        {(() => {
+          if (!sessaoAuditModal) return null;
+          const activeAudit = (sessaoAuditModal.detalhes?.tunagens?.length || sessaoAuditModal.detalhes?.bancada?.length || sessaoAuditModal.detalhes?.bau?.length)
+            ? sessaoAuditModal
+            : (logsCompletosFunc?.find(l => {
+                if (sessaoAuditModal.uuid_entrada && (l.uuid_sessao === sessaoAuditModal.uuid_entrada || l.uuid_entrada === sessaoAuditModal.uuid_entrada)) return true;
+                if (l.entrada && sessaoAuditModal.entrada) {
+                  return Math.abs(new Date(l.entrada).getTime() - new Date(sessaoAuditModal.entrada).getTime()) < 180000;
+                }
+                return false;
+              }) || sessaoAuditModal);
+
+          const det = activeAudit.detalhes || { tunagens: [], bancada: [], bau: [] };
+          const listTun = det.tunagens || [];
+          const listBanc = det.bancada || [];
+          const listBau = det.bau || [];
+          const valTun = activeAudit.valorTunagens || listTun.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0);
+          const valBanc = activeAudit.valorBancada || listBanc.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0);
+
+          return (
+            <div
+              style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: "rgba(0, 0, 0, 0.85)",
+                backdropFilter: "blur(10px)",
+                zIndex: 100005,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "20px"
+              }}
+              onClick={() => setSessaoAuditModal(null)}
+            >
+              <div
+                style={{
+                  background: "#0f172a",
+                  border: "1.5px solid rgba(56, 189, 248, 0.3)",
+                  borderRadius: "20px",
+                  width: "100%",
+                  maxWidth: "680px",
+                  maxHeight: "85vh",
+                  overflowY: "auto",
+                  padding: "24px",
+                  color: "#fff",
+                  boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.8)"
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Header */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid rgba(255, 255, 255, 0.1)", paddingBottom: "16px", marginBottom: "16px" }}>
+                  <div>
+                    <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "800", textTransform: "uppercase" }}>
+                      🔍 Auditoria de Atividades no Expediente
+                    </span>
+                    <h2 style={{ fontSize: "18px", fontWeight: "900", color: "#fff", margin: "4px 0" }}>
+                      {activeAudit.nome || func.nome} <span style={{ color: "#94a3b8", fontSize: "14px" }}>(ID: {activeAudit.id_jogo || activeAudit.id || func.idJogo})</span>
+                    </h2>
+                    <div style={{ fontSize: "12px", color: "#cbd5e1" }}>
+                      ⏱️ <strong>{activeAudit.duracaoMin || Math.round((new Date(activeAudit.saida) - new Date(activeAudit.entrada)) / 60000) || 0} min de serviço</strong> &bull; {new Date(activeAudit.entrada).toLocaleString("pt-BR")} até {activeAudit.saida ? new Date(activeAudit.saida).toLocaleTimeString("pt-BR") : "Em Aberto"}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => setSessaoAuditModal(null)}
+                    style={{
+                      background: "rgba(255, 255, 255, 0.1)",
+                      border: "none",
+                      color: "#cbd5e1",
+                      borderRadius: "8px",
+                      padding: "6px 12px",
+                      fontSize: "14px",
+                      cursor: "pointer",
+                      fontWeight: "bold"
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* TUNAGENS */}
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "800", color: "#22c55e", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>🚗 Tunagens no Expediente ({listTun.length || activeAudit.totalTunagens || 0})</span>
+                    <span style={{ fontSize: "13px", color: "#4ade80", fontWeight: "800" }}>
+                      R$ {valTun.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  {listTun.length === 0 ? (
+                    <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma tunagem realizada neste expediente.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {listTun.map((t, tIdx) => (
+                        <div key={tIdx} style={{ background: "rgba(34, 197, 94, 0.05)", border: "1px solid rgba(34, 197, 94, 0.2)", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <strong>🚗 {t.veiculo_nome || t.veiculo || t.veiculo_modelo || "Veículo"}</strong>
+                            <span style={{ color: "#4ade80", fontWeight: "800" }}>R$ {(parseFloat(t.valor_pago || t.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
+                            {t.placa && <span style={{ background: "rgba(255,255,255,0.08)", padding: "1px 6px", borderRadius: "4px", fontWeight: "600", color: "#cbd5e1" }}>🔖 {t.placa}</span>}
+                            {(t.dono_nome || t.cliente_nome) && <span>👤 Cliente: {t.dono_nome || t.cliente_nome} {(t.dono_id || t.cliente_id) ? `(ID: ${t.dono_id || t.cliente_id})` : ""}</span>}
+                            {(t.baia_nome || t.baia) && <span>🏷️ Baia: {t.baia_nome || t.baia}</span>}
+                            {(t.timestampz || t.created_at || t.timestamp) && <span>🕒 {new Date(t.timestampz || t.created_at || t.timestamp).toLocaleTimeString("pt-BR")}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* COMPRAS NA BANCADA */}
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "800", color: "#c084fc", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>🛠️ Compras na Bancada ({listBanc.length || activeAudit.totalBancada || 0})</span>
+                    <span style={{ fontSize: "13px", color: "#e9d5ff", fontWeight: "800" }}>
+                      ${valBanc.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  {listBanc.length === 0 ? (
+                    <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma compra na bancada realizada neste expediente.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {listBanc.map((b, bIdx) => (
+                        <div key={bIdx} style={{ background: "rgba(192, 132, 252, 0.05)", border: "1px solid rgba(192, 132, 252, 0.2)", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <strong>🛠️ {b.item || b.nomeItem || b.nome_item || "Item de Bancada"}</strong>
+                            <span style={{ color: "#c084fc", fontWeight: "800" }}>${(parseFloat(b.valor) || 0).toLocaleString("pt-BR")}</span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", display: "flex", gap: "12px" }}>
+                            {(b.qtd || b.quantidade) && <span>📦 Quantidade: {b.qtd || b.quantidade}x</span>}
+                            {(b.timestamp || b.created_at) && <span>🕒 {new Date(b.timestamp || b.created_at).toLocaleTimeString("pt-BR")}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* MOVIMENTAÇÕES NO BAÚ */}
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "800", color: "#fbbf24", marginBottom: "8px" }}>
+                    📦 Movimentações no Baú ({listBau.length || activeAudit.totalBau || 0})
+                  </div>
+                  {listBau.length === 0 ? (
+                    <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma movimentação de baú realizada neste expediente.</div>
+                  ) : (
+                    <div style={{ maxHeight: "200px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "rgba(0,0,0,0.2)", padding: "8px", borderRadius: "8px" }}>
+                      {listBau.map((m, mIdx) => {
+                        const isRetirou = (m.acao === "RETIROU" || m.tipo === "RETIROU" || String(m.acao).toLowerCase().includes("retir"));
+                        return (
+                          <div key={mIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", padding: "6px 10px", background: "rgba(255,255,255,0.02)", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                            <span style={{ color: isRetirou ? "#fca5a5" : "#86efac", fontWeight: "700" }}>
+                              {isRetirou ? "📤 Retirou:" : "📥 Guardou:"} {m.item || m.nome_item || m.nomeItem}
+                            </span>
+                            {(m.timestamp || m.created_at) && <span style={{ color: "#94a3b8", fontSize: "10px" }}>{new Date(m.timestamp || m.created_at).toLocaleTimeString("pt-BR")}</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Botão Fechar */}
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
+                  <button
+                    onClick={() => setSessaoAuditModal(null)}
+                    style={{
+                      background: "rgba(255,255,255,0.1)",
+                      border: "1px solid rgba(255,255,255,0.2)",
+                      color: "#fff",
+                      padding: "8px 20px",
+                      borderRadius: "8px",
+                      fontWeight: "800",
+                      fontSize: "12px",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Voltar ao Histórico
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -1107,6 +1754,19 @@ export default function RelatorioPage({
             />
             <label style={{ fontSize: "11px", fontWeight: "700", color: theme.text, cursor: "pointer", userSelect: "none" }}>
               🚫 Excluir Pontos Manuais
+            </label>
+          </div>
+
+          {/* Filtro Ocultar Demitidos */}
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", height: "30px", padding: "0 10px", borderRadius: "8px", background: "rgba(255,255,255,0.02)", border: `1px solid ${theme.border}44`, cursor: "pointer" }} onClick={() => setOcultarDemitidos(!ocultarDemitidos)}>
+            <input 
+              type="checkbox" 
+              checked={ocultarDemitidos} 
+              onChange={() => {}} // handled by parent container click
+              style={{ cursor: "pointer" }} 
+            />
+            <label style={{ fontSize: "11px", fontWeight: "700", color: theme.text, cursor: "pointer", userSelect: "none" }}>
+              👥 Ocultar Demitidos
             </label>
           </div>
 
@@ -1650,7 +2310,8 @@ export default function RelatorioPage({
                             .filter(s => !filtroApenasSemCobertura || !s.coberto)
                             .map((slot, idx) => {
                               const sHours = slot.start.getHours();
-                              const ehObrigatorio = sHours >= 19 && sHours <= 21;
+                              const infoObr = getHorarioObrigatorioParaData(diaSelecionado);
+                              const ehObrigatorio = sHours >= infoObr.horaInicioNum && sHours < infoObr.horaFimNum;
                               return (
                                 <div
                                   key={idx}
@@ -1940,10 +2601,10 @@ export default function RelatorioPage({
               {/* PODIUM/RANKING HORARIO OBRIGATORIO */}
               <div style={{ textAlign: "center", marginBottom: "32px", borderTop: `1px solid ${theme.border}33`, paddingTop: "32px" }}>
                 <h3 style={{ color: theme.text, fontSize: "20px", fontWeight: "800", marginBottom: "8px" }}>
-                  ⭐ Ranking de Horário Obrigatório (19:00 - 22:00)
+                  ⭐ Ranking de Horário Obrigatório
                 </h3>
                 <p style={{ color: theme.subtext, fontSize: "12px", marginBottom: "24px" }}>
-                  Baseado no cumprimento do horário de funcionamento obrigatório da cidade (19h às 22h).
+                  Baseado no cumprimento do horário de funcionamento obrigatório da cidade (18h às 23h a partir de 07/09/2026; 19h às 22h até 06/09/2026).
                 </p>
 
                 {/* PODIUM GRID OBRIGATORIO */}
@@ -2172,7 +2833,7 @@ export default function RelatorioPage({
 
                 {/* PROGRESS BARS OBRIGATORIO */}
                 <div style={{ background: theme.card2, borderRadius: "16px", padding: "20px", border: `1px solid ${theme.border}` }}>
-                  <h4 style={{ color: theme.text, fontSize: "14px", fontWeight: "700", marginBottom: "16px" }}>⭐ Gráfico de Horário Obrigatório (19h - 22h)</h4>
+                  <h4 style={{ color: theme.text, fontSize: "14px", fontWeight: "700", marginBottom: "16px" }}>⭐ Gráfico de Horário Obrigatório (Horário de Pico)</h4>
                   <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                     {rankingMecanicasObrigatorias.map((m) => (
                       <div key={m.id}>
@@ -2205,7 +2866,7 @@ export default function RelatorioPage({
                       <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Mecânica</th>
                       <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Geral</th>
                       <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Tempo Aberto (Geral)</th>
-                      <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Obrigatória (19h-22h)</th>
+                      <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Obrigatória (Pico)</th>
                       <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Falta Obrigatório</th>
                       <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Total Horas Staff</th>
                       <th style={{ padding: "10px", color: theme.subtext, fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Sessões</th>
@@ -2290,8 +2951,9 @@ export default function RelatorioPage({
                             </div>
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(48, 1fr)", flex: 1, gap: "3px" }}>
                               {slots.map((slot, idx) => {
-                                const ehObrigatorio = idx >= 38 && idx <= 43;
-                                const tooltipText = `${ehObrigatorio ? "⭐ [Horário Obrigatório 19h-22h] " : ""}${slot.label} (${labelMecanica})\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}\n\n📌 Clique para copiar`;
+                                const infoObr = getHorarioObrigatorioParaData(dia);
+                                const ehObrigatorio = idx >= infoObr.slotInicioIdx && idx <= infoObr.slotFimIdx;
+                                const tooltipText = `${ehObrigatorio ? `⭐ [Horário Obrigatório ${infoObr.labelCurto}] ` : ""}${slot.label} (${labelMecanica})\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}\n\n📌 Clique para copiar`;
                                 
                                 let emptyColor = "";
                                 let emptyBorder = "";
@@ -2585,7 +3247,7 @@ export default function RelatorioPage({
                     <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Mecânica</th>
                     <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Geral</th>
                     <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Tempo Aberto (Geral)</th>
-                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Obrigatória (19h-22h)</th>
+                    <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Obrigatória (Pico)</th>
                     <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Falta Obrigatório</th>
                     <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Total Horas Staff</th>
                     <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Sessões</th>
@@ -2669,8 +3331,9 @@ export default function RelatorioPage({
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(48, 1fr)", flex: 1, gap: "3px" }}>
                           {slots.map((slot, idx) => {
-                            const ehObrigatorio = idx >= 38 && idx <= 43;
-                            const tooltipText = `${ehObrigatorio ? "⭐ [Horário Obrigatório 19h-22h] " : ""}${slot.label} (${labelMecanica})\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}`;
+                            const infoObr = getHorarioObrigatorioParaData(dia);
+                            const ehObrigatorio = idx >= infoObr.slotInicioIdx && idx <= infoObr.slotFimIdx;
+                            const tooltipText = `${ehObrigatorio ? `⭐ [Horário Obrigatório ${infoObr.labelCurto}] ` : ""}${slot.label} (${labelMecanica})\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}`;
                             
                             let emptyColor = "";
                             let emptyBorder = "";

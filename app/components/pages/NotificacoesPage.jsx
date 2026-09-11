@@ -1,18 +1,18 @@
 import React from "react";
 
 export default function NotificacoesPage({
-  usuarioLogado,
-  styles,
-  theme,
-  formatarDataHora,
+  usuarioLogado = null,
+  styles = {},
+  theme = {},
+  formatarDataHora = (valor) => valor || "—",
   userPodeNotificar,
   setPaginaAtual,
-  getNivel,
-  userRole,
-  CARGOS_HIERARQUIA,
+  getNivel = () => 0,
+  userRole = "",
+  CARGOS_HIERARQUIA = [],
   userIsAdmin,
-  historicoNotificacoes,
-  usuariosRoleMapa,
+  historicoNotificacoes = [],
+  usuariosRoleMapa = {},
   userPodeVerRemetente,
   notifModoMassa,
   setNotifModoMassa,
@@ -31,7 +31,7 @@ export default function NotificacoesPage({
   notifMassaTodos,
   setNotifMassaTodos,
   setNotifMassaNiveis,
-  notifMassaNiveis,
+  notifMassaNiveis = [],
   notifMassaMensagem,
   setNotifMassaMensagem,
   notifMassaAnonimo,
@@ -44,7 +44,7 @@ export default function NotificacoesPage({
   AppHeaderBar,
   AppModalNotificacao,
 }) {
-  if (!userPodeNotificar)
+  if (!usuarioLogado || !userPodeNotificar)
     return (
       <div style={styles.dashContainer}>
         <style>{`@keyframes fadeLogin { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }`}</style>
@@ -62,10 +62,15 @@ export default function NotificacoesPage({
     );
 
   const meuNivel = getNivel(userRole);
-  const cargosQuePosoNotificar = CARGOS_HIERARQUIA.filter((c) => userIsAdmin || c.nivel < meuNivel);
+  const cargosDisponiveis = Array.isArray(CARGOS_HIERARQUIA) ? CARGOS_HIERARQUIA : [];
+  const cargosQuePosoNotificar = cargosDisponiveis.filter((c) => userIsAdmin || Number(c?.nivel || 0) < meuNivel);
+  const mapaUsuarios = usuariosRoleMapa && typeof usuariosRoleMapa === "object" ? usuariosRoleMapa : {};
+  const listaNotificacoes = Array.isArray(historicoNotificacoes) ? historicoNotificacoes : [];
+  const niveisSelecionados = Array.isArray(notifMassaNiveis) ? notifMassaNiveis : [];
 
-  const notificacoesFiltradas = historicoNotificacoes.filter((n) => {
-    const senderInfo = usuariosRoleMapa[n.admin_id_real || n.admin_id];
+  const notificacoesFiltradas = listaNotificacoes.filter((n) => {
+    if (!n || typeof n !== "object") return false;
+    const senderInfo = mapaUsuarios[n.admin_id_real || n.admin_id];
     if (!senderInfo) return userPodeVerRemetente;
     const senderNivel = getNivel(senderInfo.role);
     return senderNivel <= meuNivel;
@@ -227,16 +232,19 @@ export default function NotificacoesPage({
                             fontSize: "13px",
                             padding: "6px 12px",
                             borderRadius: "8px",
-                            background: notifMassaNiveis.includes(cargo.value) ? "#7c3aed30" : theme.inputBg,
-                            border: `1px solid ${notifMassaNiveis.includes(cargo.value) ? "#7c3aed" : theme.border}`,
+                            background: niveisSelecionados.includes(cargo.value) ? "#7c3aed30" : theme.inputBg,
+                            border: `1px solid ${niveisSelecionados.includes(cargo.value) ? "#7c3aed" : theme.border}`,
                             color: theme.text,
                             transition: "all 0.15s",
                           }}
                         >
                           <input
                             type="checkbox"
-                            checked={notifMassaNiveis.includes(cargo.value)}
-                            onChange={() => setNotifMassaNiveis((prev) => (prev.includes(cargo.value) ? prev.filter((v) => v !== cargo.value) : [...prev, cargo.value]))}
+                            checked={niveisSelecionados.includes(cargo.value)}
+                            onChange={() => setNotifMassaNiveis((prev) => {
+                              const lista = Array.isArray(prev) ? prev : [];
+                              return lista.includes(cargo.value) ? lista.filter((v) => v !== cargo.value) : [...lista, cargo.value];
+                            })}
                           />
                           {cargo.label}
                         </label>
@@ -273,7 +281,7 @@ export default function NotificacoesPage({
                 <input type="checkbox" checked={notifMassaAnonimo} onChange={(e) => setNotifMassaAnonimo(e.target.checked)} />
                 <div>
                   <div style={{ fontWeight: "700", color: notifMassaAnonimo ? "#fbbf24" : theme.text }}>🎭 Envio Anônimo</div>
-                  <div style={{ fontSize: "11px", color: theme.subtext }}>Os funcionários verão como "Anônimo". Gerente Geral e acima verão o remetente real.</div>
+                  <div style={{ fontSize: "11px", color: theme.subtext }}>Os funcionários verão como &quot;Anônimo&quot;. Gerente Geral e acima verão o remetente real.</div>
                 </div>
               </label>
 

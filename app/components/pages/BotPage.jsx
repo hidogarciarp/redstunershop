@@ -1,105 +1,109 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from "../../utils/supabaseClient";
 
+const DEFAULT_BOT_URL = process.env.NEXT_PUBLIC_BOT_URL || "https://rua2-pontos-bot.onrender.com";
+const BOT_URL_STORAGE_KEY = "reds_bot_url";
+
 export default function BotPage({ theme, styles }) {
   const [abaAtiva, setAbaAtiva] = useState("dashboard");
   const [loading, setLoading] = useState(false);
-  const [logs, setLogs] = useState([]);
+  const [pingLoading, setPingLoading] = useState(false);
   const [botOnline, setBotOnline] = useState(false);
+  const [botStats, setBotStats] = useState(null);
+  const [latenciaMs, setLatenciaMs] = useState(null);
+  const [ultimoPing, setUltimoPing] = useState(null);
+  const [countdown, setCountdown] = useState(300); // 5 minutos = 300 segundos
+  const [pingHistory, setPingHistory] = useState([]);
+  
+  const [botUrl, setBotUrl] = useState(DEFAULT_BOT_URL);
+  const [tempBotUrl, setTempBotUrl] = useState(DEFAULT_BOT_URL);
+  const [editandoUrl, setEditandoUrl] = useState(false);
+
   const [respostasAuto, setRespostasAuto] = useState({});
   const [novaResposta, setNovaResposta] = useState({ gatilho: "", resposta: "" });
-  const botUrl = process.env.NEXT_PUBLIC_BOT_URL || 'https://bot-discord-bvnb.onrender.com';
-  
-  // 1. DEFINIÇÃO DAS FUNÇÕES (MOVIBAS PARA CIMA)
-  const carregarRespostas = async () => {
-    try {
-      const res = await fetch(`${botUrl}/get-responses`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data && typeof data === 'object') {
-          setRespostasAuto(data);
-        } else {
-          console.warn("Respostas return was not an object:", data);
-        }
-      }
-    } catch (e) {
-      console.error("Erro ao carregar respostas:", e);
-    }
-  };
 
-  const handleDeletarResposta = async (gatilho) => {
-    if (!confirm(`Deseja excluir o comando !${gatilho}?`)) return;
-    try {
-      const res = await fetch(`${botUrl}/delete-response`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trigger: gatilho })
-      });
-      if (res.ok) {
-        alert("✅ Comando removido!");
-        carregarRespostas();
-      }
-    } catch (e) { alert("Erro ao deletar."); }
-  };
-
-  const buscarLogs = async () => {
-    try {
-      const res = await fetch(`${botUrl}/get-logs`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setLogs(data);
-          setBotOnline(true);
-        } else {
-          console.warn("Logs return was not an array:", data);
-        }
-      } else {
-        setBotOnline(false);
-      }
-    } catch (e) {
-      setBotOnline(false);
-    }
-  };
-
-  const carregarCanais = async () => {
-    setLoading(true);
-    try {
-      // Usamos maybeSingle() para não dar erro se a tabela estiver vazia
-      const { data, error } = await supabase.from("configuracoes").select("canais_bot, fardas").limit(1).maybeSingle();
-      
-      if (error) {
-        console.error("Erro Supabase:", error.message || error);
-        return;
-      }
-
-      if (data) {
-        // Só substitui os padrões se houver dados salvos (lista não vazia)
-        if (data.canais_bot && Array.isArray(data.canais_bot) && data.canais_bot.length > 0) {
-          setCanais(data.canais_bot);
-        }
-        if (data.fardas && Array.isArray(data.fardas) && data.fardas.length > 0) {
-          setFardas(data.fardas);
-        }
-      }
-    } catch (err) {
-      console.error("Erro inesperado ao carregar canais/fardas:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 2. LOOP DE SINCRONIZAÇÃO
+  // 1. CARREGAR URL SALVA
   useEffect(() => {
-    carregarCanais();
-    carregarRespostas();
-    const interval = setInterval(() => {
-      buscarLogs();
-      carregarRespostas();
-    }, 5000);
-    return () => clearInterval(interval);
+    if (typeof window !== "undefined") {
+      const salva = window.localStorage.getItem(BOT_URL_STORAGE_KEY);
+      if (salva) {
+        setBotUrl(salva);
+        setTempBotUrl(salva);
+      }
+    }
   }, []);
 
-  // 3. ESTADOS E DADOS (FARDAS, CANAIS)
+  // 2. FUNÇÃO DE PING (MANTÉM O BOT ATIVO NO RENDER)
+  const executarPing = async (urlCustom) => {
+    const urlAlvo = urlCustom || botUrl;
+    setPingLoading(true);
+
+    try {
+      const res = await fetch(`/api/bot/health?url=${encodeURIComponent(urlAlvo)}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      const hora = new Date().toLocaleTimeString("pt-BR");
+      setUltimoPing(hora);
+
+      if (data.ok) {
+        setBotOnline(true);
+        setLatenciaMs(data.latencyMs);
+        setBotStats(data.data || null);
+        setPingHistory((prev) => [
+          { hora, ok: true, latencia: data.latencyMs, msg: `Online - ${data.data?.uptimeFormatted || "Ativo"}` },
+          ...prev.slice(0, 9),
+        ]);
+      } else {
+        setBotOnline(false);
+        setLatenciaMs(data.latencyMs || null);
+        setBotStats(null);
+        setPingHistory((prev) => [
+          { hora, ok: false, latencia: data.latencyMs || 0, msg: data.error || "Inacessível / Dormindo" },
+          ...prev.slice(0, 9),
+        ]);
+      }
+    } catch (err) {
+      const hora = new Date().toLocaleTimeString("pt-BR");
+      setBotOnline(false);
+      setUltimoPing(hora);
+      setPingHistory((prev) => [
+        { hora, ok: false, latencia: 0, msg: "Falha de conexão com a API de ping" },
+        ...prev.slice(0, 9),
+      ]);
+    } finally {
+      setPingLoading(false);
+      setCountdown(300); // reinicia para 5 minutos
+    }
+  };
+
+  // Dispara ping inicial e ciclo a cada 5 minutos
+  useEffect(() => {
+    void executarPing();
+    const interval = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          void executarPing();
+          return 300;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [botUrl]);
+
+  const handleSalvarUrl = () => {
+    const limpa = tempBotUrl.trim().replace(/\/+$/, "");
+    setBotUrl(limpa);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(BOT_URL_STORAGE_KEY, limpa);
+    }
+    setEditandoUrl(false);
+    void executarPing(limpa);
+  };
+
+  // 3. CANAIS E FARDAS (SUPABASE)
   const [fardas, setFardas] = useState([
     { 
       id: 'foto1', cargo: 'Estagiário', cor: '#ffffff',
@@ -136,8 +140,24 @@ export default function BotPage({ theme, styles }) {
   ]);
 
   const [novoCanal, setNovoCanal] = useState({ id: '', nome: '', valor: '' });
-
   const [novoAviso, setNovoAviso] = useState({ titulo: "", mensagem: "", canal: "1486119707416334589", agendamento: "" });
+
+  const carregarCanais = async () => {
+    try {
+      const { data, error } = await supabase.from("configuracoes").select("canais_bot, fardas").limit(1).maybeSingle();
+      if (error) return;
+      if (data) {
+        if (data.canais_bot && Array.isArray(data.canais_bot) && data.canais_bot.length > 0) setCanais(data.canais_bot);
+        if (data.fardas && Array.isArray(data.fardas) && data.fardas.length > 0) setFardas(data.fardas);
+      }
+    } catch (err) {
+      console.error("Erro ao carregar canais/fardas:", err);
+    }
+  };
+
+  useEffect(() => {
+    carregarCanais();
+  }, []);
 
   const customStyles = {
     glassCard: {
@@ -149,7 +169,7 @@ export default function BotPage({ theme, styles }) {
       transition: "all 0.3s ease",
     },
     abaBtn: (ativa) => ({
-      padding: "10px 20px",
+      padding: "10px 18px",
       borderRadius: "12px",
       border: "none",
       background: ativa ? theme.accent : "transparent",
@@ -160,7 +180,7 @@ export default function BotPage({ theme, styles }) {
       display: "flex",
       alignItems: "center",
       gap: "8px",
-      fontSize: "14px"
+      fontSize: "13px"
     }),
     statCard: {
       background: theme.card2,
@@ -168,349 +188,282 @@ export default function BotPage({ theme, styles }) {
       borderRadius: "16px",
       border: `1px solid ${theme.border}`,
       textAlign: "center",
-      flex: 1
+      flex: 1,
+      minWidth: "180px"
     }
   };
 
-  const handleSalvarCanais = async () => {
-    setLoading(true);
-    try {
-      await fetch(`${botUrl}/save-config`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ canais })
-      });
-      await supabase.from("configuracoes").update({ canais_bot: canais }).eq("id", 1); 
-      alert("✅ Canais salvos com sucesso!");
-    } catch (err) {
-      alert("❌ Erro ao salvar canais.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleUpdateFarda = (id, genero, campo, valor) => {
-    setFardas(prev => prev.map(f => {
-      if (f.id === id) {
-        return {
-          ...f,
-          [genero]: {
-            ...f[genero],
-            [campo]: valor
-          }
-        };
-      }
-      return f;
-    }));
-  };
-
-  const handleSalvarFardas = async () => {
-    setLoading(true);
-    try {
-      await supabase.from("configuracoes").update({ fardas: fardas }).eq("id", 1);
-      alert("✅ Fardas salvas com sucesso!");
-    } catch (err) {
-      alert("❌ Erro ao salvar fardas.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAdicionarCanal = () => {
-    if (!novoCanal.id || !novoCanal.nome || !novoCanal.valor) return alert("Preencha todos os campos do novo canal!");
-    setCanais([...canais, novoCanal]);
-    setNovoCanal({ id: "", nome: "", valor: "" });
-  };
-
-  const handleRemoverCanal = (id) => {
-    setCanais(canais.filter(c => c.id !== id));
-  };
-
-  const handleSalvarResposta = async () => {
-    if (!novaResposta.gatilho || !novaResposta.resposta) return alert("Preencha ambos!");
-    setLoading(true);
-    try {
-       const res = await fetch(`${botUrl}/add-response`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ trigger: novaResposta.gatilho, response: novaResposta.resposta })
-       });
-       if (res.ok) {
-         alert("✅ Resposta automática adicionada!");
-         setNovaResposta({ gatilho: "", resposta: "" });
-         carregarRespostas();
-       }
-    } catch (e) { alert("Erro ao salvar resposta."); }
-    finally { setLoading(false); }
-  };
-
-  const handleEnviarAviso = async () => {
-    if (!novoAviso.titulo || !novoAviso.mensagem) return alert("Preencha todos os campos!");
-    setLoading(true);
-    try {
-      const response = await fetch(`${botUrl}/send-announcement`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channelId: novoAviso.canal,
-          title: novoAviso.titulo,
-          message: novoAviso.mensagem
-        })
-      });
-      const data = await response.json();
-      if (data.success) {
-        alert(`🚀 Aviso "${novoAviso.titulo}" enviado!`);
-        setNovoAviso({ ...novoAviso, titulo: "", mensagem: "" });
-      } else {
-        alert(`❌ Erro: ${data.error}`);
-      }
-    } catch (error) {
-      alert(`❌ Bot offline: ${botUrl}`);
-    } finally {
-      setLoading(false);
-    }
+  const formatMinutos = (segundos) => {
+    const m = Math.floor(segundos / 60);
+    const s = segundos % 60;
+    return `${m}:${s < 10 ? "0" : ""}${s}`;
   };
 
   return (
     <div style={{ padding: "30px 40px", animation: "fadeLogin 0.5s ease-out", minHeight: "100vh", paddingBottom: "100px" }}>
       <style>{`
-        .img-hover:hover { transform: scale(1.03); }
-        .log-line { padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace; font-size: 13px; }
+        .spin { animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
 
-      {/* HEADER */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "40px" }}>
+      {/* HEADER DA CENTRAL DO BOT */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "35px", flexWrap: "wrap", gap: "20px" }}>
         <div>
           <h2 style={{ margin: 0, fontSize: "28px", fontWeight: "800", color: theme.text, display: "flex", alignItems: "center", gap: "12px" }}>
-            <span style={{ fontSize: "32px" }}>🤖</span> Central Red's Bot
+            <span style={{ fontSize: "32px" }}>🤖</span> Central Red's Bot & Uptime
           </h2>
-          <p style={{ color: theme.subtext, margin: "5px 0 0 0" }}>Gerenciamento total de fardas, canais e logs.</p>
+          <p style={{ color: theme.subtext, margin: "5px 0 0 0" }}>
+            Monitor de vida 24/7 (ping a cada 5m), conformidade legal (Termos & Privacidade) e configurações.
+          </p>
         </div>
 
-        <div style={{ display: "flex", gap: "8px", background: theme.card2, padding: "6px", borderRadius: "16px", border: `1px solid ${theme.border}`, flexWrap: "wrap" }}>
-          <button onClick={() => setAbaAtiva("dashboard")} style={customStyles.abaBtn(abaAtiva === "dashboard")}>📊 Status</button>
-          <button onClick={() => setAbaAtiva("logs")} style={customStyles.abaBtn(abaAtiva === "logs")}>📜 Logs</button>
+        {/* NAVEGAÇÃO DE ABAS */}
+        <div style={{ display: "flex", gap: "6px", background: theme.card2, padding: "6px", borderRadius: "16px", border: `1px solid ${theme.border}`, flexWrap: "wrap" }}>
+          <button onClick={() => setAbaAtiva("dashboard")} style={customStyles.abaBtn(abaAtiva === "dashboard")}>⚡ Uptime & Status</button>
+          <button onClick={() => setAbaAtiva("termos")} style={customStyles.abaBtn(abaAtiva === "termos")}>📜 Termos de Serviço</button>
+          <button onClick={() => setAbaAtiva("privacidade")} style={customStyles.abaBtn(abaAtiva === "privacidade")}>🔒 Privacidade</button>
           <button onClick={() => setAbaAtiva("fardas")} style={customStyles.abaBtn(abaAtiva === "fardas")}>🧥 Fardas</button>
           <button onClick={() => setAbaAtiva("config")} style={customStyles.abaBtn(abaAtiva === "config")}>⚙️ Canais</button>
-          <button onClick={() => setAbaAtiva("auto-respostas")} style={customStyles.abaBtn(abaAtiva === "auto-respostas")}>💬 Respostas</button>
-          <button onClick={() => setAbaAtiva("anuncios")} style={customStyles.abaBtn(abaAtiva === "anuncios")}>📢 Avisos</button>
         </div>
       </div>
 
-      {loading ? (
-        <div style={{ textAlign: "center", padding: "100px", color: theme.text, display: "flex", flexDirection: "column", alignItems: "center", gap: "20px" }}>
-           <div style={{ width: "40px", height: "40px", border: `4px solid ${theme.accent}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }}></div>
-           <span>Carregando dados...</span>
-        </div>
-      ) : (
-        <>
-          {/* ABA: STATUS */}
-          {abaAtiva === "dashboard" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: "25px" }}>
-              <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
-                <div style={customStyles.statCard}>
-                   <p style={styles.miniLabel}>Porta de Comunicação</p>
-                   <b style={{ fontSize: "14px", color: theme.accent, wordBreak: 'break-all' }}>{botUrl}</b>
-                </div>
-                <div style={customStyles.statCard}>
-                   <p style={styles.miniLabel}>Status do Bot</p>
-                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px" }}>
-                      <span style={{ width: "12px", height: "12px", background: botOnline ? "#22c55e" : "#ef4444", borderRadius: "50%", boxShadow: botOnline ? "0 0 10px #22c55e" : "0 0 10px #ef4444" }}></span>
-                      <b style={{ fontSize: "24px", color: theme.text }}>{botOnline ? "ONLINE" : "OFFLINE"}</b>
-                   </div>
-                </div>
-                <div style={customStyles.statCard}>
-                   <p style={styles.miniLabel}>Canais Mapeados</p>
-                   <b style={{ fontSize: "24px", color: theme.text }}>{canais.length}</b>
-                </div>
+      {/* ==================================================== */}
+      {/* ABA: STATUS & UPTIME (PING A CADA 5 MINUTOS) */}
+      {/* ==================================================== */}
+      {abaAtiva === "dashboard" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "25px" }}>
+          
+          {/* CARDS DE STATUS */}
+          <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
+            <div style={customStyles.statCard}>
+              <p style={styles.miniLabel}>Status no Render</p>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginTop: "6px" }}>
+                <span style={{ width: "14px", height: "14px", background: botOnline ? "#22c55e" : "#ef4444", borderRadius: "50%", boxShadow: botOnline ? "0 0 12px #22c55e" : "0 0 12px #ef4444" }}></span>
+                <b style={{ fontSize: "24px", color: botOnline ? "#22c55e" : "#ef4444" }}>
+                  {botOnline ? "ONLINE 24/7" : "OFFLINE / SLEEP"}
+                </b>
               </div>
+              <small style={{ color: theme.subtext, fontSize: "11px", display: "block", marginTop: "4px" }}>
+                {ultimoPing ? `Última checagem: ${ultimoPing}` : "Aguardando..."}
+              </small>
             </div>
-          )}
 
-          {/* ABA: LOGS */}
-          {abaAtiva === "logs" && (
-            <div style={{ ...customStyles.glassCard, background: "#0c0c0c", border: "1px solid #333", maxHeight: "600px", overflowY: "auto" }}>
-               <h3 style={{ color: "#fff", marginBottom: "20px" }}>Console do Bot</h3>
-               {Array.isArray(logs) && logs.map((log, index) => (
-                 <div key={log.id ? `log-${log.id}-${index}` : `log-idx-${index}`} className="log-line">
-                    <span style={{ color: "#666", marginRight: "10px" }}>[{log.time}]</span>
-                    <span style={{ color: log.type === 'success' ? '#22c55e' : log.type === 'error' ? '#ef4444' : log.type === 'primary' ? theme.accent : '#ccc' }}>{log.msg}</span>
-                 </div>
-               ))}
+            <div style={customStyles.statCard}>
+              <p style={styles.miniLabel}>Latência do Ping</p>
+              <b style={{ fontSize: "24px", color: latenciaMs ? (latenciaMs < 400 ? "#22c55e" : latenciaMs < 1200 ? "#eab308" : "#ef4444") : theme.subtext }}>
+                {latenciaMs !== null ? `${latenciaMs} ms` : "—"}
+              </b>
+              <small style={{ color: theme.subtext, fontSize: "11px", display: "block", marginTop: "4px" }}>
+                Via rota interna /api/bot/health
+              </small>
             </div>
-          )}
 
-          {/* ABA: AUTO-RESPOSTAS */}
-          {abaAtiva === "auto-respostas" && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "30px" }}>
-               <div style={{ ...customStyles.glassCard, flex: 1, minWidth: "350px" }}>
-                  <h3 style={{ color: theme.text }}>Nova Resposta</h3>
-                  <div style={{ marginTop: "20px" }}>
-                    <label style={styles.miniLabel}>Comando (ex: regras)</label>
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "20px" }}>
-                       <b style={{ color: theme.accent, fontSize: "20px" }}>!</b>
-                       <input style={styles.input} value={novaResposta.gatilho} onChange={e => setNovaResposta({...novaResposta, gatilho: e.target.value})} placeholder="comando" />
-                    </div>
-                    <label style={styles.miniLabel}>Resposta</label>
-                    <textarea style={{ ...styles.textarea, height: "120px" }} value={novaResposta.resposta} onChange={e => setNovaResposta({...novaResposta, resposta: e.target.value})} placeholder="Mensagem..." />
-                    <button onClick={handleSalvarResposta} style={{ ...styles.btnPrimary, marginTop: "20px" }}>💾 Salvar</button>
-                  </div>
-               </div>
-
-               <div style={{ ...customStyles.glassCard, flex: 1, minWidth: "350px" }}>
-                  <h3 style={{ color: theme.text, marginBottom: "20px" }}>Comandos Ativos</h3>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxHeight: "400px", overflowY: "auto" }}>
-                     {respostasAuto && Object.entries(respostasAuto).length === 0 ? (
-                       <p style={{ color: theme.subtext }}>Nenhum comando criado.</p>
-                     ) : (
-                       respostasAuto && Object.entries(respostasAuto).map(([gatilho, resposta], index) => (
-                         <div key={`resp-${gatilho}-${index}`} style={{ background: "rgba(255,255,255,0.03)", padding: "15px", borderRadius: "12px", border: `1px solid ${theme.border}`, display: "flex", justifyContent: "space-between" }}>
-                            <div>
-                               <b style={{ color: theme.accent, display: "block" }}>!{gatilho}</b>
-                               <p style={{ color: theme.subtext, fontSize: "12px", margin: 0 }}>{String(resposta || "").substring(0, 50)}...</p>
-                            </div>
-                            <button onClick={() => handleDeletarResposta(gatilho)} style={{ background: "transparent", border: "none", color: "#ef4444", cursor: "pointer" }}>🗑️</button>
-                         </div>
-                       ))
-                     )}
-                  </div>
-               </div>
+            <div style={customStyles.statCard}>
+              <p style={styles.miniLabel}>Uptime do Bot</p>
+              <b style={{ fontSize: "20px", color: theme.accent }}>
+                {botStats?.uptimeFormatted || (botStats?.uptime ? `${Math.floor(botStats.uptime / 3600)}h` : "—")}
+              </b>
+              <small style={{ color: theme.subtext, fontSize: "11px", display: "block", marginTop: "4px" }}>
+                Tempo ativo contínuo
+              </small>
             </div>
-          )}
 
-          {/* FARDAS */}
-          {abaAtiva === "fardas" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: "30px" }}>
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button onClick={handleSalvarFardas} style={{ ...styles.btnPrimary, width: "auto", padding: "10px 30px" }}>💾 Salvar Todas as Fardas</button>
-              </div>
-              {fardas.map(farda => (
-                <div key={farda.id} style={{ ...customStyles.glassCard, borderLeft: `6px solid ${farda.cor}` }}>
-                  <h3 style={{ color: theme.text, marginBottom: "20px" }}>{farda.cargo.toUpperCase()}</h3>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "30px" }}>
-                    {/* MASCULINO */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                      <h4 style={{ color: theme.accent, fontSize: "12px", margin: 0 }}>♂️ MASCULINO</h4>
-                      <img src={farda.masculino.imagem} style={{ width: "100%", height: "250px", objectFit: "cover", borderRadius: "12px" }} />
-                      <label style={styles.miniLabel}>Link da Foto</label>
-                      <input 
-                        style={styles.input} 
-                        value={farda.masculino.imagem} 
-                        onChange={e => handleUpdateFarda(farda.id, 'masculino', 'imagem', e.target.value)}
-                        placeholder="https://..."
-                      />
-                      <label style={styles.miniLabel}>Peças do Uniforme</label>
-                      <textarea 
-                        style={{ ...styles.textarea, height: "100px", fontSize: "12px" }} 
-                        value={farda.masculino.lista} 
-                        onChange={e => handleUpdateFarda(farda.id, 'masculino', 'lista', e.target.value)}
-                      />
-                    </div>
-
-                    {/* FEMININO */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                      <h4 style={{ color: "#ec4899", fontSize: "12px", margin: 0 }}>♀️ FEMININO</h4>
-                      <img src={farda.feminino.imagem} style={{ width: "100%", height: "250px", objectFit: "cover", borderRadius: "12px" }} />
-                      <label style={styles.miniLabel}>Link da Foto</label>
-                      <input 
-                        style={styles.input} 
-                        value={farda.feminino.imagem} 
-                        onChange={e => handleUpdateFarda(farda.id, 'feminino', 'imagem', e.target.value)}
-                        placeholder="https://..."
-                      />
-                      <label style={styles.miniLabel}>Peças do Uniforme</label>
-                      <textarea 
-                        style={{ ...styles.textarea, height: "100px", fontSize: "12px" }} 
-                        value={farda.feminino.lista} 
-                        onChange={e => handleUpdateFarda(farda.id, 'feminino', 'lista', e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
+            <div style={customStyles.statCard}>
+              <p style={styles.miniLabel}>Memória RAM (Render)</p>
+              <b style={{ fontSize: "20px", color: "#a855f7" }}>
+                {botStats?.memoryHeapUsedMB ? `${botStats.memoryHeapUsedMB} MB` : "—"}
+              </b>
+              <small style={{ color: theme.subtext, fontSize: "11px", display: "block", marginTop: "4px" }}>
+                Limite: 512 MB Free Tier
+              </small>
             </div>
-          )}
+          </div>
 
-          {abaAtiva === "config" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: "30px", maxWidth: "800px", margin: "0 auto" }}>
-              <div style={customStyles.glassCard}>
-                <h3>IDs dos Canais</h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: "20px", marginTop: "20px" }}>
-                  {canais && canais.map((canal, index) => (
-                    <div key={canal.id ? `canal-${canal.id}-${index}` : `canal-idx-${index}`} style={{ display: "flex", gap: "15px", alignItems: "flex-end" }}>
-                      <div style={{ flex: 1 }}>
-                        <label style={styles.miniLabel}>{canal.nome}</label>
-                        <input style={styles.input} value={canal.valor} onChange={e => {
-                          const newC = [...(canais || [])]; 
-                          const target = newC.find(x => x.id === canal.id);
-                          if (target) {
-                            target.valor = e.target.value; 
-                            setCanais(newC);
-                          }
-                        }} />
-                      </div>
-                      <button onClick={() => handleRemoverCanal(canal.id)} style={{ background: "rgba(239, 68, 68, 0.1)", border: "1px solid #ef4444", color: "#ef4444", padding: "10px", borderRadius: "8px", cursor: "pointer" }}>🗑️</button>
-                    </div>
-                  ))}
-                  <button onClick={handleSalvarCanais} style={styles.btnPrimary}>💾 Salvar Configurações</button>
-                </div>
+          {/* CONTROLE DE URL DO BOT & TIMER REGRESSIVO */}
+          <div style={{ ...customStyles.glassCard }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "15px", marginBottom: "15px" }}>
+              <div>
+                <h3 style={{ margin: 0, color: theme.text, fontSize: "18px" }}>📡 URL Hospedada no Render</h3>
+                <p style={{ margin: "4px 0 0 0", color: theme.subtext, fontSize: "13px" }}>
+                  O site envia um ping para este endereço a cada 5 minutos para impedir que o Render coloque o container em repouso.
+                </p>
               </div>
 
-              <div style={customStyles.glassCard}>
-                <h3>➕ Adicionar Novo Canal</h3>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "15px", marginTop: "20px" }}>
-                  <div>
-                    <label style={styles.miniLabel}>ID (ex: logs_vendas)</label>
-                    <input style={styles.input} value={novoCanal.id} onChange={e => setNovoCanal({...novoCanal, id: e.target.value})} placeholder="id_unico" />
-                  </div>
-                  <div>
-                    <label style={styles.miniLabel}>Nome Exibição</label>
-                    <input style={styles.input} value={novoCanal.nome} onChange={e => setNovoCanal({...novoCanal, nome: e.target.value})} placeholder="Nome do Canal" />
-                  </div>
-                  <div>
-                    <label style={styles.miniLabel}>ID do Discord</label>
-                    <input style={styles.input} value={novoCanal.valor} onChange={e => setNovoCanal({...novoCanal, valor: e.target.value})} placeholder="123456789..." />
-                  </div>
-                </div>
-                <button onClick={handleAdicionarCanal} style={{ ...styles.btnPrimary, marginTop: "20px", background: theme.accent }}>➕ Adicionar Canal à Lista</button>
-              </div>
-            </div>
-          )}
-
-          {abaAtiva === "anuncios" && (
-            <div style={{ ...customStyles.glassCard, maxWidth: "700px", margin: "0 auto" }}>
-              <h3>📢 Enviar ou Agendar Aviso</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "20px", marginTop: "25px" }}>
-                <input style={styles.input} value={novoAviso.titulo} onChange={e => setNovoAviso({...novoAviso, titulo: e.target.value})} placeholder="Título do Anúncio" />
-                
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
-                  <div>
-                    <label style={styles.miniLabel}>Canal de Destino</label>
-                    <select style={styles.select} value={novoAviso.canal} onChange={e => setNovoAviso({...novoAviso, canal: e.target.value})}>
-                      {canais.map(c => <option key={c.id} value={c.valor}>{c.nome}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={styles.miniLabel}>Agendar para (Opcional)</label>
-                    <input 
-                      type="datetime-local" 
-                      style={styles.input} 
-                      value={novoAviso.agendamento} 
-                      onChange={e => setNovoAviso({...novoAviso, agendamento: e.target.value})} 
-                    />
-                  </div>
-                </div>
-
-                <textarea style={{ ...styles.textarea, height: "150px" }} value={novoAviso.mensagem} onChange={e => setNovoAviso({...novoAviso, mensagem: e.target.value})} placeholder="Escreva sua mensagem aqui..." />
-                
-                <button onClick={handleEnviarAviso} style={styles.btnPrimary}>
-                  {novoAviso.agendamento ? "⏰ AGENDAR AVISO" : "🚀 ENVIAR AGORA"}
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <span style={{ fontSize: "13px", color: theme.subtext }}>
+                  Próximo ping em: <strong style={{ color: theme.accent, fontSize: "15px" }}>{formatMinutos(countdown)}</strong>
+                </span>
+                <button
+                  onClick={() => executarPing()}
+                  disabled={pingLoading}
+                  style={{ ...styles.btnPrimary, width: "auto", padding: "8px 18px", fontSize: "13px" }}
+                >
+                  {pingLoading ? "⏳ Pingando..." : "🔄 Pingar Agora"}
                 </button>
               </div>
             </div>
-          )}
-        </>
+
+            {editandoUrl ? (
+              <div style={{ display: "flex", gap: "10px", marginTop: "12px" }}>
+                <input
+                  style={{ ...styles.input, flex: 1 }}
+                  value={tempBotUrl}
+                  onChange={(e) => setTempBotUrl(e.target.value)}
+                  placeholder="https://seu-bot.onrender.com"
+                />
+                <button onClick={handleSalvarUrl} style={{ ...styles.btnPrimary, width: "auto", padding: "8px 20px" }}>Salvar</button>
+                <button onClick={() => { setTempBotUrl(botUrl); setEditandoUrl(false); }} style={{ background: "transparent", border: `1px solid ${theme.border}`, color: theme.text, padding: "8px 16px", borderRadius: "10px", cursor: "pointer" }}>Cancelar</button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(0,0,0,0.25)", padding: "12px 18px", borderRadius: "12px", border: `1px solid ${theme.border}` }}>
+                <code style={{ color: theme.accent, fontSize: "14px", wordBreak: "break-all" }}>{botUrl}</code>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button onClick={() => setEditandoUrl(true)} style={{ background: "transparent", border: `1px solid ${theme.border}`, color: theme.text, padding: "6px 14px", borderRadius: "8px", cursor: "pointer", fontSize: "12px" }}>
+                    ✏️ Alterar URL
+                  </button>
+                  <a href={botUrl} target="_blank" rel="noreferrer" style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border}`, color: theme.text, padding: "6px 14px", borderRadius: "8px", textDecoration: "none", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                    🔗 Abrir no Render
+                  </a>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* HISTÓRICO RECENTE DE PINGS */}
+          <div style={{ ...customStyles.glassCard }}>
+            <h3 style={{ margin: "0 0 15px 0", color: theme.text, fontSize: "16px" }}>📋 Histórico de Pings Recentes</h3>
+            {pingHistory.length === 0 ? (
+              <p style={{ color: theme.subtext, margin: 0, fontSize: "13px" }}>Nenhum ping registrado nesta sessão.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {pingHistory.map((h, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: "10px", background: h.ok ? "rgba(34,197,94,0.05)" : "rgba(239,68,68,0.05)", border: `1px solid ${h.ok ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}`, fontSize: "13px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: h.ok ? "#22c55e" : "#ef4444" }}></span>
+                      <strong style={{ color: theme.text }}>{h.hora}</strong>
+                      <span style={{ color: theme.subtext }}>{h.msg}</span>
+                    </div>
+                    <span style={{ fontWeight: "700", color: h.ok ? "#4ade80" : "#f87171" }}>
+                      {h.latencia > 0 ? `${h.latencia}ms` : "Falhou"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* ABA: TERMOS DE SERVIÇO (ATIVADOS PARA O DISCORD) */}
+      {/* ==================================================== */}
+      {abaAtiva === "termos" && (
+        <div style={{ ...customStyles.glassCard, maxWidth: "850px", margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${theme.border}`, paddingBottom: "16px", marginBottom: "20px" }}>
+            <div>
+              <h2 style={{ color: theme.text, margin: 0 }}>📜 Termos de Serviço — Red's Bot</h2>
+              <p style={{ color: theme.subtext, margin: "4px 0 0 0", fontSize: "13px" }}>Em conformidade com as diretrizes do Discord Developer Portal</p>
+            </div>
+            <a href={`${botUrl}/terms`} target="_blank" rel="noreferrer" style={{ ...styles.btnPrimary, width: "auto", padding: "8px 18px", fontSize: "13px", textDecoration: "none" }}>
+              🔗 Abrir Link Público
+            </a>
+          </div>
+
+          <div style={{ color: theme.subtext, lineHeight: "1.7", fontSize: "14px" }}>
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>1. Aceitação dos Termos</h3>
+            <p>Ao utilizar o bot <strong>Rua2 Pontos / Red's Bot</strong> ("Bot"), você concorda com estes Termos de Serviço. Se você não concorda, não utilize o Bot.</p>
+
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>2. Descrição do Serviço</h3>
+            <p>O Bot monitora automaticamente mensagens em canais configurados do Discord que contenham logs de ponto de jogo (entrada/saída de serviço), baú, bancada e tunagens, processando os dados para conciliação contábil e auditoria no sistema web.</p>
+
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>3. Uso Permitido</h3>
+            <p>O Bot deve ser utilizado exclusivamente para controle administrativo de oficinas mecânicas conveniadas. Qualquer tentativa de exploração de vulnerabilidades ou injeção de dados falsos resultará na revogação do acesso.</p>
+
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>4. Coleta de Dados</h3>
+            <p>O Bot coleta e processa apenas os campos essenciais das mensagens enviadas nos canais oficiais: ID de jogo do funcionário, nome, evento (entrada/saída/serviço), data/hora, UUID único e ID do canal.</p>
+
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>5. Armazenamento e Segurança</h3>
+            <p>Os registros são armazenados de forma criptografada na nuvem (Supabase). Nenhum dado pessoal sensível alheio à operação do servidor FiveM é solicitado ou retido.</p>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* ABA: POLÍTICA DE PRIVACIDADE (ATIVADA PARA O DISCORD) */}
+      {/* ==================================================== */}
+      {abaAtiva === "privacidade" && (
+        <div style={{ ...customStyles.glassCard, maxWidth: "850px", margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${theme.border}`, paddingBottom: "16px", marginBottom: "20px" }}>
+            <div>
+              <h2 style={{ color: theme.text, margin: 0 }}>🔒 Política de Privacidade — Red's Bot</h2>
+              <p style={{ color: theme.subtext, margin: "4px 0 0 0", fontSize: "13px" }}>Transparência sobre coleta e tratamento de dados</p>
+            </div>
+            <a href={`${botUrl}/privacy`} target="_blank" rel="noreferrer" style={{ ...styles.btnPrimary, width: "auto", padding: "8px 18px", fontSize: "13px", textDecoration: "none" }}>
+              🔗 Abrir Link Público
+            </a>
+          </div>
+
+          <div style={{ color: theme.subtext, lineHeight: "1.7", fontSize: "14px" }}>
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>1. Informações Coletadas</h3>
+            <p>O Bot coleta unicamente informações operacionais emitidas nos canais autorizados pelo Discord: identificadores de jogadores em jogo, horários de ponto e comprovantes de serviços mecânicos.</p>
+
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>2. Finalidade</h3>
+            <p>Os dados são utilizados estritamente para o cálculo de horas trabalhadas, geração de folhas de pagamento e relatórios semanais de comissão.</p>
+
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>3. Compartilhamento</h3>
+            <p>Os dados nunca são compartilhados ou vendidos a terceiros. O acesso é restrito aos gestores e administradores da oficina.</p>
+
+            <h3 style={{ color: theme.text, marginTop: "16px" }}>4. Exclusão de Dados</h3>
+            <p>Qualquer membro pode solicitar a exclusão ou retificação de registros contatando a administração da oficina pelo Discord.</p>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* ABA: FARDAS */}
+      {/* ==================================================== */}
+      {abaAtiva === "fardas" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "30px" }}>
+          {fardas.map((farda) => (
+            <div key={farda.id} style={{ ...customStyles.glassCard, borderLeft: `6px solid ${farda.cor}` }}>
+              <h3 style={{ color: theme.text, marginBottom: "20px" }}>{farda.cargo.toUpperCase()}</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "30px" }}>
+                <div>
+                  <h4 style={{ color: theme.accent, fontSize: "12px", margin: "0 0 10px 0" }}>♂️ MASCULINO</h4>
+                  {farda.masculino?.imagem && <img src={farda.masculino.imagem} style={{ width: "100%", height: "220px", objectFit: "cover", borderRadius: "12px", marginBottom: "10px" }} alt="" />}
+                  <textarea style={{ ...styles.textarea, height: "90px", fontSize: "12px" }} value={farda.masculino?.lista || ""} readOnly />
+                </div>
+                <div>
+                  <h4 style={{ color: "#ec4899", fontSize: "12px", margin: "0 0 10px 0" }}>♀️ FEMININO</h4>
+                  {farda.feminino?.imagem && <img src={farda.feminino.imagem} style={{ width: "100%", height: "220px", objectFit: "cover", borderRadius: "12px", marginBottom: "10px" }} alt="" />}
+                  <textarea style={{ ...styles.textarea, height: "90px", fontSize: "12px" }} value={farda.feminino?.lista || ""} readOnly />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* ABA: CANAIS */}
+      {/* ==================================================== */}
+      {abaAtiva === "config" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "30px", maxWidth: "800px", margin: "0 auto" }}>
+          <div style={customStyles.glassCard}>
+            <h3 style={{ color: theme.text }}>IDs dos Canais Configurados</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "20px" }}>
+              {canais.map((c) => (
+                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.03)", padding: "12px 16px", borderRadius: "10px", border: `1px solid ${theme.border}` }}>
+                  <div>
+                    <b style={{ color: theme.text, display: "block" }}>{c.nome}</b>
+                    <span style={{ color: theme.subtext, fontSize: "12px" }}>ID: {c.valor}</span>
+                  </div>
+                  <span style={{ color: "#22c55e", fontSize: "12px", fontWeight: "700" }}>✓ Monitorado</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

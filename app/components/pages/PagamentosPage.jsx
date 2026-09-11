@@ -45,7 +45,7 @@ export default function PagamentosPage({
 
       const domStr = dom.toISOString().split("T")[0];
       const cobertoPeloVencimento = vencimento && domStr <= vencimento;
-      const jaPago = meusPagamentos?.some(pag => pag.observacao?.includes(label));
+      const jaPago = meusPagamentos?.some(pag => pag.observacao?.includes(label) && (pag.confirmado || pag.comprovante_link));
       
       // Filtrar por data de admissão
       if (usuarioLogado?.data_admissao) {
@@ -57,7 +57,9 @@ export default function PagamentosPage({
         if (domStr < admStr) break;
       }
 
-      if (!jaPago && !cobertoPeloVencimento) {
+      const temCobrancaPendenteSemComprovante = meusPagamentos?.some(pag => pag.observacao?.includes(label) && !pag.confirmado && !pag.comprovante_link);
+
+      if (temCobrancaPendenteSemComprovante || (!jaPago && !cobertoPeloVencimento)) {
         semanas.push({ label, isAtual: i === 0 });
       }
     }

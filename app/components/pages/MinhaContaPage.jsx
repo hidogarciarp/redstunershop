@@ -1,6 +1,40 @@
 import React, { useState, useEffect } from "react";
 
+function obterDataInicioSemana(obs) {
+  if (!obs) return 0;
+  const clean = obs.replace(/[\[\]]/g, "");
+  const matchData = clean.match(/(\d{2})\/(\d{2})/);
+  if (matchData) {
+    const dia = parseInt(matchData[1]);
+    const mes = parseInt(matchData[2]) - 1;
+    const ano = new Date().getFullYear();
+    return new Date(ano, mes, dia).getTime();
+  }
+  return 0;
+}
+
+function formatarObservacaoPagamento(obs) {
+  if (!obs) return { titulo: "Pagamento Semanal", subtexto: "" };
+  
+  let texto = obs.replace(/[\[\]]/g, "").trim();
+  texto = texto.replace("Cobrança automática - ", "");
+  
+  const matchData = texto.match(/(\d{2}\/\d{2})\s*(?:até|a)\s*(\d{2}\/\d{2})/i);
+  if (matchData) {
+    const titulo = `Semana de ${matchData[1]} até ${matchData[2]}`;
+    let subtexto = texto.replace(new RegExp(`Semana de ${matchData[1]}\\s*(?:até|a)\\s*${matchData[2]}`, "i"), "");
+    subtexto = subtexto.replace(new RegExp(`Semana ${matchData[1]}\\s*(?:até|a)\\s*${matchData[2]}`, "i"), "");
+    subtexto = subtexto.replace(new RegExp(`${matchData[1]}\\s*(?:até|a)\\s*${matchData[2]}`, "i"), "");
+    subtexto = subtexto.replace(/^[-\s,.:;]+/, "").trim();
+    
+    return { titulo, subtexto };
+  }
+  
+  return { titulo: texto, subtexto: "" };
+}
+
 export default function MinhaContaPage({
+  supabase,
   styles,
   theme,
   formatarDataHora,
@@ -29,6 +63,8 @@ export default function MinhaContaPage({
   minhasNotificacoes,
   meusPagamentos,
   atualizarComprovanteDossie,
+  layoutPreferido,
+  setLayoutPreferido,
   AppHeaderBar,
   AppModalNotificacao,
 }) {
@@ -43,6 +79,89 @@ export default function MinhaContaPage({
   const [editandoDossieId, setEditandoDossieId] = useState(null);
   const [linkDossieTemp, setLinkDossieTemp] = useState("");
   const [showModalPontos, setShowModalPontos] = useState(false);
+  const [sessoesCidade, setSessoesCidade] = useState([]);
+  
+  const [periodoSelecionado, setPeriodoSelecionado] = useState("semana_atual");
+  const [dataInicioCustom, setDataInicioCustom] = useState("");
+  const [dataFimCustom, setDataFimCustom] = useState("");
+
+  const datasFiltro = React.useMemo(() => {
+    const hoje = new Date();
+    let inicio = new Date(hoje);
+    let fim = new Date(hoje);
+
+    if (periodoSelecionado === "hoje") {
+      inicio.setHours(0, 0, 0, 0);
+      fim.setHours(23, 59, 59, 999);
+    } else if (periodoSelecionado === "semana_atual") {
+      const diaSemana = hoje.getDay();
+      const diff = diaSemana === 0 ? -6 : 1 - diaSemana;
+      inicio.setDate(hoje.getDate() + diff);
+      inicio.setHours(0, 0, 0, 0);
+      fim.setDate(inicio.getDate() + 6);
+      fim.setHours(23, 59, 59, 999);
+    } else if (periodoSelecionado === "ultima_semana") {
+      const diaSemana = hoje.getDay();
+      const diff = (diaSemana === 0 ? -6 : 1 - diaSemana) - 7;
+      inicio.setDate(hoje.getDate() + diff);
+      inicio.setHours(0, 0, 0, 0);
+      fim.setDate(inicio.getDate() + 6);
+      fim.setHours(23, 59, 59, 999);
+    } else if (periodoSelecionado === "mes_atual") {
+      inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1, 0, 0, 0, 0);
+      fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0, 23, 59, 59, 999);
+    } else if (periodoSelecionado === "custom") {
+      if (dataInicioCustom) {
+        inicio = new Date(dataInicioCustom + "T00:00:00-03:00");
+      } else {
+        inicio = new Date(0);
+      }
+      if (dataFimCustom) {
+        fim = new Date(dataFimCustom + "T23:59:59-03:00");
+      } else {
+        fim = new Date();
+      }
+    } else {
+      // tudo
+      inicio = new Date(0);
+      fim = new Date(9999, 11, 31, 23, 59, 59, 999);
+    }
+
+    return { inicioMs: inicio.getTime(), fimMs: fim.getTime() };
+  }, [periodoSelecionado, dataInicioCustom, dataFimCustom]);
+
+  useEffect(() => {
+    if (usuarioLogado && supabase) {
+      const carregarSessoesCidade = async () => {
+        const idJogo = usuarioLogado.idJogo || usuarioLogado.id_jogo || usuarioLogado.id;
+        const { data: r1 } = await supabase.from("ponto_cidade").select("entrada, saida, uuid_entrada, uuid_saida, observacao, oculto").eq("usuario_id", usuarioLogado.id);
+        const { data: r2 } = await supabase.from("ponto_cidade_mecanica_2").select("entrada, saida, uuid_entrada, uuid_saida, observacao, oculto").eq("usuario_id", usuarioLogado.id);
+        const { data: r3 } = await supabase.from("ponto_cidade_mecanica_3").select("entrada, saida, uuid_entrada, uuid_saida, observacao, oculto").eq("usuario_id", usuarioLogado.id);
+        
+        let queryReds = supabase.from("ponto_cidade_reds").select("entrada, saida, uuid_entrada, uuid_saida, observacao, oculto");
+        if (idJogo && !isNaN(Number(idJogo))) {
+          queryReds = queryReds.or(`usuario_id.eq.${idJogo},id_jogo.eq.${idJogo}`);
+        } else {
+          queryReds = queryReds.eq("usuario_id", usuarioLogado.id);
+        }
+        const { data: rReds } = await queryReds;
+
+        const mapa = new Map();
+        [...(r1 || []), ...(r2 || []), ...(r3 || []), ...(rReds || [])].forEach((item) => {
+          const key = item.uuid_entrada || `${item.entrada}_${item.saida}`;
+          if (!mapa.has(key)) {
+            mapa.set(key, item);
+          }
+        });
+
+        const combinados = Array.from(mapa.values());
+        // Ordenar por entrada decrescente (mais recente primeiro)
+        combinados.sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
+        setSessoesCidade(combinados);
+      };
+      carregarSessoesCidade();
+    }
+  }, [usuarioLogado, supabase]);
 
   useEffect(() => {
     const semanas = [];
@@ -71,7 +190,7 @@ export default function MinhaContaPage({
       
       const domStr = dom.toISOString().split("T")[0];
       const cobertoPeloVencimento = vencimento && domStr <= vencimento;
-      const jaPago = meusPagamentos?.some(pag => pag.observacao?.includes(label));
+      const jaPago = meusPagamentos?.some(pag => pag.observacao?.includes(label) && (pag.confirmado || pag.comprovante_link));
       
       // Filtrar por data de admissão (semana da admissão não cobra)
       if (usuarioLogado?.data_admissao) {
@@ -86,7 +205,9 @@ export default function MinhaContaPage({
         if (domStr < admStr) break;
       }
 
-      if (!jaPago && !cobertoPeloVencimento) {
+      const temCobrancaPendenteSemComprovante = meusPagamentos?.some(pag => pag.observacao?.includes(label) && !pag.confirmado && !pag.comprovante_link);
+
+      if (temCobrancaPendenteSemComprovante || (!jaPago && !cobertoPeloVencimento)) {
         semanas.push({ label, isAtual: i === 0 });
       }
     }
@@ -102,23 +223,94 @@ export default function MinhaContaPage({
     ? { label: "⚪ Sem cobrança", color: theme.subtext }
     : { label: "✅ Em dia", color: "#22c55e" };
 
-  const totalServicos = meusServicos.length;
-  const totalEstetica = meusServicos.filter((s) => s.tipo === "estetica").length;
-  const totalTunagem = meusServicos.filter((s) => s.tipo === "tunagem").length;
-  const totalGuincho = meusServicos.filter((s) => s.tipo === "guincho").length;
-  const totalVendas = meusServicos.filter((s) => s.tipo === "venda").length;
-  const totalMinutosTrabalhados = historicoPonto.reduce((acc, p) => {
-    if (p.saida && p.verificado) {
+  const meusServicosFiltrados = React.useMemo(() => {
+    return meusServicos.filter(s => {
+      if (!s.data) return false;
+      const t = new Date(`${s.data}T12:00:00-03:00`).getTime();
+      return t >= datasFiltro.inicioMs && t <= datasFiltro.fimMs;
+    });
+  }, [meusServicos, datasFiltro]);
+
+  const sessoesCidadeFiltradas = React.useMemo(() => {
+    return sessoesCidade.filter(s => {
+      const t = new Date(s.entrada).getTime();
+      return t >= datasFiltro.inicioMs && t <= datasFiltro.fimMs;
+    });
+  }, [sessoesCidade, datasFiltro]);
+
+  const totalServicos = meusServicosFiltrados.length;
+  const totalEstetica = meusServicosFiltrados.filter((s) => s.tipo === "estetica").length;
+  const totalTunagem = meusServicosFiltrados.filter((s) => s.tipo === "tunagem").length;
+  const totalGuincho = meusServicosFiltrados.filter((s) => s.tipo === "guincho").length;
+  const totalVendas = meusServicosFiltrados.filter((s) => s.tipo === "venda").length;
+  const totalMinutosTrabalhados = sessoesCidadeFiltradas.reduce((acc, p) => {
+    if (p.saida && !p.oculto) {
       const diff = (new Date(p.saida) - new Date(p.entrada)) / 60000;
       return acc + (diff > 0 ? diff : 0);
     }
     return acc;
   }, 0);
 
+  // Helper para estimar o custo das peças no painel para calcular o lucro do mecânico
+  function calcularValorPainel(s) {
+    if (s.tipo === "guincho" || s.tipo === "venda") {
+      return 0;
+    }
+    if (s.tipo === "tunagem") {
+      let totalSemNitro = s.valor_total || 0;
+      if (s.detalhes && s.detalhes.includes("Nitro")) {
+        totalSemNitro -= 25000;
+      }
+      if (s.detalhes && s.detalhes.includes("Drift")) {
+        totalSemNitro -= 25000;
+      }
+      return Math.max(0, totalSemNitro * 0.625);
+    }
+    if (s.tipo === "estetica") {
+      let custo = 0;
+      let totalResto = s.valor_total || 0;
+      
+      if (s.detalhes) {
+        if (s.detalhes.includes("Fumaça")) {
+          custo += 5000;
+          totalResto -= 9000;
+        }
+        const matchExtra = s.detalhes.match(/Extra \((\d+)x\)/);
+        if (matchExtra) {
+          const qtd = parseInt(matchExtra[1]);
+          custo += qtd * 1000;
+          totalResto -= qtd * 3500;
+        }
+        const matchCama = s.detalhes.match(/Camaleão \((\d+)x\)/);
+        if (matchCama) {
+          const qtd = parseInt(matchCama[1]);
+          custo += qtd * 500;
+          totalResto -= qtd * 10000;
+        }
+      }
+      custo += Math.max(0, totalResto * 0.10);
+      return custo;
+    }
+    return 0;
+  }
+
+  const totalRecebido = meusServicosFiltrados.reduce((acc, s) => acc + (s.valor_total || 0), 0);
+  const totalPagoPainel = meusServicosFiltrados.reduce((acc, s) => acc + calcularValorPainel(s), 0);
+  const lucroMecanico = totalRecebido - totalPagoPainel;
+
+  const pagamentosOrdenados = React.useMemo(() => {
+    return [...meusPagamentos].sort((a, b) => {
+      const tA = obterDataInicioSemana(a.observacao || "");
+      const tB = obterDataInicioSemana(b.observacao || "");
+      if (tA !== tB) return tB - tA;
+      return new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime();
+    });
+  }, [meusPagamentos]);
+
   const [showModalServicos, setShowModalServicos] = useState(false);
   const [tipoServicoModal, setTipoServicoModal] = useState("");
 
-  const servicosFiltrados = meusServicos.filter(s => tipoServicoModal === "total" || s.tipo === tipoServicoModal);
+  const servicosFiltrados = meusServicosFiltrados.filter(s => tipoServicoModal === "total" || s.tipo === tipoServicoModal);
 
   return (
     <div style={styles.dashContainer}>
@@ -143,6 +335,135 @@ export default function MinhaContaPage({
           >
             🔄 Atualizar
           </button>
+        </div>
+
+        <div style={{
+          ...styles.whiteCard,
+          padding: "18px 20px",
+          marginBottom: "24px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "16px",
+          flexWrap: "wrap",
+        }}>
+          <div>
+            <div style={{ color: theme.text, fontSize: "15px", fontWeight: "800", marginBottom: "4px" }}>
+              Preferência de layout
+            </div>
+            <div style={{ color: theme.subtext, fontSize: "12px", lineHeight: 1.5 }}>
+              Escolha como a lista de páginas aparece no sistema.
+            </div>
+          </div>
+          <div style={{
+            display: "flex",
+            gap: "8px",
+            padding: "4px",
+            borderRadius: "10px",
+            background: "rgba(255,255,255,0.035)",
+            border: `1px solid ${theme.border}55`,
+          }}>
+            {[
+              { id: "lateral", label: "Menu lateral" },
+              { id: "topo", label: "Menu no topo" },
+            ].map((opcao) => {
+              const ativo = layoutPreferido === opcao.id;
+              return (
+                <button
+                  key={opcao.id}
+                  type="button"
+                  onClick={() => setLayoutPreferido?.(opcao.id)}
+                  style={{
+                    border: ativo ? "1px solid rgba(139,24,30,0.8)" : "1px solid transparent",
+                    background: ativo ? "rgba(139,24,30,0.35)" : "transparent",
+                    color: ativo ? "#ffffff" : theme.subtext,
+                    borderRadius: "8px",
+                    padding: "9px 13px",
+                    cursor: "pointer",
+                    fontSize: "12px",
+                    fontWeight: "800",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {opcao.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* FILTRO DE PERÍODO */}
+        <div style={{ 
+          background: "rgba(255,255,255,0.01)", 
+          border: `1px solid ${theme.border}33`, 
+          borderRadius: "12px", 
+          padding: "16px 20px", 
+          marginBottom: "24px", 
+          display: "flex", 
+          flexWrap: "wrap", 
+          gap: "16px", 
+          alignItems: "center",
+          justifyContent: "space-between"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "14px", fontWeight: "700", color: theme.text }}>📅 Filtrar Período:</span>
+            <select
+              value={periodoSelecionado}
+              onChange={(e) => setPeriodoSelecionado(e.target.value)}
+              style={{
+                background: theme.card2,
+                border: `1px solid ${theme.border}`,
+                color: theme.text,
+                padding: "8px 14px",
+                borderRadius: "8px",
+                fontSize: "13px",
+                fontWeight: "600",
+                cursor: "pointer",
+                outline: "none"
+              }}
+            >
+              <option value="semana_atual">Semana Atual</option>
+              <option value="ultima_semana">Última Semana</option>
+              <option value="mes_atual">Mês Atual</option>
+              <option value="hoje">Hoje</option>
+              <option value="custom">Personalizado</option>
+              <option value="tudo">Tudo</option>
+            </select>
+          </div>
+
+          {periodoSelecionado === "custom" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              <input
+                type="date"
+                value={dataInicioCustom}
+                onChange={(e) => setDataInicioCustom(e.target.value)}
+                style={{
+                  background: theme.card2,
+                  border: `1px solid ${theme.border}`,
+                  color: theme.text,
+                  padding: "6px 12px",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  outline: "none"
+                }}
+              />
+              <span style={{ color: theme.subtext, fontSize: "13px" }}>até</span>
+              <input
+                type="date"
+                value={dataFimCustom}
+                onChange={(e) => setDataFimCustom(e.target.value)}
+                style={{
+                  background: theme.card2,
+                  border: `1px solid ${theme.border}`,
+                  color: theme.text,
+                  padding: "6px 12px",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  outline: "none"
+                }}
+              />
+            </div>
+          )}
         </div>
 
         {minhaContaCarregando && (
@@ -195,9 +516,56 @@ export default function MinhaContaPage({
           ))}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px", marginBottom: "24px" }}>
+        {/* RESUMO FINANCEIRO */}
+        <div style={{ 
+          display: "grid", 
+          gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", 
+          gap: "16px", 
+          marginBottom: "24px" 
+        }}>
+          {[
+            { label: "Faturamento (Total Recebido)", value: totalRecebido, icon: "💰", color: "#38bdf8", desc: "Total cobrado dos clientes" },
+            { label: "Custo de Peças (Pago no Painel)", value: totalPagoPainel, icon: "💸", color: "#f87171", desc: "Custo estimado das peças no painel" },
+            { label: "Lucro Líquido Estimado", value: lucroMecanico, icon: "👑", color: "#34d399", desc: "Seu ganho limpo estimado", highlight: true },
+          ].map((item, i) => (
+            <div 
+              key={i} 
+              style={{ 
+                ...styles.whiteCard, 
+                padding: "20px", 
+                display: "flex", 
+                alignItems: "center", 
+                gap: "16px",
+                border: item.highlight ? "1px solid rgba(52,211,153,0.3)" : `1px solid ${theme.border}33`,
+                background: item.highlight ? "rgba(52,211,153,0.02)" : "rgba(255,255,255,0.01)"
+              }}
+            >
+              <div style={{ 
+                fontSize: "32px", 
+                width: "56px", 
+                height: "56px", 
+                borderRadius: "12px", 
+                background: item.highlight ? "rgba(52,211,153,0.1)" : "rgba(255,255,255,0.03)", 
+                display: "flex", 
+                alignItems: "center", 
+                justifyContent: "center" 
+              }}>
+                {item.icon}
+              </div>
+              <div>
+                <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>{item.label}</div>
+                <div style={{ fontSize: "20px", fontWeight: "800", color: item.color, marginTop: "4px" }}>
+                  R$ {Math.round(item.value).toLocaleString("pt-BR")}
+                </div>
+                <div style={{ fontSize: "10px", color: theme.subtext, opacity: 0.7, marginTop: "2px" }}>{item.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "24px", marginBottom: "24px" }}>
           {/* STATUS FINANCEIRO */}
-          <div style={{ ...styles.whiteCard, borderLeft: `4px solid ${statusFinanceiro.color}` }}>
+          <div style={{ ...styles.whiteCard, borderLeft: `4px solid ${statusFinanceiro.color}`, display: "none" }}>
             <div style={{ ...styles.cardHeader, color: statusFinanceiro.color }}>
               <span style={{ ...styles.dot, background: statusFinanceiro.color }}></span>
               Meu Status Financeiro
@@ -366,58 +734,68 @@ export default function MinhaContaPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {meusPagamentos.map((pag) => (
-                    <tr key={pag.id} style={{ borderBottom: `1px solid ${theme.border}` }}>
-                      <td style={{ padding: "10px 12px", fontWeight: "600", color: theme.text }}>{(pag.observacao || "Pagamento Semanal").replace("Cobrança automática - ", "")}</td>
-                      <td style={{ padding: "10px 12px", color: "#22c55e", fontWeight: "700" }}>R$ {Number(pag.valor).toLocaleString("pt-BR")}</td>
-                      <td style={{ padding: "10px 12px" }}>
-                        {pag.comprovante_link ? (
-                          <a href={pag.comprovante_link} target="_blank" rel="noopener noreferrer" style={{ background: "#3b82f6", color: "#fff", padding: "4px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: "700", textDecoration: "none" }}>🔗 VER LINK</a>
-                        ) : "—"}
-                      </td>
-                      <td style={{ padding: "10px 12px" }}>
-                        {pag.confirmado ? (
-                          <span style={{ color: "#22c55e", fontWeight: "800" }}>✅ CONFIRMADO</span>
-                        ) : editandoDossieId === pag.id ? (
-                          <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
-                            <input 
-                              style={{ ...styles.input, margin: 0, padding: "4px 8px", fontSize: "11px" }} 
-                              placeholder="Cole o link..."
-                              value={linkDossieTemp}
-                              onChange={(e) => setLinkDossieTemp(e.target.value)}
-                            />
-                            <button 
+                  {pagamentosOrdenados.map((pag) => {
+                    const { titulo, subtexto } = formatarObservacaoPagamento(pag.observacao);
+                    return (
+                      <tr key={pag.id} style={{ borderBottom: `1px solid ${theme.border}` }}>
+                        <td style={{ padding: "10px 12px", color: theme.text }}>
+                          <div style={{ fontWeight: "700", fontSize: "13px" }}>{titulo}</div>
+                          {subtexto && (
+                            <div style={{ fontSize: "11px", color: theme.subtext, opacity: 0.8, marginTop: "2px" }}>
+                              {subtexto}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "10px 12px", color: "#22c55e", fontWeight: "700" }}>R$ {Number(pag.valor).toLocaleString("pt-BR")}</td>
+                        <td style={{ padding: "10px 12px" }}>
+                          {pag.comprovante_link ? (
+                            <a href={pag.comprovante_link} target="_blank" rel="noopener noreferrer" style={{ background: "#3b82f6", color: "#fff", padding: "4px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: "700", textDecoration: "none" }}>🔗 VER LINK</a>
+                          ) : "—"}
+                        </td>
+                        <td style={{ padding: "10px 12px" }}>
+                          {pag.confirmado ? (
+                            <span style={{ color: "#22c55e", fontWeight: "800" }}>✅ CONFIRMADO</span>
+                          ) : editandoDossieId === pag.id ? (
+                            <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
+                              <input 
+                                style={{ ...styles.input, margin: 0, padding: "4px 8px", fontSize: "11px" }} 
+                                placeholder="Cole o link..."
+                                value={linkDossieTemp}
+                                onChange={(e) => setLinkDossieTemp(e.target.value)}
+                              />
+                              <button 
+                                onClick={() => {
+                                  atualizarComprovanteDossie(pag.id, linkDossieTemp);
+                                  setEditandoDossieId(null);
+                                  setLinkDossieTemp("");
+                                }}
+                                style={{ background: "#22c55e", border: "none", color: "#fff", padding: "4px 8px", borderRadius: "4px", fontSize: "10px", cursor: "pointer" }}
+                              >
+                                ENVIAR
+                              </button>
+                              <button 
+                                onClick={() => setEditandoDossieId(null)}
+                                style={{ background: "#dc2626", border: "none", color: "#fff", padding: "4px 8px", borderRadius: "4px", fontSize: "10px", cursor: "pointer" }}
+                              >
+                                X
+                              </button>
+                            </div>
+                          ) : (
+                            <span 
                               onClick={() => {
-                                atualizarComprovanteDossie(pag.id, linkDossieTemp);
-                                setEditandoDossieId(null);
-                                setLinkDossieTemp("");
+                                setEditandoDossieId(pag.id);
+                                setLinkDossieTemp(pag.comprovante_link || "");
                               }}
-                              style={{ background: "#22c55e", border: "none", color: "#fff", padding: "4px 8px", borderRadius: "4px", fontSize: "10px", cursor: "pointer" }}
+                              style={{ color: "#facc15", fontWeight: "800", cursor: "pointer", textDecoration: "underline" }}
+                              title="Clique para enviar comprovante"
                             >
-                              ENVIAR
-                            </button>
-                            <button 
-                              onClick={() => setEditandoDossieId(null)}
-                              style={{ background: "#dc2626", border: "none", color: "#fff", padding: "4px 8px", borderRadius: "4px", fontSize: "10px", cursor: "pointer" }}
-                            >
-                              X
-                            </button>
-                          </div>
-                        ) : (
-                          <span 
-                            onClick={() => {
-                              setEditandoDossieId(pag.id);
-                              setLinkDossieTemp(pag.comprovante_link || "");
-                            }}
-                            style={{ color: "#facc15", fontWeight: "800", cursor: "pointer", textDecoration: "underline" }}
-                            title="Clique para enviar comprovante"
-                          >
-                            ⏳ PENDENTE
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                              ⏳ PENDENTE
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -504,10 +882,10 @@ export default function MinhaContaPage({
             </div>
 
             <div style={{ padding: "0", overflowY: "auto", flex: 1 }}>
-              {historicoPonto.length === 0 ? (
+              {sessoesCidade.length === 0 ? (
                 <div style={{ padding: "60px 20px", textAlign: "center", color: theme.subtext }}>
                   <div style={{ fontSize: "40px", marginBottom: "12px" }}>📋</div>
-                  Nenhum registro de ponto encontrado.
+                  Nenhum registro de ponto oficial encontrado.
                 </div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
@@ -523,14 +901,14 @@ export default function MinhaContaPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {historicoPonto.map((reg, i) => {
+                    {sessoesCidade.map((reg, i) => {
                       const diffMin = reg.saida ? (new Date(reg.saida) - new Date(reg.entrada)) / 60000 : 0;
                       return (
-                        <tr key={reg.id} style={{ 
+                        <tr key={i} style={{ 
                           borderBottom: `1px solid ${theme.border}44`,
                           background: i % 2 === 0 ? "transparent" : `${theme.card2}33`
                         }}>
-                          <td style={{ padding: "12px 16px", color: theme.text, fontWeight: "600" }}>{formatarData(reg.data)}</td>
+                          <td style={{ padding: "12px 16px", color: theme.text, fontWeight: "600" }}>{formatarData(reg.entrada)}</td>
                           <td style={{ padding: "12px 16px", color: "#22c55e", fontWeight: "700" }}>{formatarHorario(reg.entrada)}</td>
                           <td style={{ padding: "12px 16px", color: reg.saida ? "#ef4444" : theme.subtext, fontWeight: "700" }}>
                             {reg.saida ? formatarHorario(reg.saida) : "—"}
@@ -539,11 +917,39 @@ export default function MinhaContaPage({
                             {reg.saida ? calcularDuracao(reg.entrada, reg.saida) : <span style={{ color: theme.accent }}>Em aberto</span>}
                           </td>
                           <td style={{ padding: "12px 16px" }}>
-                            {reg.verificado ? (
-                              <span style={{ color: "#22c55e", fontSize: "11px", fontWeight: "700" }}>✅ Verificado</span>
-                            ) : (
-                              <span style={{ color: theme.subtext, fontSize: "11px" }}>⏳ Pendente</span>
-                            )}
+                            {(() => {
+                              if (reg.uuid_saida) {
+                                return (
+                                  <span style={{ background: "rgba(34,197,94,0.12)", color: "#22c55e", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700" }}>
+                                    ✅ Completo
+                                  </span>
+                                );
+                              }
+                              if (reg.saida) {
+                                const ehEstimado = reg.observacao && reg.observacao.toLowerCase().includes("estimada");
+                                if (ehEstimado) {
+                                  const ehBancada = reg.observacao.toLowerCase().includes("bancada");
+                                  if (ehBancada) {
+                                    return (
+                                      <span title={reg.observacao} style={{ background: "rgba(168,85,247,0.12)", color: "#c084fc", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", cursor: "help" }}>
+                                        🛠️ Log de Bancada
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <span title={reg.observacao} style={{ background: "rgba(56,189,248,0.12)", color: "#38bdf8", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", cursor: "help" }}>
+                                      📦 Log de Baú
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span title={reg.observacao || "Saída registrada manualmente."} style={{ background: "rgba(249,115,22,0.12)", color: "#f97316", padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700", cursor: "help" }}>
+                                    ✏️ Manual
+                                  </span>
+                                );
+                              }
+                              return <span style={{ color: theme.subtext, fontSize: "11px" }}>⏳ Pendente</span>;
+                            })()}
                           </td>
                         </tr>
                       );

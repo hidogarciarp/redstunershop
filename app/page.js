@@ -1,8 +1,7 @@
-
 "use client";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "./utils/supabaseClient";
-import { CARGOS_HIERARQUIA, ATRIBUICOES_DISPONIVEIS, TABELA_PRECOS, REGRAS_PRECOS } from "./utils/constants";
+import { CARGOS_HIERARQUIA, ATRIBUICOES_DISPONIVEIS, TABELA_PRECOS, REGRAS_PRECOS, CURSOS_OBRIGATORIOS } from "./utils/constants";
 import {
   getPrimaryRole,
   getAtribuicoes,
@@ -23,7 +22,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import HeaderBar from "./components/HeaderBar";
+import HeaderBar, { TopHeaderBar } from "./components/HeaderBar";
 import ModalNotificacao from "./components/ModalNotificacao";
 import LoginPage from "./components/pages/LoginPage";
 import MinhaContaPage from "./components/pages/MinhaContaPage";
@@ -39,6 +38,11 @@ import AdminPage from "./components/pages/AdminPage";
 import DashboardPage from "./components/pages/DashboardPage";
 import BlacklistPage from "./components/pages/BlacklistPage";
 import PontoAdminPage from "./components/pages/PontoAdminPage";
+import DbAdminPage from "./components/pages/DbAdminPage";
+import TunagemPage from "./components/pages/TunagemPage";
+import BonificacaoPage from "./components/pages/BonificacaoPage";
+import AtividadesMecanicosPage from "./components/pages/AtividadesMecanicosPage";
+import JanelaPontoFlutuante from "./components/JanelaPontoFlutuante";
 import RelatorioPage from "./components/pages/RelatorioPage";
 import RelatorioPublicoPage from "./components/pages/RelatorioPublicoPage";
 import OutrasMecanicasPage from "./components/pages/OutrasMecanicasPage";
@@ -47,15 +51,84 @@ import BotPage from "./components/pages/BotPage";
 import CandidaturasPage from "./components/pages/CandidaturasPage";
 import RecrutamentoPage from "./components/pages/RecrutamentoPage";
 import MissoesPage from "./components/pages/MissoesPage";
+import AvisosPage from "./components/pages/AvisosPage";
+import CursosPage from "./components/pages/CursosPage";
+import ModalDetalheTunagem from "./components/ModalDetalheTunagem";
+import { analisarServicoTunagem, parseLogsTunagemTexto } from "./utils/calculadoraTunagem";
+
+const PAGINAS_OCULTAS = new Set([
+  "financas", "cursos", "missoes", "relatorio-publico",
+  "outras-mecanicas", "recrutamento", "evento-derby",
+  "evento-triathlon", "pagamentos"
+]);
 
 export default function Home() {
   // ===== STATES =====
   const [paginaAtual, setPaginaAtual] = useState("login");
   const [usuarioLogado, setUsuarioLogado] = useState(null);
+  const [cargoVisualizacao, setCargoVisualizacao] = useState("");
+  const [sessionCarregada, setSessionCarregada] = useState(false);
   const [idInputLogin, setIdInputLogin] = useState("");
   const [senhaInputLogin, setSenhaInputLogin] = useState("");
+  const [erroLogin, setErroLogin] = useState("");
+  const [carregandoLogin, setCarregandoLogin] = useState(false);
   const [novaSenhaInput, setNovaSenhaInput] = useState("");
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [layoutPreferido, setLayoutPreferido] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("reds_layout_preferido") || "lateral";
+    }
+    return "lateral";
+  });
+
+  useEffect(() => {
+    if (!usuarioLogado || getPrimaryRole(usuarioLogado.role || "") !== "dono") {
+      setCargoVisualizacao("");
+    }
+  }, [usuarioLogado?.id, usuarioLogado?.role]);
+
+  const normalizarLayoutPreferido = (layout) => (
+    layout === "topo" || layout === "lateral" ? layout : "lateral"
+  );
+
+  const aplicarLayoutDoUsuario = (usuario) => {
+    if (usuario?.layout_preferido) {
+      const normalizado = normalizarLayoutPreferido(usuario.layout_preferido);
+      setLayoutPreferido(normalizado);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("reds_layout_preferido", normalizado);
+      }
+    }
+  };
+
+  const alterarLayoutPreferido = async (valorOuUpdater) => {
+    const novoLayout = normalizarLayoutPreferido(
+      typeof valorOuUpdater === "function" ? valorOuUpdater(layoutPreferido) : valorOuUpdater
+    );
+
+    setLayoutPreferido(novoLayout);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("reds_layout_preferido", novoLayout);
+    }
+
+    if (!usuarioLogado?.id) return;
+
+    const usuarioAtualizado = { ...usuarioLogado, layout_preferido: novoLayout };
+    setUsuarioLogado(usuarioAtualizado);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("reds_session_user", JSON.stringify(usuarioAtualizado));
+    }
+
+    try {
+      await supabase
+        .from("usuarios")
+        .update({ layout_preferido: novoLayout })
+        .eq("id", usuarioLogado.id);
+    } catch (e) {
+      console.error("Erro ao salvar preferência de layout:", e);
+    }
+  };
+
 
   const [clientesLista, setClientesLista] = useState([]);
   const [editandoId, setEditandoId] = useState(null);
@@ -92,9 +165,12 @@ export default function Home() {
   const [kmGuincho, setKmGuincho] = useState(0);
   const [qtdReparos, setQtdReparos] = useState(0);
   const [qtdPneus, setQtdPneus] = useState(0);
+  const [reboque, setReboque] = useState(false);
 
   const [pontoAtivo, setPontoAtivo] = useState(null);
-  const [tempoSegundos, setTempoSegundos] = useState(0);
+  // O cronômetro é atualizado localmente apenas nos componentes que o exibem.
+  // Manter este valor estático evita renderizar novamente toda a aplicação a cada segundo.
+  const tempoSegundos = 0;
   const [totalMinutosTrabalhados, setTotalMinutosTrabalhados] = useState(0);
   const [historicoPonto, setHistoricoPonto] = useState([]);
   const [carregandoHistorico, setCarregandoHistorico] = useState(false);
@@ -142,7 +218,65 @@ export default function Home() {
 
   // ===== STATES: NOTIFICAÇÕES =====
   const [notificacaoPendente, setNotificacaoPendente] = useState(null);
+  const [tunagemRealtimeGlobal, setTunagemRealtimeGlobal] = useState(null);
+  const [notificacoesServicos, setNotificacoesServicos] = useState([]);
+  const painelNotificacoesRef = useRef(null);
+  const [bancadaRealtimeGlobal, setBancadaRealtimeGlobal] = useState(null);
+  const [logTunagemParaAbrir, setLogTunagemParaAbrir] = useState(null);
+  const [notificarTodasTunagens, setNotificarTodasTunagens] = useState(true);
   const [historicoNotificacoes, setHistoricoNotificacoes] = useState([]);
+
+  const adicionarNotificacaoServico = (log, analise, isMeu) => {
+    const id = String(log.uuid || log.id || log.discord_message_id || `${log.placa || "veiculo"}-${log.created_at || Date.now()}`);
+    const temPerformance = (analise?.itens || []).some((item) => /motor|freio|c[aâ]mbio|suspens|blindagem|turbo/i.test(item.nome || item.item || ""));
+    const notificacao = {
+      id,
+      tipo: temPerformance ? "Tunagem" : "Estética",
+      log,
+      analise,
+      isMeu,
+      recebidaEm: new Date().toISOString(),
+    };
+    setNotificacoesServicos((atuais) => [notificacao, ...atuais.filter((item) => item.id !== id)].slice(0, 50));
+  };
+
+  useEffect(() => {
+    const savedNotifPref = localStorage.getItem("reds_notif_todas_tunagens");
+    if (savedNotifPref !== null) {
+      setNotificarTodasTunagens(savedNotifPref === "true");
+    }
+
+    const handleNav = (e) => {
+      if (e.detail) setPaginaAtual(e.detail);
+    };
+    window.addEventListener("navegar-pagina", handleNav);
+    return () => window.removeEventListener("navegar-pagina", handleNav);
+  }, []);
+
+  // Mantém o bot do Render ativo via ping silencioso a cada 4 minutos enquanto o site estiver aberto
+  useEffect(() => {
+    const pingBotKeepAlive = async () => {
+      try {
+        await fetch("/api/bot/health", { cache: "no-store" });
+      } catch {}
+    };
+
+    const initialTimer = setTimeout(pingBotKeepAlive, 15_000);
+    const interval = setInterval(pingBotKeepAlive, 240_000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, []);
+
+  const toggleNotificarTodasTunagens = () => {
+    setNotificarTodasTunagens((prev) => {
+      const novo = !prev;
+      localStorage.setItem("reds_notif_todas_tunagens", String(novo));
+      return novo;
+    });
+  };
   const [notifIdFuncionario, setNotifIdFuncionario] = useState("");
   const [notifMensagem, setNotifMensagem] = useState("");
   const [notifFuncionarioInfo, setNotifFuncionarioInfo] = useState(null);
@@ -175,6 +309,7 @@ export default function Home() {
   const [editFuncTelefone, setEditFuncTelefone] = useState("");
   const [editFuncStatus, setEditFuncStatus] = useState("ativo");
   const [editFuncAdmissao, setEditFuncAdmissao] = useState("");
+  const [editFuncDemissao, setEditFuncDemissao] = useState("");
   const [buscaFuncionario, setBuscaFuncionario] = useState("");
 
   // ===== STATES: BLACKLIST =====
@@ -378,6 +513,7 @@ export default function Home() {
   const WEBHOOK_TUNAGEM = process.env.NEXT_PUBLIC_WEBHOOK_TUNAGEM;
   const WEBHOOK_VENDAS = process.env.NEXT_PUBLIC_WEBHOOK_VENDAS;
   const WEBHOOK_GUINCHO = process.env.NEXT_PUBLIC_WEBHOOK_GUINCHO;
+  const WEBHOOK_REBOQUE = "https://discord.com/api/webhooks/1547358481122590870/iiYd9HgKm_Sk7Li67mNzlcdqOyXNsY-V2pSu13bqmAqeKfCSkZ4F2Vg-2aJoLI6X893V";
   const WEBHOOK_RODAS = process.env.NEXT_PUBLIC_WEBHOOK_RODAS;
   const WEBHOOK_REPORT = process.env.NEXT_PUBLIC_WEBHOOK_REPORT;
   const WEBHOOK_PAGAMENTOS = process.env.NEXT_PUBLIC_WEBHOOK_PAGAMENTOS;
@@ -524,6 +660,7 @@ export default function Home() {
     setKmGuincho(0);
     setQtdReparos(0);
     setQtdPneus(0);
+    setReboque(false);
   };
 
   const getPeriodoFiltro = (periodo) => {
@@ -552,11 +689,35 @@ export default function Home() {
 
   const buscarUsuarioNoBanco = async (idDigitado) => {
     try {
-      const { data, error } = await supabase.from("usuarios").select("*").eq("id", parseInt(idDigitado)).maybeSingle();
-      if (error) throw error;
-      return data;
+      if (!idDigitado) return null;
+      const idStr = String(idDigitado).trim();
+      const idNum = parseInt(idStr, 10);
+      
+      let user = null;
+      if (!isNaN(idNum)) {
+        const { data, error } = await supabase.from("usuarios").select("*").eq("id", idNum).maybeSingle();
+        if (!error && data) user = data;
+      }
+      
+      if (!user) {
+        const { data: dataJogo } = await supabase.from("usuarios").select("*").eq("id_jogo", idStr).maybeSingle();
+        if (dataJogo) user = dataJogo;
+      }
+
+      if (!user && Array.isArray(listaFuncionarios) && listaFuncionarios.length > 0) {
+        user = listaFuncionarios.find(
+          (f) => String(f.id) === idStr || String(f.id_jogo) === idStr
+        ) || null;
+      }
+
+      return user;
     } catch (err) {
-      console.error("Erro:", err.message);
+      console.error("Erro ao buscar usuário no banco:", err);
+      if (Array.isArray(listaFuncionarios) && listaFuncionarios.length > 0) {
+        return listaFuncionarios.find(
+          (f) => String(f.id) === String(idDigitado).trim() || String(f.id_jogo) === String(idDigitado).trim()
+        ) || null;
+      }
       return null;
     }
   };
@@ -569,8 +730,20 @@ export default function Home() {
   const buscarCliente = async (id) => {
     if (!id) { setCliente(""); setGastoCliente(0); return; }
     const { data } = await supabase.from("clientes").select("*").eq("id", Number(id)).maybeSingle();
-    if (data) { setCliente(data.nome); setGastoCliente(data.total_gasto || 0); }
-    else { setCliente(""); setGastoCliente(0); }
+    if (data) {
+      setCliente((nomeAtual) => {
+        // Se o nome atual já estiver preenchido (ex: vindo da log de serviço mais recente),
+        // preserva o nome atual para não ser rebaixado por um registro antigo
+        if (nomeAtual && nomeAtual.trim() && nomeAtual.trim().toLowerCase() !== data.nome?.trim().toLowerCase()) {
+          return nomeAtual;
+        }
+        return data.nome || nomeAtual || "";
+      });
+      setGastoCliente(data.total_gasto || 0);
+    } else {
+      setCliente((nomeAtual) => nomeAtual || "");
+      setGastoCliente(0);
+    }
   };
 
   const buscarClientePorId = async () => {
@@ -692,17 +865,32 @@ export default function Home() {
   };
 
   const buscarUsuariosComRole = async () => {
-    const { data } = await supabase.from("usuarios").select("id, nome, role");
-    if (data) {
+    try {
+      const { data, error } = await supabase.from("usuarios").select("id, nome, role");
+      if (error) throw error;
       const mapa = {};
-      data.forEach((u) => { mapa[u.id] = { nome: u.nome, role: u.role }; });
+      (Array.isArray(data) ? data : []).forEach((u) => {
+        if (u?.id !== undefined && u?.id !== null) mapa[u.id] = { nome: u.nome || "Usuário", role: u.role || "" };
+      });
       setUsuariosRoleMapa(mapa);
+    } catch (error) {
+      console.error("Erro ao carregar cargos das notificações:", error);
+      setUsuariosRoleMapa({});
     }
   };
 
   const buscarListaFuncionarios = async () => {
-    const { data } = await supabase.from("usuarios").select("*").order("nome", { ascending: true });
-    if (data) setListaFuncionarios(data);
+    try {
+      const { data, error } = await supabase.from("usuarios").select("*").order("nome", { ascending: true });
+      if (error) {
+        console.error("Erro ao buscar lista de funcionários:", error.message, error);
+      } else {
+        console.log("Funcionários buscados com sucesso:", data ? data.length : 0, "registros.");
+        if (data) setListaFuncionarios(data);
+      }
+    } catch (err) {
+      console.error("Exceção ao buscar lista de funcionários:", err);
+    }
   };
 
   const iniciarEdicaoFuncionario = (func) => {
@@ -714,6 +902,7 @@ export default function Home() {
     setEditFuncTelefone(func.telefone || "");
     setEditFuncStatus(func.status || "ativo");
     setEditFuncAdmissao(func.data_admissao || "");
+    setEditFuncDemissao(func.data_demissao || "");
   };
 
   const atualizarFuncionario = async (id) => {
@@ -741,6 +930,7 @@ export default function Home() {
       telefone: editFuncTelefone || null, 
       status: editFuncStatus,
       data_admissao: editFuncAdmissao || null,
+      data_demissao: editFuncDemissao || null,
       ids_antigos: novosIdsAntigos,
       nomes_antigos: novosNomesAntigos
     };
@@ -793,53 +983,152 @@ export default function Home() {
     if (error) alert("Erro ao salvar: " + error.message);
   };
 
+  const encerrarSessao = (mensagem = "") => {
+    localStorage.removeItem("reds_session_user");
+    localStorage.removeItem("reds_session_page");
+    setUsuarioLogado(null);
+    setPaginaAtual("login");
+    if (mensagem) alert(mensagem);
+  };
+
   const atualizarSenhaNoBanco = async (id, novaSenha) => {
     const { error } = await supabase.from("usuarios").update({ senha: novaSenha }).eq("id", id);
-    if (error) alert("Erro ao atualizar senha");
+    if (error) {
+      alert("Erro ao atualizar senha");
+      return false;
+    }
+    encerrarSessao();
+    return true;
+  };
+
+  const userPodeGerenciarCursos = () => Boolean(
+    isAdminOuDono(usuarioLogado?.role) ||
+    (usuarioLogado?.role && (
+      usuarioLogado.role.includes("gerente_geral") ||
+      usuarioLogado.role.includes("gerente_rh") ||
+      usuarioLogado.role.includes("resp_rh") ||
+      usuarioLogado.role.includes("dono") ||
+      usuarioLogado.role.includes("admin")
+    ))
+  );
+
+  const montarUpdateCurso = (cursoId, concluido, removidoPor = null, cursosConcluidosAtuais = usuarioLogado?.cursos_concluidos || {}) => {
+    const curso = (CURSOS_OBRIGATORIOS || []).find((item) => item.id === cursoId);
+    const updateData = {
+      cursos_concluidos: {
+        ...cursosConcluidosAtuais,
+        [cursoId]: concluido ? new Date().toISOString() : null,
+      },
+    };
+    if (curso && curso.campo) {
+      const prefixo = curso.campo.replace("_concluido", "");
+      updateData[curso.campo] = concluido;
+      updateData[`${prefixo}_concluido_em`] = concluido ? new Date().toISOString() : null;
+      updateData[`${prefixo}_removido_em`] = concluido ? null : new Date().toISOString();
+      updateData[`${prefixo}_removido_por`] = concluido ? null : removidoPor;
+    }
+    return updateData;
+  };
+
+  const concluirCurso = async (cursoId) => {
+    if (!usuarioLogado?.id) return;
+    const updateData = montarUpdateCurso(cursoId, true);
+    if (!updateData) return;
+
+    const { error } = await supabase.from("usuarios").update(updateData).eq("id", usuarioLogado.id);
+    if (error) {
+      alert("❌ Erro ao concluir curso: " + error.message);
+      return;
+    }
+
+    const usuarioAtualizado = { ...usuarioLogado, ...updateData };
+    setUsuarioLogado(usuarioAtualizado);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("reds_session_user", JSON.stringify(usuarioAtualizado));
+    }
+    alert("✅ Curso concluído! Liberação atualizada.");
+    if (cursoId === "estagiario") {
+      setPaginaAtual("dashboard");
+    }
+  };
+
+  const alterarCursoFuncionario = async (funcionarioId, cursoId, concluido) => {
+    if (!funcionarioId) return;
+    const funcionarioAtual = listaFuncionarios.find((func) => String(func.id) === String(funcionarioId));
+    const updateData = montarUpdateCurso(cursoId, concluido, usuarioLogado?.id || null, funcionarioAtual?.cursos_concluidos || {});
+    if (!updateData) return;
+
+    const { error } = await supabase.from("usuarios").update(updateData).eq("id", funcionarioId);
+    if (error) {
+      alert("❌ Erro ao atualizar curso: " + error.message);
+      return;
+    }
+
+    if (String(funcionarioId) === String(usuarioLogado?.id)) {
+      const usuarioAtualizado = { ...usuarioLogado, ...updateData };
+      setUsuarioLogado(usuarioAtualizado);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("reds_session_user", JSON.stringify(usuarioAtualizado));
+      }
+    }
+
+    buscarListaFuncionarios();
+    alert(concluido ? "✅ Curso liberado para o funcionário." : "⚠️ Curso removido. O funcionário precisará refazer.");
   };
 
   const realizarLogin = async (idDigitado, senhaDigitada) => {
+    setErroLogin("");
+    setCarregandoLogin(true);
     try {
-      const usuario = await buscarUsuarioNoBanco(idDigitado);
+      const idLimpo = (idDigitado || "").toString().trim();
+      const senhaLimpa = (senhaDigitada || "").toString().trim();
+      if (!idLimpo || !senhaLimpa) {
+        setErroLogin("Preencha o ID e a senha.");
+        return;
+      }
+      const usuario = await buscarUsuarioNoBanco(idLimpo);
       if (usuario) {
-        if (usuario.status === "inativo") {
-          alert("🚫 Acesso negado. Seu usuário está inativo. Contate um Administrador.");
+        if (usuario.status === "inativo" || usuario.status === "demitido") {
+          setErroLogin("Acesso negado. Seu usuário está inativo ou demitido. Contate um administrador.");
           return;
         }
         
         // Evita erro de 'Cannot read properties of null (reading toString)'
-        const senhaDb = (usuario.senha || usuario.id).toString();
-        const idDb = usuario.id.toString();
+        const senhaDb = (usuario.senha || usuario.id).toString().trim();
+        const idDb = usuario.id.toString().trim();
         
-        if (senhaDb === idDb && senhaDigitada === idDb) {
-        alert("Primeiro acesso detectado! Por favor, altere sua senha.");
-        setUsuarioLogado(usuario);
-        setPaginaAtual("alterar-senha");
-      } else if (senhaDb === senhaDigitada) {
-        // ===== VERIFICAR BLOQUEIO FINANCEIRO =====
-        if (usuario.bloqueado_financeiro) {
-          const usadoEm = usuario.credito_24h_usado_em;
-          const dentroJanela = usadoEm && (Date.now() - new Date(usadoEm).getTime()) < 24 * 3600 * 1000;
-          if (!dentroJanela) {
-            setUsuarioLogado(usuario);
-            setNomeMecanico(usuario.nome);
-            buscarMeusPagamentos(usuario.id);
-            setPaginaAtual("bloqueado-financeiro");
-            return;
+        if (senhaDb === idDb && senhaLimpa === idDb) {
+          alert("Primeiro acesso detectado! Por favor, altere sua senha.");
+          setUsuarioLogado(usuario);
+          setPaginaAtual("alterar-senha");
+        } else if (senhaDb === senhaLimpa) {
+          // ===== VERIFICAR BLOQUEIO FINANCEIRO =====
+          if (usuario.bloqueado_financeiro) {
+            const usadoEm = usuario.credito_24h_usado_em;
+            const dentroJanela = usadoEm && (Date.now() - new Date(usadoEm).getTime()) < 24 * 3600 * 1000;
+            if (!dentroJanela) {
+              setUsuarioLogado(usuario);
+              setNomeMecanico(usuario.nome);
+              buscarMeusPagamentos(usuario.id);
+              setPaginaAtual("bloqueado-financeiro");
+              return;
+            }
           }
+          aplicarLayoutDoUsuario(usuario);
+          setUsuarioLogado(usuario);
+          setNomeMecanico(usuario.nome);
+          setPaginaAtual("dashboard");
+        } else {
+          setErroLogin("Senha incorreta. Verifique sua senha.");
         }
-        setUsuarioLogado(usuario);
-        setNomeMecanico(usuario.nome);
-        setPaginaAtual("dashboard");
       } else {
-        alert("Senha incorreta.");
-      }
-      } else {
-        alert("ID não autorizado. Contate um Administrador.");
+        setErroLogin("ID não autorizado ou inexistente. Contate um administrador.");
       }
     } catch (err) {
       console.error(err);
-      alert("Erro de conexão ao tentar logar.");
+      setErroLogin("Erro de conexão ao tentar entrar. Tente novamente.");
+    } finally {
+      setCarregandoLogin(false);
     }
   };
 
@@ -899,17 +1188,63 @@ export default function Home() {
 
   const verificarPontoAtivo = async () => {
     if (!usuarioLogado) return;
-    const { data } = await supabase.from("ponto_horas").select("*").eq("usuario_id", usuarioLogado.id).is("saida", null).maybeSingle();
-    if (data) { setPontoAtivo(data); }
-    else { setPontoAtivo(null); setTempoSegundos(0); }
+    try {
+      const { data: logs, error } = await supabase
+        .from("discord_log_messages")
+        .select("id, content, created_at")
+        .eq("log_type", "ponto")
+        .ilike("content", `%[ID]: ${usuarioLogado.id}%`)
+        .order("id", { ascending: false })
+        .limit(10);
+
+      if (error) throw error;
+
+      const userLog = (logs || []).find((l) => {
+        const c = l.content || "";
+        const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
+        return idMatch && String(idMatch[1]).trim() === String(usuarioLogado.id).trim();
+      });
+
+      if (userLog) {
+        const c = userLog.content || "";
+        const isEntrou = c.includes("ENTROU EM SERVIÇO");
+        const isSaiu = c.includes("SAIU DE SERVIÇO");
+
+        if (isEntrou && !isSaiu) {
+          const dataMatch = c.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
+          let timestamp = userLog.created_at;
+          if (dataMatch) {
+            const [_, dataStr, horaStr] = dataMatch;
+            const [dia, mes, ano] = dataStr.split("/");
+            timestamp = `${ano}-${mes}-${dia}T${horaStr}-03:00`;
+          }
+          const dtEntrada = new Date(timestamp);
+          if (Date.now() - dtEntrada.getTime() < 18 * 60 * 60 * 1000) {
+            setPontoAtivo({
+              entrada: dtEntrada.toISOString(),
+              usuario_id: usuarioLogado.id,
+              nome: usuarioLogado.nome,
+              rawLog: c
+            });
+            return;
+          }
+        }
+      }
+      setPontoAtivo(null);
+    } catch (e) {
+      console.error("Erro ao verificar ponto ativo do jogo:", e);
+    }
   };
 
   const buscarHistoricoPonto = async ({ nome = filtroPontoNome, dataInicio = filtroPontoDataIni, dataFim = filtroPontoDataFim, apenasMeus = false } = {}) => {
     if (!usuarioLogado) return;
     setCarregandoHistorico(true);
 
-    const userRole = usuarioLogado?.role || "";
-    const isPontoAdmin = isResponsavelPonto(userRole) && !apenasMeus;
+    const cargoRealPonto = usuarioLogado?.role || "";
+    const roleConsulta = getPrimaryRole(cargoRealPonto) === "dono" && cargoVisualizacao
+      ? cargoVisualizacao
+      : cargoRealPonto;
+    const podeVerTodosPontos = getNivel(roleConsulta) >= 5 && !apenasMeus;
 
     let allData = [];
     let page = 0;
@@ -920,7 +1255,7 @@ export default function Home() {
       while (hasMore && allData.length < 30000) {
         let query = supabase.from("ponto_horas").select("*").order("entrada", { ascending: false });
 
-        if (isPontoAdmin) {
+        if (podeVerTodosPontos) {
           if (nome.trim()) {
             const n = `%${nome.trim()}%`;
             query = query.or(`nome.ilike.${n},nome_personagem.ilike.${n}`);
@@ -1021,7 +1356,7 @@ export default function Home() {
     const pageSize = 1000;
     let hasMoreC = true;
     while (hasMoreC && dataCidade.length < 50000) {
-      let q = supabase.from("ponto_cidade").select("*").not("saida", "is", null).or("oculto.is.null,oculto.eq.false").order("id", { ascending: true }).range(pageC * pageSize, (pageC + 1) * pageSize - 1);
+      let q = supabase.from("ponto_cidade_reds").select("*").not("saida", "is", null).or("oculto.is.null,oculto.eq.false").order("id", { ascending: true }).range(pageC * pageSize, (pageC + 1) * pageSize - 1);
       if (filtro) q = q.gte("data", filtro.inicio).lte("data", filtro.fim);
       const { data, error } = await q;
       if (error || !data || data.length === 0) hasMoreC = false;
@@ -1319,8 +1654,14 @@ export default function Home() {
   };
 
   const buscarHistoricoNotificacoes = async () => {
-    const { data } = await supabase.from("notificacoes").select("*").order("criado_em", { ascending: false }).limit(200);
-    if (data) setHistoricoNotificacoes(data);
+    try {
+      const { data, error } = await supabase.from("notificacoes").select("*").order("criado_em", { ascending: false }).limit(200);
+      if (error) throw error;
+      setHistoricoNotificacoes(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Erro ao carregar histórico de notificações:", error);
+      setHistoricoNotificacoes([]);
+    }
   };
 
   const ficarOnline = async () => {
@@ -1483,9 +1824,14 @@ export default function Home() {
     const podeEditar = isAdminOuDono(usuarioLogado.role) || isResponsavelPonto(usuarioLogado.role);
 
     if (podeEditar) {
-      const { error } = await supabase.from("ponto_horas").update({ saida: novaISO }).eq("id", ponto.id);
-      if (error) { alert("❌ Erro ao atualizar saída."); }
-      else {
+      if (ponto.origem === "auditoria" || ponto.uuid_sessao) {
+        const durMin = Math.max(0, Math.round((saidaDate - entradaDate) / 60000));
+        if (ponto.uuid_sessao) {
+          await supabase.from("sessoes_ponto_auditoria_reds").update({ saida: novaISO, duracao_min: durMin }).eq("uuid_sessao", ponto.uuid_sessao);
+          await supabase.from("ponto_cidade_reds").update({ saida: novaISO }).eq("uuid_entrada", ponto.uuid_sessao);
+        } else if (ponto.id) {
+          await supabase.from("sessoes_ponto_auditoria_reds").update({ saida: novaISO, duracao_min: durMin }).eq("id", ponto.id);
+        }
         alert("✅ Saída atualizada!");
         setEditandoPontoId(null);
         setNovaSaidaInput("");
@@ -1495,6 +1841,20 @@ export default function Home() {
         buscarHistoricoPonto();
         buscarEmServico();
         buscarTotalHoras();
+      } else {
+        const { error } = await supabase.from("ponto_horas").update({ saida: novaISO }).eq("id", ponto.id);
+        if (error) { alert("❌ Erro ao atualizar saída."); }
+        else {
+          alert("✅ Saída atualizada!");
+          setEditandoPontoId(null);
+          setNovaSaidaInput("");
+          setNovaSaidaDataInput("");
+          setNovaSaidaJustificativa("");
+          buscarHistoricoAdmin();
+          buscarHistoricoPonto();
+          buscarEmServico();
+          buscarTotalHoras();
+        }
       }
     } else {
       if (!novaSaidaJustificativa.trim()) {
@@ -1541,7 +1901,7 @@ export default function Home() {
   };
 
   // ===== PONTO ADMIN: IMPORTAÇÃO DE LOGS DA CIDADE =====
-  // Usa tabela separada (ponto_cidade), independente do ponto declarado (ponto_horas)
+  // Usa tabela separada (pontos_reds), independente do ponto declarado (ponto_horas)
   const importarSessoesParaBanco = async (sessoes) => {
     if (!sessoes || sessoes.length === 0) {
       return { inseridos: 0, duplicados: 0, erros: 0 };
@@ -1552,14 +1912,32 @@ export default function Home() {
     let erros = 0;
 
     for (const s of sessoes) {
-      // Verificar se já existe pelo UUID de entrada
       let existenteId = null;
+
+      // 1. Tentar achar pelo UUID de entrada
       if (s.uuid_entrada) {
         const { data: existente } = await supabase
-          .from("ponto_cidade")
+          .from("pontos_reds")
           .select("id")
           .eq("uuid_entrada", s.uuid_entrada)
           .maybeSingle();
+        if (existente) existenteId = existente.id;
+      }
+
+      // 2. Se não achou pelo UUID, tentar achar por id_jogo + mesmo minuto de entrada
+      if (!existenteId && s.entrada) {
+        const dEntrada = new Date(s.entrada);
+        const inicioMin = new Date(new Date(dEntrada).setSeconds(0, 0)).toISOString();
+        const fimMin = new Date(new Date(dEntrada).setSeconds(59, 999)).toISOString();
+
+        const { data: existente } = await supabase
+          .from("pontos_reds")
+          .select("id")
+          .eq("id_jogo", s.id_jogo)
+          .gte("entrada", inicioMin)
+          .lte("entrada", fimMin)
+          .maybeSingle();
+        
         if (existente) existenteId = existente.id;
       }
 
@@ -1574,22 +1952,23 @@ export default function Home() {
         uuid_entrada: s.uuid_entrada || null,
         uuid_saida: s.uuid_saida || null,
         importado_por: s.importado_por || null,
+        verificado: !!(s.uuid_entrada && s.uuid_saida),
       };
 
       if (existenteId) {
         // Se já existe, atualizamos (FORÇAR SOBRESCREVER)
-        const { error } = await supabase.from("ponto_cidade").update(registro).eq("id", existenteId);
+        const { error } = await supabase.from("pontos_reds").update(registro).eq("id", existenteId);
         if (error) {
-          console.error("Erro ao atualizar ponto_cidade:", error.message);
+          console.error("Erro ao atualizar pontos_reds:", error.message);
           erros++;
         } else {
           duplicados++; // Contamos como 'atualizado/duplicado' para o resumo
         }
       } else {
         // Se não existe, inserimos
-        const { error } = await supabase.from("ponto_cidade").insert([registro]);
+        const { error } = await supabase.from("pontos_reds").insert([registro]);
         if (error) {
-          console.error("Erro ao inserir ponto_cidade:", error.message);
+          console.error("Erro ao inserir pontos_reds:", error.message);
           erros++;
         } else {
           inseridos++;
@@ -1600,17 +1979,28 @@ export default function Home() {
     return { inseridos, duplicados, erros };
   };
 
-  const buscarPontoCidade = async ({ nome = "", dataInicio = "", dataFim = "" } = {}) => {
+  const buscarPontoCidade = async ({ nome = "", dataInicio = "", dataFim = "", trazerTudo = false } = {}) => {
     setRegistrosCidadeCarregando(true);
     let allData = [];
     let page = 0;
     const pageSize = 1000;
     let hasMore = true;
 
+    // Se não informou período e não pediu tudo (trazerTudo = false), limita da segunda-feira da semana passada até hoje
+    let dataInicioEfetiva = dataInicio;
+    if (!dataInicio && !dataFim && !trazerTudo) {
+      const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+      const diaSemana = agora.getDay();
+      const diasDesdeSegunda = diaSemana === 0 ? 6 : diaSemana - 1;
+      const segundaSemanaPassada = new Date(agora);
+      segundaSemanaPassada.setDate(agora.getDate() - diasDesdeSegunda - 7);
+      dataInicioEfetiva = segundaSemanaPassada.toLocaleDateString("en-CA"); // YYYY-MM-DD
+    }
+
     try {
       while (hasMore && allData.length < 30000) {
         let query = supabase
-          .from("ponto_cidade")
+          .from("ponto_cidade_reds")
           .select("*")
           .or("oculto.is.null,oculto.eq.false")   // exclui registros ocultos
           .order("entrada", { ascending: false })
@@ -1620,8 +2010,8 @@ export default function Home() {
           const nomeLike = `%${nome.trim()}%`;
           query = query.or(`nome.ilike.${nomeLike},nome_personagem.ilike.${nomeLike},id_jogo.ilike.${nomeLike}`);
         }
-        if (dataInicio) query = query.gte("data", dataInicio);
-        if (dataFim)    query = query.lte("data", dataFim);
+        if (dataInicioEfetiva) query = query.gte("data", dataInicioEfetiva);
+        if (dataFim)           query = query.lte("data", dataFim);
 
         const { data, error } = await query;
         if (error) {
@@ -1679,21 +2069,21 @@ export default function Home() {
   const buscarPontoCidadeOcultos = async () => {
     setRegistrosOcultosCarregando(true);
     const { data } = await supabase
-      .from("ponto_cidade")
+      .from("ponto_cidade_reds")
       .select("*")
       .eq("oculto", true)
-      .order("oculto_em", { ascending: false });
+      .order("entrada", { ascending: false });
     if (data) setRegistrosOcultos(data);
     setRegistrosOcultosCarregando(false);
   };
 
   const atualizarPontoCidade = async (id, campos) => {
-    const { error } = await supabase.from("ponto_cidade").update(campos).eq("id", id);
+    const { error } = await supabase.from("pontos_reds").update(campos).eq("id", id);
     return { error };
   };
 
   const deletarPontoCidade = async (id) => {
-    const { error } = await supabase.from("ponto_cidade").delete().eq("id", id);
+    const { error } = await supabase.from("pontos_reds").delete().eq("id", id);
     return { error };
   };
 
@@ -1709,12 +2099,22 @@ export default function Home() {
         let query = supabase
           .from(tableName)
           .select("*")
-          .or("oculto.is.null,oculto.eq.false")
-          .order("id", { ascending: true }) // Ordenação estável para paginação
           .range(page * pageSize, (page + 1) * pageSize - 1);
 
-        if (dataInicio) query = query.gte("data", dataInicio);
-        if (dataFim)    query = query.lte("data", dataFim);
+        if (tableName === "pontos_reds") {
+          query = query.order("entrada", { ascending: true });
+          if (dataInicio) query = query.gte("entrada", `${dataInicio}T00:00:00-03:00`);
+          if (dataFim) {
+            const dtF = new Date(`${dataFim}T12:00:00-03:00`);
+            dtF.setDate(dtF.getDate() + 1);
+            const diaSeg = dtF.toLocaleDateString("en-CA");
+            query = query.lte("entrada", `${diaSeg}T09:00:00-03:00`);
+          }
+        } else {
+          query = query.or("oculto.is.null,oculto.eq.false").order("id", { ascending: true });
+          if (dataInicio) query = query.gte("data", dataInicio);
+          if (dataFim)    query = query.lte("data", dataFim);
+        }
         
         const { data, error } = await query;
         if (error) throw error;
@@ -1732,7 +2132,7 @@ export default function Home() {
 
     try {
       const [dataM1, dataM2, dataM3] = await Promise.all([
-        fetchTableData("ponto_cidade"),
+        fetchTableData("pontos_reds"),
         fetchTableData("ponto_cidade_mecanica_2"),
         fetchTableData("ponto_cidade_mecanica_3"),
       ]);
@@ -2598,15 +2998,40 @@ export default function Home() {
         }
       } catch (e) { console.log("Erro ao ler JSON do Discord", e); }
 
-      // Salvar na tabela de pagamentos para auditoria
-      await supabase.from("pagamentos_semanais").insert({
-        funcionario_id: usuarioLogado.id,
-        funcionario_nome: usuarioLogado.nome,
-        valor: valorNumerico,
-        confirmado: false,
-        comprovante_link: linkDiscord,
-        observacao: (semanaSelecionada ? `[${semanaSelecionada}] ` : "") + (observacaoPagamento?.trim() || "")
-      });
+      // Verificar se já existe um registro pendente sem comprovante para esta semana
+      let registroExistente = null;
+      if (semanaSelecionada) {
+        const { data: ext } = await supabase
+          .from("pagamentos_semanais")
+          .select("id")
+          .eq("funcionario_id", usuarioLogado.id)
+          .eq("confirmado", false)
+          .is("comprovante_link", null)
+          .ilike("observacao", `%${semanaSelecionada}%`)
+          .limit(1)
+          .maybeSingle();
+        registroExistente = ext;
+      }
+
+      if (registroExistente) {
+        await supabase
+          .from("pagamentos_semanais")
+          .update({
+            valor: valorNumerico,
+            comprovante_link: linkDiscord,
+            observacao: `[${semanaSelecionada}] ` + (observacaoPagamento?.trim() || "")
+          })
+          .eq("id", registroExistente.id);
+      } else {
+        await supabase.from("pagamentos_semanais").insert({
+          funcionario_id: usuarioLogado.id,
+          funcionario_nome: usuarioLogado.nome,
+          valor: valorNumerico,
+          confirmado: false,
+          comprovante_link: linkDiscord,
+          observacao: (semanaSelecionada ? `[${semanaSelecionada}] ` : "") + (observacaoPagamento?.trim() || "")
+        });
+      }
 
       alert("✅ Pagamento registrado com sucesso! Aguarde a confirmação do financeiro.");
       limparFormularioPagamento();
@@ -2639,20 +3064,22 @@ export default function Home() {
       return;
     }
 
-    if (!cliente || !passaporte) { alert("⚠️ Preencha o nome e o ID do cliente antes de registrar!"); return; }
+    const temReboque = Boolean(reboque);
+    if (!temReboque && (!cliente || !passaporte)) { alert("⚠️ Preencha o nome e o ID do cliente antes de registrar!"); return; }
+    if (temReboque && !arquivoImagem) { alert("⚠️ Envie a foto do serviço de reboque!"); return; }
 
     // Verificação de Blacklist
-    if (isClienteBanido(passaporte)) {
+    if (passaporte && isClienteBanido(passaporte)) {
       const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
       alert(`🚫 OPERAÇÃO BLOQUEADA!\n\nEste cliente está na BLACKLIST.\nMotivo: ${banInfo?.motivo || "Não informado"}`);
       return;
     }
 
-    const temGuincho = Number(kmGuincho) > 0 || Number(qtdReparos) > 0 || Number(qtdPneus) > 0;
+    const temGuincho = temReboque || Number(kmGuincho) > 0 || Number(qtdReparos) > 0 || Number(qtdPneus) > 0;
     const temEstetica = Number(valorDigitadoEstetica) > 0 || camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca;
     const temAlgumaPeca = Object.values(servicosSelecionados).some((v) => v === true);
     const total = calcularTotal();
-    await salvarCliente(total);
+    if (cliente && passaporte) await salvarCliente(total);
 
     const soGuincho = temGuincho && !temEstetica && !temAlgumaPeca;
     const temItensVenda = servicosSelecionados["n1"] || servicosSelecionados["d1"] || servicosSelecionados["rd1"];
@@ -2682,9 +3109,16 @@ export default function Home() {
       return acc + (p?.painel || 0);
     }, 0);
 
-    if (valorPainel > 0 && valorPainel < somaExtras + valorFumacaPainel + somaPainelPerformanceDiscord) { alert("⚠️ O valor do painel não pode ser menor que extras + fumaça + peças de performance!"); return; }
+    const qtdCamaleaoDiscord = [camaleao1, camaleao2, camaleaoRodas].filter(Boolean).length;
+    const descontoCamaleaoDiscord = qtdCamaleaoDiscord * (rules.estetica?.painel_camaleao || 500);
+    const custoMinimoPainel = somaExtras + valorFumacaPainel + descontoCamaleaoDiscord + somaPainelPerformanceDiscord;
 
-    const valorBaseEstetica = Math.max(0, valorPainel - somaExtras - valorFumacaPainel - somaPainelPerformanceDiscord);
+    if (valorPainel > 0 && valorPainel < custoMinimoPainel) {
+      alert(`⚠️ Inconsistência matemática: O valor do painel in-game (R$ ${valorPainel.toLocaleString("pt-BR")}) não cobre o custo dos itens selecionados (R$ ${custoMinimoPainel.toLocaleString("pt-BR")})! Fumaça, camaleão ou performance excedem o valor pago.`);
+      return;
+    }
+
+    const valorBaseEstetica = Math.max(0, valorPainel - custoMinimoPainel);
     let valorAdicionalCamaleao = 0;
     if (camaleao1) valorAdicionalCamaleao += 6000;
     if (camaleao2) valorAdicionalCamaleao += 6000;
@@ -2695,11 +3129,12 @@ export default function Home() {
     const nomesServicos = Object.keys(servicosSelecionados).filter((id) => servicosSelecionados[id]).map((id) => todasPeças.find((p) => p.id === id)?.nome).join(", ");
 
     let webhookDestino = WEBHOOK_ESTETICA;
-    if (soGuincho) webhookDestino = WEBHOOK_GUINCHO;
+    if (temReboque) webhookDestino = WEBHOOK_REBOQUE;
+    else if (soGuincho) webhookDestino = WEBHOOK_GUINCHO;
     else if (temItensVenda && !temPerformance) webhookDestino = null;
     else if (temPerformance) webhookDestino = WEBHOOK_TUNAGEM;
 
-    const tituloRelatorio = soGuincho ? "🚗 CONTROLE DE GUINCHO" : temPerformance ? "🛠️ RELATÓRIO DE PERFORMANCE" : "🎨 RELATÓRIO DE ESTÉTICA";
+    const tituloRelatorio = temReboque ? "🚚 CONTROLE DE REBOQUE" : soGuincho ? "🚗 CONTROLE DE GUINCHO" : temPerformance ? "🛠️ RELATÓRIO DE PERFORMANCE" : "🎨 RELATÓRIO DE ESTÉTICA";
     const corEmbed = temPerformance ? 15105570 : 3447003;
 
     const camaleoesSelecionados = [
@@ -2721,14 +3156,15 @@ export default function Home() {
 
     const fields = [
       { name: "👨‍🔧 Mecânico", value: nomeMecanico, inline: true },
-      { name: "👤 Cliente", value: `${cliente} (ID: ${passaporte})`, inline: true },
+      { name: "👤 Cliente", value: cliente && passaporte ? `${cliente} (ID: ${passaporte})` : "Não informado", inline: true },
       { name: "✅ Autorizado por", value: autorizadoPor || "N/A", inline: true },
       { name: "💰 Total Final", value: `**R$ ${total.toLocaleString("pt-BR")}**`, inline: false },
     ];
     if (!soGuincho) fields.push({ name: "🎨 Estética", value: `R$ ${valorEsteticaFinal.toLocaleString("pt-BR")}`, inline: true });
     if (camaleoesSelecionados.length > 0) fields.push({ name: "🦎 Camaleão", value: camaleoesSelecionados.join(", "), inline: true });
     if (temPerformance) fields.push({ name: "⚙️ Peças Instaladas", value: nomesServicos || "Nenhuma", inline: false });
-    if (temGuincho) fields.push({ name: "🚗 Guincho", value: `${kmGuincho} KM (x2)`, inline: true }, { name: "🔧 Reparos", value: `${qtdReparos}`, inline: true }, { name: "🛞 Pneus", value: `${qtdPneus}`, inline: true });
+    if (temReboque) fields.push({ name: "🚚 Tipo de atendimento", value: "Reboque", inline: true });
+    else if (temGuincho) fields.push({ name: "🚗 Guincho", value: `${kmGuincho} KM (x2)`, inline: true }, { name: "🔧 Reparos", value: `${qtdReparos}`, inline: true }, { name: "🛞 Pneus", value: `${qtdPneus}`, inline: true });
 
     const discordEmbed = {
       title: tituloRelatorio, color: corEmbed, fields,
@@ -2769,7 +3205,9 @@ export default function Home() {
       if (response.ok) {
         // Gerar detalhes do serviço
         let detalhesServico = "";
-        if (soGuincho) {
+        if (temReboque) {
+          detalhesServico = "Serviço de Reboque";
+        } else if (soGuincho) {
           detalhesServico = `Guincho: ${kmGuincho}KM | Reparos: ${qtdReparos} | Pneus: ${qtdPneus}`;
         } else if (temItensVenda && !temPerformance && !temEstetica) {
           detalhesServico = "Venda de Itens";
@@ -2820,23 +3258,40 @@ export default function Home() {
     }
 
     buscarQuadroAvisos();
-    const salvo = localStorage.getItem("reds_session_user");
-    const pag = localStorage.getItem("reds_session_page");
-    if (salvo) {
-      try {
-        const parsed = JSON.parse(salvo);
-        setUsuarioLogado(parsed);
-        setNomeMecanico(parsed.nome);
-        if (pag && pag !== "login") setPaginaAtual(pag);
-        else setPaginaAtual("dashboard");
-      } catch (e) {
-        localStorage.removeItem("reds_session_user");
+    const restaurarSessao = async () => {
+      const salvo = localStorage.getItem("reds_session_user");
+      const pag = localStorage.getItem("reds_session_page");
+      if (!salvo) {
+        setSessionCarregada(true);
+        return;
       }
-    }
+      try {
+        const cache = JSON.parse(salvo);
+        const atual = await buscarUsuarioNoBanco(cache.id);
+        const senhaMudou = String(atual?.senha ?? atual?.id) !== String(cache?.senha ?? cache?.id);
+        if (!atual || atual.status === "inativo" || senhaMudou) {
+          localStorage.removeItem("reds_session_user");
+          localStorage.removeItem("reds_session_page");
+          setPaginaAtual("login");
+          return;
+        }
+        aplicarLayoutDoUsuario(atual);
+        setUsuarioLogado(atual);
+        setNomeMecanico(atual.nome);
+        setPaginaAtual(pag && pag !== "login" && !PAGINAS_OCULTAS.has(pag) ? pag : "dashboard");
+      } catch (_) {
+        localStorage.removeItem("reds_session_user");
+        localStorage.removeItem("reds_session_page");
+      } finally {
+        setSessionCarregada(true);
+      }
+    };
+    restaurarSessao();
     buscarBlacklist();
   }, []);
 
   useEffect(() => {
+    if (!sessionCarregada) return;
     if (usuarioLogado) {
       localStorage.setItem("reds_session_user", JSON.stringify(usuarioLogado));
       localStorage.setItem("reds_session_page", paginaAtual);
@@ -2844,7 +3299,57 @@ export default function Home() {
       localStorage.removeItem("reds_session_user");
       localStorage.removeItem("reds_session_page");
     }
-  }, [usuarioLogado, paginaAtual]);
+  }, [usuarioLogado, paginaAtual, sessionCarregada]);
+
+  useEffect(() => {
+    if (!usuarioLogado?.id || !sessionCarregada) return;
+
+    let ativo = true;
+    const usuarioId = usuarioLogado.id;
+    const senhaSessao = String(usuarioLogado.senha ?? usuarioLogado.id);
+    const statusSessao = String(usuarioLogado.status || "ativo");
+
+    const aplicarUsuarioAtualizado = (atual) => {
+      if (!ativo) return;
+      if (!atual || atual.status === "inativo" || String(atual.senha ?? atual.id) !== senhaSessao || String(atual.status || "ativo") !== statusSessao) {
+        encerrarSessao("Sua senha ou seu status foi alterado. Entre novamente para continuar.");
+        return;
+      }
+
+      if (String(atual.role || "") !== String(usuarioLogado.role || "") || atual.nome !== usuarioLogado.nome || atual.avatar_url !== usuarioLogado.avatar_url) {
+        aplicarLayoutDoUsuario(atual);
+        setUsuarioLogado(atual);
+        setNomeMecanico(atual.nome);
+        localStorage.setItem("reds_session_user", JSON.stringify(atual));
+      }
+    };
+
+    const validarSessao = async () => {
+      const { data, error } = await supabase.from("usuarios").select("*").eq("id", usuarioId).maybeSingle();
+      if (!error) aplicarUsuarioAtualizado(data);
+    };
+
+    const canalSessao = supabase
+      .channel(`sessao-perfil-${usuarioId}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "usuarios", filter: `id=eq.${usuarioId}` }, ({ new: atual }) => aplicarUsuarioAtualizado(atual))
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "usuarios", filter: `id=eq.${usuarioId}` }, () => aplicarUsuarioAtualizado(null))
+      .subscribe();
+
+    const validarVisibilidade = () => {
+      if (document.visibilityState === "visible") validarSessao();
+    };
+    const intervalo = window.setInterval(validarSessao, 15000);
+    window.addEventListener("focus", validarSessao);
+    document.addEventListener("visibilitychange", validarVisibilidade);
+
+    return () => {
+      ativo = false;
+      window.clearInterval(intervalo);
+      window.removeEventListener("focus", validarSessao);
+      document.removeEventListener("visibilitychange", validarVisibilidade);
+      supabase.removeChannel(canalSessao);
+    };
+  }, [usuarioLogado?.id, usuarioLogado?.senha, usuarioLogado?.status, usuarioLogado?.role, sessionCarregada]);
 
   useEffect(() => {
     if (!passaporte) return;
@@ -2911,6 +3416,9 @@ export default function Home() {
     if (paginaAtual === "evento-triathlon" && usuarioLogado) {
       buscarTriParticipantes();
     }
+    if (paginaAtual === "pagamentos" && usuarioLogado) {
+      buscarMeusPagamentos();
+    }
   }, [paginaAtual, usuarioLogado]);
 
   useEffect(() => {
@@ -2949,11 +3457,28 @@ export default function Home() {
   }, [usuarioLogado]);
 
   useEffect(() => {
-    if (!pontoAtivo?.entrada) return;
-    const inicio = new Date(pontoAtivo.entrada).getTime();
-    const interval = setInterval(() => { const diff = Math.floor((Date.now() - inicio) / 1000); setTempoSegundos(diff); }, 1000);
-    return () => clearInterval(interval);
-  }, [pontoAtivo]);
+    if (!usuarioLogado) return;
+
+    verificarPontoAtivo();
+    const intervalPonto = setInterval(() => {
+      verificarPontoAtivo();
+    }, 20000);
+
+    const canalPontoRealtime = supabase
+      .channel("global-ponto-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages" }, (payload) => {
+        const novo = payload.new;
+        if (novo && novo.log_type === "ponto") {
+          verificarPontoAtivo();
+        }
+      })
+      .subscribe();
+
+    return () => {
+      clearInterval(intervalPonto);
+      supabase.removeChannel(canalPontoRealtime);
+    };
+  }, [usuarioLogado]);
 
   useEffect(() => {
     if (!usuarioLogado) return;
@@ -2992,6 +3517,140 @@ export default function Home() {
       .subscribe();
     return () => supabase.removeChannel(canal);
   }, [usuarioLogado]);
+
+  // Listener Realtime Global de Tunagens (Funciona em QUALQUER página do site!)
+  useEffect(() => {
+    if (!usuarioLogado) return;
+
+    const canalTunagemDirect = supabase
+      .channel("global-tunagem-direct")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "logs_tunagem" }, (payload) => {
+        const novoLog = payload.new;
+        if (!novoLog) return;
+
+        // FILTRO ESTRITO: Apenas tunagens da RED'S TUNERSHOP
+        const ofcLower = (novoLog.oficina_nome || "").toLowerCase();
+        const isReds = ofcLower.includes("red") || 
+                       (novoLog.discord_channel_id === "1544859496701108325") ||
+                       (novoLog.mechanic_id === "reds" && !ofcLower);
+
+        if (!isReds) return; // Ignora qualquer outra mecânica (SaltLab, Beach, Vespucci, etc.)!
+
+        const isMeu = usuarioLogado?.id && (String(novoLog.tecnico_id) === String(usuarioLogado.id) || String(novoLog.mechanic_id) === String(usuarioLogado.id));
+        const isAdmin = usuarioLogado?.role === "admin" || usuarioLogado?.role === "dono" || usuarioLogado?.role === "gerente";
+        const deveNotificar = isMeu || (isAdmin && notificarTodasTunagens);
+
+        if (deveNotificar) {
+          const analise = analisarServicoTunagem(novoLog.antes_json, novoLog.depois_json, novoLog.valor_pago || 0);
+          setTunagemRealtimeGlobal({ log: novoLog, analise, isMeu, isAdmin });
+          adicionarNotificacaoServico(novoLog, analise, isMeu);
+
+          try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = "sine";
+            osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+            osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+            gain.gain.setValueAtTime(0.12, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.4);
+          } catch (e) {}
+        }
+      })
+      .subscribe();
+
+    const canalDiscordServicos = supabase
+      .channel("global-discord-servicos")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages" }, async (payload) => {
+        const msg = payload.new;
+        if (!msg || !msg.content) return;
+
+        if (msg.content.includes("[TUNAGEM DE VEÍCULO]") || msg.log_type === "servicos" || msg.log_type === "tunagem") {
+          const logsParsed = parseLogsTunagemTexto(msg.content);
+          if (logsParsed && logsParsed.length > 0) {
+            const novoLog = logsParsed[0];
+            novoLog.discord_message_id = msg.discord_id || msg.id;
+            novoLog.discord_channel_id = msg.channel_id;
+
+            // Determina a oficina real
+            const oficina = (novoLog.oficina_nome || "").toLowerCase();
+            const msgContent = (msg.content || "").toLowerCase();
+            const isBeachOuVespucci = oficina.includes("beach") || oficina.includes("vespucci") || msgContent.includes("beach") || msgContent.includes("vespucci");
+            const isHarmony = oficina.includes("harmony") || msgContent.includes("harmony");
+            const isDudarkOuSalt = oficina.includes("dudark") || oficina.includes("salt") || oficina.includes("lab") || msgContent.includes("dudark") || msgContent.includes("salt") || msgContent.includes("lab");
+
+            let targetMechanic = "outras";
+            if (isBeachOuVespucci) {
+              targetMechanic = "vespucci";
+            } else if (isHarmony) {
+              targetMechanic = "harmony";
+            } else if (isDudarkOuSalt) {
+              targetMechanic = "dudark";
+            } else if (oficina.includes("red") || msgContent.includes("red's") || msgContent.includes("reds")) {
+              targetMechanic = "reds";
+            } else if (msg.mechanic_id && msg.mechanic_id.toLowerCase().includes("red") && !isBeachOuVespucci && !isHarmony && !isDudarkOuSalt) {
+              targetMechanic = "reds";
+            } else if (novoLog.discord_channel_id === "1544859496701108325" && !isBeachOuVespucci && !isHarmony && !isDudarkOuSalt) {
+              targetMechanic = "reds";
+            } else if (msg.mechanic_id) {
+              targetMechanic = msg.mechanic_id;
+            } else if (oficina) {
+              targetMechanic = oficina.replace(/\s+/g, '_');
+            }
+            novoLog.mechanic_id = targetMechanic;
+
+            // Salva na tabela geral (a tabela central compartilhada)
+            await supabase.from("logs_tunagem").upsert([novoLog], { onConflict: "uuid" });
+
+            // Apenas e estritamente eventos confirmados da RED'S vão para logs_tunagem_reds e geram alertas
+            const isRealmenteReds = targetMechanic === "reds" && !isBeachOuVespucci && !isHarmony && !isDudarkOuSalt && (oficina.includes("red") || msgContent.includes("red's") || msgContent.includes("reds") || novoLog.discord_channel_id === "1544859496701108325");
+            if (isRealmenteReds) {
+              try {
+                await supabase.from("logs_tunagem_reds").upsert([novoLog], { onConflict: "uuid" });
+              } catch (e) {}
+
+              const isMeu = usuarioLogado?.id && (String(novoLog.tecnico_id) === String(usuarioLogado.id) || String(novoLog.mechanic_id) === String(usuarioLogado.id));
+              const isAdmin = usuarioLogado?.role === "admin" || usuarioLogado?.role === "dono" || usuarioLogado?.role === "gerente";
+              const deveNotificar = isMeu || (isAdmin && notificarTodasTunagens);
+
+              if (deveNotificar) {
+                const analise = analisarServicoTunagem(novoLog.antes_json, novoLog.depois_json, novoLog.valor_pago || 0);
+                setTunagemRealtimeGlobal({ log: novoLog, analise, isMeu, isAdmin });
+                adicionarNotificacaoServico(novoLog, analise, isMeu);
+
+                try {
+                  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                  const osc = ctx.createOscillator();
+                  const gain = ctx.createGain();
+                  osc.type = "sine";
+                  osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                  osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+                  gain.gain.setValueAtTime(0.12, ctx.currentTime);
+                  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+                  osc.connect(gain);
+                  gain.connect(ctx.destination);
+                  osc.start();
+                  osc.stop(ctx.currentTime + 0.4);
+                } catch (e) {}
+              }
+            }
+          }
+        }
+
+        // Logs de baú e bancada permanecem disponíveis nos módulos próprios,
+        // sem popup, som ou notificação global como os serviços.
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canalTunagemDirect);
+      supabase.removeChannel(canalDiscordServicos);
+    };
+  }, [usuarioLogado, notificarTodasTunagens]);
 
   useEffect(() => {
     if (!usuarioLogado) return;
@@ -4022,11 +4681,11 @@ export default function Home() {
   };
 
   const styles = {
-    dashContainer: { background: theme.bg, minHeight: "100vh", paddingBottom: "100px", fontFamily: "'Inter', sans-serif", transition: "background 0.3s" },
+    dashContainer: { background: theme.bg, minHeight: "100vh", width: "100%", maxWidth: "none", overflowX: "hidden", boxSizing: "border-box", paddingBottom: "100px", fontFamily: "'Inter', sans-serif", transition: "background 0.3s" },
     topBar: { background: isDarkMode ? "rgba(10,10,10,0.92)" : "rgba(255,255,255,0.92)", backdropFilter: "blur(16px)", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "18px", flexWrap: "wrap", borderBottom: `1px solid ${theme.border}`, position: "relative", zIndex: 200, minHeight: "76px", boxShadow: isDarkMode ? "0 10px 30px rgba(0,0,0,0.28)" : "0 10px 30px rgba(15,23,42,0.06)" },
     navBtn: (ativa, cor = theme.accent) => ({ background: ativa ? (isDarkMode ? `${cor}18` : `${cor}10`) : (isDarkMode ? "rgba(255,255,255,0.02)" : "rgba(15,23,42,0.02)"), border: `1px solid ${ativa ? `${cor}55` : theme.border}`, cursor: "pointer", color: ativa ? (isDarkMode ? "#fff" : "#111") : theme.subtext, fontWeight: ativa ? "700" : "600", fontSize: "13px", padding: "9px 14px", borderRadius: "12px", transition: "all 0.2s ease", letterSpacing: "0.2px", whiteSpace: "nowrap", boxShadow: ativa ? `0 0 0 1px ${cor}22 inset` : "none" }),
     logo: { color: "#fff", fontWeight: "900", fontSize: "15px", letterSpacing: "1.8px" },
-    grid: { display: "flex", flexDirection: "row-reverse", gap: "25px", padding: "30px 20px", justifyContent: "center" },
+    grid: { display: "flex", flexDirection: "row-reverse", gap: "25px", padding: "30px 20px", justifyContent: "center", alignItems: "stretch", width: "100%", maxWidth: "none", minWidth: 0, boxSizing: "border-box" },
     whiteCard: { background: theme.card, padding: "24px", borderRadius: "16px", justifyContent: "center", boxShadow: isDarkMode ? "0 2px 20px rgba(0,0,0,0.4)" : "0 2px 20px rgba(0,0,0,0.06)", color: theme.text, border: `1px solid ${theme.border}` },
     cardHeader: { fontWeight: "700", marginBottom: "16px", display: "flex", alignItems: "center", gap: "8px", fontSize: "14px", textTransform: "uppercase", letterSpacing: "0.5px" },
     dot: { width: "7px", height: "7px", background: theme.accent, borderRadius: "50%", flexShrink: 0 },
@@ -4039,7 +4698,7 @@ export default function Home() {
     inputPrice: { width: "130px", padding: "10px 14px", borderRadius: "10px", border: `1px solid ${theme.border}`, background: theme.inputBg, color: theme.text, textAlign: "right", fontWeight: "700", fontSize: "14px" },
     uploadArea: { border: `2px dashed ${theme.border}`, borderRadius: "12px", padding: "18px", textAlign: "center", background: theme.inputBg },
     uploadBtnLabel: { background: isDarkMode ? "#2e2e2e" : "#efefef", border: `1px solid ${theme.border}`, padding: "9px 18px", borderRadius: "9px", cursor: "pointer", fontSize: "12px", color: theme.text, fontWeight: "600", display: "inline-block" },
-    footer: { position: "fixed", bottom: 0, width: "100%", background: isDarkMode ? "rgba(20,20,20,0.97)" : "rgba(255,255,255,0.97)", backdropFilter: "blur(12px)", padding: "14px 60px", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${theme.border}`, boxSizing: "border-box", zIndex: 100 },
+    footer: { position: "fixed", bottom: 0, left: "var(--reds-sidebar-width, 0px)", width: "calc(100% - var(--reds-sidebar-width, 0px))", background: isDarkMode ? "rgba(20,20,20,0.97)" : "rgba(255,255,255,0.97)", backdropFilter: "blur(12px)", padding: "14px clamp(20px, 4vw, 60px)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", borderTop: `1px solid ${theme.border}`, boxSizing: "border-box", zIndex: 100, transition: "left .22s ease, width .22s ease" },
     btnRegister: { background: "linear-gradient(135deg, #b40d0d, #b40d0d)", color: "white", border: "none", padding: "13px 32px", borderRadius: "12px", fontWeight: "700", cursor: "pointer", fontSize: "14px", letterSpacing: "0.5px", boxShadow: "0 4px 15px rgba(180,13,13,0.3)" },
     btnPrimary: { background: "linear-gradient(135deg, #b40d0d, #b40d0d)", color: "white", border: "none", padding: "12px", borderRadius: "10px", width: "100%", marginTop: "14px", fontWeight: "700", cursor: "pointer", fontSize: "14px" },
     loginCentral: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", padding: "20px", position: "relative", overflow: "hidden", backgroundColor: "#050505" },
@@ -4065,7 +4724,12 @@ export default function Home() {
   };
 
   // Permissões derivadas do usuário logado
-  const userRole = usuarioLogado?.role || "";
+  const cargoReal = usuarioLogado?.role || "";
+  const podeVisualizarComo = getPrimaryRole(cargoReal) === "dono";
+  const userRole = podeVisualizarComo && cargoVisualizacao ? cargoVisualizacao : cargoReal;
+  const usuarioParaInterface = usuarioLogado && userRole !== cargoReal
+    ? { ...usuarioLogado, role: userRole }
+    : usuarioLogado;
   const userNivel = getNivel(userRole);
   const userIsAdmin = isAdminOuDono(userRole);
   const userPodeAdmin = userIsAdmin || (userRole && (
@@ -4077,33 +4741,294 @@ export default function Home() {
   const userIsRespPonto = isResponsavelPonto(userRole);
   const userPodeNotificar = podeSendNotif(userRole);
   const userPodeVerRemetente = userNivel >= 6;
+  const userPodeEditarAvisos = userPodeAdmin;
   const userPodeFinancas = () => {
     const p = getPrimaryRole(userRole);
     const atr = getAtribuicoes(userRole);
     return p === "admin" || p === "dono" || p === "gerente_geral" || atr.includes("resp_financas");
   };
 
+  // Banner Global de Notificação de Tunagens
+  const GlobalTunagemBanner = () => {
+    if (!tunagemRealtimeGlobal) return null;
+    const isDonoAdmin = isAdminOuDono(usuarioLogado?.role);
+
+    return (
+      <div
+        style={{
+          position: "fixed",
+          top: "24px",
+          right: "24px",
+          zIndex: 999999,
+          background: "linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%)",
+          border: "2px solid #ec4899",
+          borderRadius: "16px",
+          padding: "16px 20px",
+          boxShadow: "0 10px 30px rgba(236,72,153,0.4), 0 0 25px rgba(0,0,0,0.8)",
+          maxWidth: "420px",
+          width: "calc(100vw - 48px)",
+          animation: "fadeIn 0.3s ease-out",
+          display: "flex",
+          flexDirection: "column",
+          gap: "12px"
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "26px" }}>🚗</span>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "11px", fontWeight: "900", color: "#f472b6", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  {tunagemRealtimeGlobal.isMeu ? "🔔 Nova Tunagem Realizada por Você!" : "🔔 Nova Tunagem da Equipe"}
+                </span>
+                {!tunagemRealtimeGlobal.isMeu && (
+                  <span style={{ fontSize: "10px", background: "rgba(236,72,153,0.25)", color: "#f472b6", border: "1px solid rgba(236,72,153,0.5)", padding: "1px 6px", borderRadius: "6px", fontWeight: "800" }}>
+                    👑 DONO / ADMIN
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: "15px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
+                {tunagemRealtimeGlobal.log.veiculo_nome} <span style={{ color: "#38bdf8", fontFamily: "monospace", fontSize: "12px" }}>({tunagemRealtimeGlobal.log.placa})</span>
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setTunagemRealtimeGlobal(null)}
+            style={{ background: "transparent", border: "none", color: theme.subtext, fontSize: "20px", cursor: "pointer", padding: "0 4px", lineHeight: "1" }}
+            title="Fechar Notificação"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(0,0,0,0.35)", padding: "8px 12px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.06)" }}>
+          <span style={{ fontSize: "12px", color: theme.subtext, display: "flex", alignItems: "center", gap: "6px" }}>
+            🧑‍🔧 <strong style={{ color: "#fff" }}>{tunagemRealtimeGlobal.log.tecnico_nome}</strong>
+          </span>
+          <span style={{ fontSize: "14px", fontWeight: "900", color: "#4ade80" }}>
+            R$ {tunagemRealtimeGlobal.analise.totalACobrar.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+          </span>
+        </div>
+
+        {/* Opção para o Dono/Admin alternar o recebimento de alertas de funcionários */}
+        {isDonoAdmin && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.03)", padding: "6px 10px", borderRadius: "8px", border: "1px dashed rgba(255,255,255,0.15)" }}>
+            <span style={{ fontSize: "11px", color: theme.subtext }}>
+              Alertas de funcionários:
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleNotificarTodasTunagens();
+              }}
+              style={{
+                background: notificarTodasTunagens ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)",
+                border: `1px solid ${notificarTodasTunagens ? "#22c55e" : "#ef4444"}`,
+                color: notificarTodasTunagens ? "#4ade80" : "#f87171",
+                fontSize: "11px",
+                fontWeight: "800",
+                borderRadius: "6px",
+                padding: "2px 8px",
+                cursor: "pointer"
+              }}
+            >
+              {notificarTodasTunagens ? "🟢 Ativado" : "🔴 Desativado"}
+            </button>
+          </div>
+        )}
+
+        <button
+          onClick={() => {
+            if (tunagemRealtimeGlobal?.log) {
+              setLogTunagemParaAbrir(tunagemRealtimeGlobal.log);
+            }
+            setTunagemRealtimeGlobal(null);
+          }}
+          style={{
+            background: "linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%)",
+            border: "none",
+            color: "#fff",
+            padding: "10px 16px",
+            borderRadius: "10px",
+            fontWeight: "900",
+            fontSize: "13px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "8px",
+            boxShadow: "0 4px 14px rgba(236,72,153,0.35)"
+          }}
+        >
+          ⚡ Abrir Ficha & Inserir Foto
+        </button>
+      </div>
+    );
+  };
+
+  const PainelNotificacoesServicos = () => {
+    return (
+      <div ref={painelNotificacoesRef} style={{ position: "fixed", top: layoutPreferido === "topo" ? "76px" : "74px", right: "20px", zIndex: 1000000, width: "min(430px, calc(100vw - 32px))", maxHeight: "min(620px, calc(100vh - 100px))", overflow: "hidden", display: "none", flexDirection: "column", background: "#111318", border: "1px solid rgba(255,255,255,.14)", borderRadius: "16px", boxShadow: "0 24px 70px rgba(0,0,0,.65)" }}>
+        <div style={{ padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
+          <div><strong style={{ color: "#fff" }}>Serviços recebidos</strong><div style={{ color: "#94a3b8", fontSize: "11px", marginTop: "2px" }}>Tunagens e estéticas em tempo real</div></div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            {notificacoesServicos.length > 0 && <button onClick={() => setNotificacoesServicos([])} style={{ border: 0, background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: "11px" }}>Limpar</button>}
+            <button onClick={() => { if (painelNotificacoesRef.current) painelNotificacoesRef.current.style.display = "none"; }} aria-label="Fechar notificações" style={{ width: "30px", height: "30px", borderRadius: "8px", border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.05)", color: "#fff", cursor: "pointer" }}>×</button>
+          </div>
+        </div>
+        <div style={{ overflowY: "auto", padding: "8px" }}>
+          {notificacoesServicos.length === 0 ? <div style={{ padding: "32px 16px", color: "#94a3b8", textAlign: "center" }}>Nenhum serviço novo.</div> : notificacoesServicos.map((item) => (
+            <button key={item.id} onClick={() => { setLogTunagemParaAbrir(item.log); if (painelNotificacoesRef.current) painelNotificacoesRef.current.style.display = "none"; }} style={{ width: "100%", padding: "12px", marginBottom: "7px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px 12px", textAlign: "left", borderRadius: "11px", border: "1px solid rgba(255,255,255,.08)", background: "rgba(255,255,255,.04)", color: "#fff", cursor: "pointer" }}>
+              <span><b style={{ color: item.tipo === "Estética" ? "#38bdf8" : "#f472b6" }}>{item.tipo}</b> · {item.log.veiculo_nome || "Veículo"} {item.log.placa ? `(${item.log.placa})` : ""}<small style={{ display: "block", color: "#94a3b8", marginTop: "5px" }}>{item.log.tecnico_nome || "Mecânico não informado"}</small></span>
+              <strong style={{ color: "#4ade80", whiteSpace: "nowrap" }}>R$ {(item.analise?.totalACobrar || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</strong>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // Banner Global de Notificação de Bancada (Dono e Gerência)
+  const GlobalBancadaBanner = () => {
+    if (!bancadaRealtimeGlobal) return null;
+    return (
+      <div
+        style={{
+          position: "fixed",
+          top: tunagemRealtimeGlobal ? "180px" : "24px",
+          right: "24px",
+          zIndex: 999999,
+          background: "linear-gradient(135deg, #18181b 0%, #09090b 100%)",
+          border: "2px solid #22c55e",
+          borderRadius: "16px",
+          padding: "14px 18px",
+          boxShadow: "0 10px 30px rgba(34,197,94,0.35), 0 0 25px rgba(0,0,0,0.8)",
+          maxWidth: "400px",
+          width: "calc(100vw - 48px)",
+          animation: "fadeIn 0.3s ease-out",
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "24px" }}>🛠️</span>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "11px", fontWeight: "900", color: "#4ade80", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  🔔 Compra na Bancada
+                </span>
+                <span style={{ fontSize: "9.5px", background: "rgba(34,197,94,0.2)", color: "#4ade80", border: "1px solid rgba(34,197,94,0.4)", padding: "1px 5px", borderRadius: "5px", fontWeight: "800" }}>
+                  RED'S
+                </span>
+              </div>
+              <div style={{ fontSize: "14px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
+                {bancadaRealtimeGlobal.quantidade}x {bancadaRealtimeGlobal.item}
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setBancadaRealtimeGlobal(null)}
+            style={{ background: "transparent", border: "none", color: "#888", fontSize: "18px", cursor: "pointer", padding: "0 4px", lineHeight: "1" }}
+            title="Fechar Notificação"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(0,0,0,0.4)", padding: "6px 10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.06)" }}>
+          <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.7)", display: "flex", alignItems: "center", gap: "6px" }}>
+            🧑‍🔧 <strong style={{ color: "#fff" }}>{bancadaRealtimeGlobal.nome}</strong> {bancadaRealtimeGlobal.id ? `(ID: ${bancadaRealtimeGlobal.id})` : ""}
+          </span>
+          <span style={{ fontSize: "13px", fontWeight: "900", color: "#22c55e" }}>
+            {bancadaRealtimeGlobal.preco > 0 ? `R$ ${bancadaRealtimeGlobal.preco.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "Grátis / Craft"}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
   // Header reutilizável
   const AppHeaderBar = () => (
-    <HeaderBar
-      paginaAtual={paginaAtual}
-      setPaginaAtual={setPaginaAtual}
-      theme={theme}
-      styles={styles}
-      pontoAtivo={pontoAtivo}
-      isDarkMode={isDarkMode}
-      setIsDarkMode={setIsDarkMode}
-      tempoSegundos={tempoSegundos}
-      formatarCronometro={formatarCronometro}
-      registrarPonto={registrarPonto}
-      usuarioLogado={usuarioLogado}
-      setUsuarioLogado={setUsuarioLogado}
-      getLabelCargo={getLabelCargo}
-      userPodeNotificar={userPodeNotificar}
-      userPodeFinancas={userPodeFinancas()}
-      userIsAdmin={userIsAdmin}
-      userRole={userRole}
-    />
+    <>
+      {layoutPreferido === "topo" ? (
+        <TopHeaderBar
+          paginaAtual={paginaAtual}
+          setPaginaAtual={setPaginaAtual}
+          pontoAtivo={pontoAtivo}
+          tempoSegundos={tempoSegundos}
+          formatarCronometro={formatarCronometro}
+          registrarPonto={registrarPonto}
+          usuarioLogado={usuarioParaInterface}
+          setUsuarioLogado={setUsuarioLogado}
+          getLabelCargo={getLabelCargo}
+          userPodeNotificar={userPodeNotificar}
+          userPodeFinancas={userPodeFinancas()}
+          userIsAdmin={userIsAdmin}
+          userRole={userRole}
+          isDarkMode={isDarkMode}
+          setIsDarkMode={setIsDarkMode}
+          layoutPreferido={layoutPreferido}
+          setLayoutPreferido={alterarLayoutPreferido}
+          serviceNotificationCount={notificacoesServicos.length}
+          onOpenServiceNotifications={() => { const painel = painelNotificacoesRef.current; if (painel) painel.style.display = painel.style.display === "flex" ? "none" : "flex"; }}
+          podeVisualizarComo={podeVisualizarComo}
+          cargoVisualizacao={cargoVisualizacao}
+          onVisualizarComo={(cargo) => { setCargoVisualizacao(cargo); setPaginaAtual("dashboard"); }}
+          cargosVisualizacao={CARGOS_HIERARQUIA}
+        />
+      ) : (
+        <HeaderBar
+          paginaAtual={paginaAtual}
+          setPaginaAtual={setPaginaAtual}
+          theme={theme}
+          styles={styles}
+          pontoAtivo={pontoAtivo}
+          isDarkMode={isDarkMode}
+          setIsDarkMode={setIsDarkMode}
+          tempoSegundos={tempoSegundos}
+          formatarCronometro={formatarCronometro}
+          registrarPonto={registrarPonto}
+          usuarioLogado={usuarioParaInterface}
+          setUsuarioLogado={setUsuarioLogado}
+          getLabelCargo={getLabelCargo}
+          userPodeNotificar={userPodeNotificar}
+          userPodeFinancas={userPodeFinancas()}
+          userIsAdmin={userIsAdmin}
+          userRole={userRole}
+          layoutPreferido={layoutPreferido}
+          setLayoutPreferido={alterarLayoutPreferido}
+          serviceNotificationCount={notificacoesServicos.length}
+          onOpenServiceNotifications={() => { const painel = painelNotificacoesRef.current; if (painel) painel.style.display = painel.style.display === "flex" ? "none" : "flex"; }}
+          podeVisualizarComo={podeVisualizarComo}
+          cargoVisualizacao={cargoVisualizacao}
+          onVisualizarComo={(cargo) => { setCargoVisualizacao(cargo); setPaginaAtual("dashboard"); }}
+          cargosVisualizacao={CARGOS_HIERARQUIA}
+        />
+      )}
+      <GlobalTunagemBanner />
+      <PainelNotificacoesServicos />
+      {podeVisualizarComo && cargoVisualizacao && (
+        <div style={{ position: "fixed", left: layoutPreferido === "lateral" ? "286px" : "18px", bottom: "18px", zIndex: 1000001, display: "flex", alignItems: "center", gap: "10px", padding: "9px 12px", borderRadius: "11px", background: "rgba(30,41,59,.97)", border: "1px solid rgba(56,189,248,.55)", boxShadow: "0 12px 35px rgba(0,0,0,.45)", color: "#e0f2fe", fontSize: "11px", fontWeight: 800 }}>
+          <span>Visualizando como: {getLabelCargo(cargoVisualizacao)}</span>
+          <button type="button" onClick={() => { setCargoVisualizacao(""); setPaginaAtual("dashboard"); }} style={{ border: "1px solid rgba(125,211,252,.4)", background: "rgba(14,165,233,.16)", color: "#bae6fd", borderRadius: "7px", padding: "5px 8px", cursor: "pointer", fontSize: "10px", fontWeight: 900 }}>Voltar para Dono</button>
+        </div>
+      )}
+      <JanelaPontoFlutuante
+        usuarioLogado={usuarioParaInterface}
+        theme={theme}
+        isDarkMode={isDarkMode}
+      />
+      <ModalDetalheTunagem
+        theme={theme}
+        modalLogDetalhe={logTunagemParaAbrir}
+        setModalLogDetalhe={setLogTunagemParaAbrir}
+        usuarioLogado={usuarioParaInterface}
+      />
+    </>
   );
 
   const AppModalNotificacao = () => (
@@ -4123,7 +5048,7 @@ export default function Home() {
       <RecrutamentoPage
         styles={styles}
         theme={theme}
-        usuarioLogado={usuarioLogado}
+        usuarioLogado={usuarioParaInterface}
         isAdminOuDono={isAdminOuDono}
         curriculos={curriculos}
         buscarCurriculos={buscarCurriculos}
@@ -4148,6 +5073,9 @@ export default function Home() {
         senhaInputLogin={senhaInputLogin}
         setSenhaInputLogin={setSenhaInputLogin}
         realizarLogin={realizarLogin}
+        erroLogin={erroLogin}
+        setErroLogin={setErroLogin}
+        carregandoLogin={carregandoLogin}
       />
     );
   }
@@ -4205,7 +5133,7 @@ export default function Home() {
       <PagamentosPage
         styles={styles}
         theme={theme}
-        usuarioLogado={usuarioLogado}
+        usuarioLogado={usuarioParaInterface}
         valorPagamentoRegistro={valorPagamentoRegistro}
         setValorPagamentoRegistro={setValorPagamentoRegistro}
         observacaoPagamento={observacaoPagamento}
@@ -4284,7 +5212,7 @@ export default function Home() {
       <CandidaturasPage
         styles={styles}
         theme={theme}
-        usuarioLogado={usuarioLogado}
+        usuarioLogado={usuarioParaInterface}
         isAdminOuDono={isAdminOuDono}
         candidaturas={candidaturas}
         buscarCandidaturas={buscarCandidaturas}
@@ -4346,6 +5274,7 @@ export default function Home() {
   if (paginaAtual === "minha-conta") {
     return (
       <MinhaContaPage
+        supabase={supabase}
         styles={styles}
         theme={theme}
         formatarDataHora={formatarDataHora}
@@ -4353,7 +5282,9 @@ export default function Home() {
         calcularDuracao={calcularDuracao}
         formatarData={formatarData}
         formatarHoras={formatarHoras}
-        usuarioLogado={usuarioLogado}
+        usuarioLogado={usuarioParaInterface}
+        layoutPreferido={layoutPreferido}
+        setLayoutPreferido={alterarLayoutPreferido}
         meusServicos={meusServicos}
         historicoPonto={historicoPonto}
         minhaContaCarregando={minhaContaCarregando}
@@ -4384,7 +5315,7 @@ export default function Home() {
   if (paginaAtual === "notificacoes") {
     return (
       <NotificacoesPage
-        usuarioLogado={usuarioLogado}
+        usuarioLogado={usuarioParaInterface}
         styles={styles}
         theme={theme}
         formatarDataHora={formatarDataHora}
@@ -4450,7 +5381,7 @@ export default function Home() {
           <PontoAdminPage
             styles={styles}
             theme={theme}
-            usuarioLogado={usuarioLogado}
+            usuarioLogado={usuarioParaInterface}
             listaFuncionarios={listaFuncionarios}
             importarSessoesParaBanco={importarSessoesParaBanco}
             registrosCidade={registrosCidade}
@@ -4482,6 +5413,84 @@ export default function Home() {
     );
   }
 
+  // ===== PÁGINA: BANCO DE DADOS =====
+  if (paginaAtual === "db-admin") {
+    if (!userIsAdmin && !userIsRespPonto) {
+      return (
+        <div style={styles.dashContainer}>
+          <AppHeaderBar />
+          <div style={{ padding: "40px", textAlign: "center", color: theme.text }}>
+            <h2>🚫 Acesso Negado</h2>
+            <button style={{ ...styles.btnPrimary, width: "auto", padding: "12px 28px" }} onClick={() => setPaginaAtual("dashboard")}>Voltar ao Dashboard</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div style={styles.dashContainer}>
+        <AppHeaderBar />
+        <main style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto" }}>
+          <DbAdminPage theme={theme} styles={styles} />
+        </main>
+      </div>
+    );
+  }
+
+  // ===== PÁGINA: TUNAGENS & REPASSES =====
+  if (paginaAtual === "tunagens") {
+    return (
+      <div style={styles.dashContainer}>
+        <AppHeaderBar />
+        <main style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto" }}>
+          <TunagemPage
+            theme={theme}
+            styles={styles}
+            usuarioLogado={usuarioParaInterface}
+            notificarTodasTunagens={notificarTodasTunagens}
+            toggleNotificarTodasTunagens={toggleNotificarTodasTunagens}
+            isAdminOuDono={isAdminOuDono}
+            logTunagemParaAbrir={logTunagemParaAbrir}
+            setLogTunagemParaAbrir={setLogTunagemParaAbrir}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  // ===== PÁGINA: BONIFICAÇÃO =====
+  if (paginaAtual === "bonificacao") {
+    return (
+      <div style={styles.dashContainer}>
+        <AppHeaderBar />
+        <main style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto" }}>
+          <BonificacaoPage
+            theme={theme}
+            styles={styles}
+            usuarioLogado={usuarioParaInterface}
+            listaFuncionarios={listaFuncionarios}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  // ===== PÁGINA: REGISTRO & AUDITORIA DE ATIVIDADES =====
+  if (paginaAtual === "atividades") {
+    return (
+      <div style={styles.dashContainer}>
+        <AppHeaderBar />
+        <main style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto" }}>
+          <AtividadesMecanicosPage
+            theme={theme}
+            styles={styles}
+            usuarioLogado={usuarioParaInterface}
+            listaFuncionarios={listaFuncionarios}
+          />
+        </main>
+      </div>
+    );
+  }
+
   // ===== PÁGINA: MISSÕES =====
   if (paginaAtual === "missoes") {
     return (
@@ -4491,7 +5500,7 @@ export default function Home() {
           <MissoesPage
             theme={theme}
             styles={styles}
-            usuarioLogado={usuarioLogado}
+            usuarioLogado={usuarioParaInterface}
             userIsAdmin={userIsAdmin}
             userRole={userRole}
             missoes={missoes}
@@ -4511,10 +5520,60 @@ export default function Home() {
     );
   }
 
-  // ===== PÁGINA: RELATÓRIO PÚBLICO (SEM LOGIN) =====
+  // ===== PÁGINA: AVISOS =====
+  if (paginaAtual === "avisos") {
+    return (
+      <div style={styles.dashContainer}>
+        <AppModalNotificacao />
+        <AppHeaderBar />
+        <AvisosPage
+          styles={styles}
+          theme={theme}
+          userPodeEditarAvisos={userPodeEditarAvisos}
+          listaAvisos={listaAvisos}
+          avisoSendoEditado={avisoSendoEditado}
+          setAvisoSendoEditado={setAvisoSendoEditado}
+          confirmarEdicaoQuadro={confirmarEdicaoQuadro}
+          apagarQuadro={apagarQuadro}
+          adicionarNovoQuadro={adicionarNovoQuadro}
+          formatarTextoAvisos={formatarTextoAvisos}
+          setPaginaAtual={setPaginaAtual}
+        />
+      </div>
+    );
+  }
+
+  // ===== PÁGINA: CURSOS =====
+  if (paginaAtual === "cursos") {
+    return (
+      <div style={styles.dashContainer}>
+        <AppModalNotificacao />
+        <AppHeaderBar />
+        <CursosPage
+          supabase={supabase}
+          styles={styles}
+          theme={theme}
+          usuarioLogado={usuarioParaInterface}
+          listaFuncionarios={listaFuncionarios}
+          buscarListaFuncionarios={buscarListaFuncionarios}
+          concluirCurso={concluirCurso}
+          alterarCursoFuncionario={alterarCursoFuncionario}
+          podeGerenciarCursos={userPodeGerenciarCursos()}
+          elegibilidadeTunagem={typeof elegibilidadeTunagem !== "undefined" ? elegibilidadeTunagem : {}}
+          formatarHoras={typeof formatarHoras !== "undefined" ? formatarHoras : (h => h)}
+          getLabelCargo={getLabelCargo}
+        />
+      </div>
+    );
+  }
+
+  // ===== PÁGINA: RELATÓRIO PÚBLICO (SEM LOGIN OU PREVIEW) =====
   if (paginaAtual === "relatorio-publico") {
     return (
-      <RelatorioPublicoPage sharedId={relatorioCompartilhadoId} />
+      <RelatorioPublicoPage
+        sharedId={relatorioCompartilhadoId}
+        onVoltar={() => setPaginaAtual("relatorio")}
+      />
     );
   }
 
@@ -4538,7 +5597,7 @@ export default function Home() {
           <RelatorioPage
             styles={styles}
             theme={theme}
-            usuarioLogado={usuarioLogado}
+            usuarioLogado={usuarioParaInterface}
             listaFuncionarios={listaFuncionarios}
             buscarRelatorio={buscarRelatorio}
             registrosRelatorio={registrosRelatorio}
@@ -4578,7 +5637,7 @@ export default function Home() {
           <OutrasMecanicasPage
             styles={styles}
             theme={theme}
-            usuarioLogado={usuarioLogado}
+            usuarioLogado={usuarioParaInterface}
           />
         </main>
       </div>
@@ -4603,7 +5662,7 @@ export default function Home() {
         <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
           <ControleVendasPage
             theme={theme}
-            usuarioLogado={usuarioLogado}
+            usuarioLogado={usuarioParaInterface}
             importarNitroLogsParaBanco={importarNitroLogsParaBanco}
             buscarNitroLogs={buscarNitroLogs}
             nitroLogs={nitroLogs}
@@ -4654,7 +5713,7 @@ export default function Home() {
             tempoSegundos={tempoSegundos}
             registrarPonto={registrarPonto}
             solicitacoesPendentes={solicitacoesPendentes}
-            usuarioLogado={usuarioLogado}
+            usuarioLogado={usuarioParaInterface}
             formatarHorario={formatarHorario}
             historicoPonto={historicoPonto}
             formatarData={formatarData}
@@ -4669,6 +5728,7 @@ export default function Home() {
             novaSaidaJustificativa={novaSaidaJustificativa}
             setNovaSaidaJustificativa={setNovaSaidaJustificativa}
             userIsRespPonto={userIsRespPonto}
+            podeVerTodosPontos={userNivel >= 5}
             solicitarEdicaoSaida={solicitarEdicaoSaida}
             emServico={emServico}
             isAdminOuDono={isAdminOuDono}
@@ -4725,6 +5785,8 @@ export default function Home() {
               setEditFuncStatus={setEditFuncStatus}
               editFuncAdmissao={editFuncAdmissao}
               setEditFuncAdmissao={setEditFuncAdmissao}
+              editFuncDemissao={editFuncDemissao}
+              setEditFuncDemissao={setEditFuncDemissao}
               isAdminOuDono={isAdminOuDono}
               getPrimaryRole={getPrimaryRole}
               editFuncAtribuicoes={editFuncAtribuicoes}
@@ -4743,7 +5805,7 @@ export default function Home() {
               fecharPontoAdmin={fecharPontoAdmin}
               alternarVisibilidadePonto={alternarVisibilidadePonto}
               apagarPonto={apagarPonto}
-              usuarioLogado={usuarioLogado}
+              usuarioLogado={usuarioParaInterface}
               ranking={ranking}
               periodoRankingClientes={periodoRankingClientes}
               setPeriodoRankingClientes={setPeriodoRankingClientes}
@@ -4793,6 +5855,8 @@ export default function Home() {
             setQtdReparos={setQtdReparos}
             qtdPneus={qtdPneus}
             setQtdPneus={setQtdPneus}
+            reboque={reboque}
+            setReboque={setReboque}
             reportBugs={reportBugs}
             setReportBugs={setReportBugs}
             nomeVeiculoBugs={nomeVeiculoBugs}
@@ -4820,6 +5884,12 @@ export default function Home() {
             formatarDataHora={formatarDataHora}
             isDarkMode={isDarkMode}
             blacklist={blacklist}
+            layoutPreferido={layoutPreferido}
+            usuarioLogado={usuarioLogado}
+            setImagemPreview={setImagemPreview}
+            setArquivoImagem={setArquivoImagem}
+            setImagemPreview2={setImagemPreview2}
+            setArquivoImagem2={setArquivoImagem2}
           />
         )}
       </main>

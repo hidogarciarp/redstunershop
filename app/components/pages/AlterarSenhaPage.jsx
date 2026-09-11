@@ -34,7 +34,8 @@ export default function AlterarSenhaPage({
                 style={{ background: "#d32f2f", color: "#fff", border: "none", height: "48px", borderRadius: "12px", width: "100%", fontWeight: "700", cursor: "pointer", fontSize: "15px" }}
                 onClick={async () => {
                   if (!/^\d+$/.test(novaSenhaInput)) { alert("⚠️ Apenas números!"); return; }
-                  await atualizarSenhaNoBanco(usuarioLogado.id, novaSenhaInput);
+                  const alterada = await atualizarSenhaNoBanco(usuarioLogado.id, novaSenhaInput);
+                  if (!alterada) return;
                   alert("Senha alterada! Faça login novamente.");
                   setPaginaAtual("login");
                 }}

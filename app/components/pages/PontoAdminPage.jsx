@@ -398,7 +398,7 @@ export default function PontoAdminPage({
         let q = supabase
           .from("discord_log_messages")
           .select("content, log_type, created_at, mechanic_id")
-          .in("log_type", ["bau", "bancada"])
+          .in("log_type", ["bancada"])
           .gte("created_at", inter.inicio)
           .lte("created_at", inter.fim)
           .limit(10000);
@@ -510,7 +510,7 @@ export default function PontoAdminPage({
     }
   }, [abaAtiva, filtroPeriodo, semanaOffset, tempoLimiteAuditoria, filtroMecanicaAuditoria, filtroDataInicio, filtroDataFim]);
 
-  const [ocultarManuaisPontoAdmin, setOcultarManuaisPontoAdmin] = useState(false);
+  const [ocultarManuaisPontoAdmin, setOcultarManuaisPontoAdmin] = useState(true);
   const [excluirDonos, setExcluirDonos] = useState(false);
   const [ocultarDonos, setOcultarDonos] = useState(false);
 

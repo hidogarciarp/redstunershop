@@ -1,5 +1,7 @@
-import React from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { REGRAS_PRECOS, TABELA_PRECOS } from "../../utils/constants";
+import { supabase } from "../../utils/supabaseClient";
+import { analisarServicoTunagem, TABELA_CAMALEAO } from "../../utils/calculadoraTunagem";
 
 export default function DashboardPage({
   styles,
@@ -37,6 +39,8 @@ export default function DashboardPage({
   setQtdReparos,
   qtdPneus,
   setQtdPneus,
+  reboque,
+  setReboque,
   reportBugs,
   setReportBugs,
   nomeVeiculoBugs,
@@ -64,13 +68,453 @@ export default function DashboardPage({
   formatarDataHora,
   isDarkMode,
   blacklist = [],
+  layoutPreferido = "lateral",
+  usuarioLogado,
+  setImagemPreview,
+  setArquivoImagem,
+  setImagemPreview2,
+  setArquivoImagem2,
 }) {
   const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
   const isBanido = !!banInfo;
+  const avisoTopo = listaAvisos?.[0];
+  const [avisoTopoOculto, setAvisoTopoOculto] = useState(false);
+
+  useEffect(() => {
+    setAvisoTopoOculto(false);
+  }, [avisoTopo?.id]);
+
+  // ===== AUTO-PREENCHIMENTO VIA LOGS DE TUNAGEM =====
+  const [logsRecentes, setLogsRecentes] = useState([]);
+  const [carregandoLogs, setCarregandoLogs] = useState(false);
+  const [logSelecionadoUuid, setLogSelecionadoUuid] = useState("");
+  const [logAplicadoInfo, setLogAplicadoInfo] = useState(null);
+
+  const carregarLogsRecentes = useCallback(async () => {
+    const uId = String(usuarioLogado?.id || usuarioLogado?.id_jogo || "");
+    const uNome = (usuarioLogado?.nome || nomeMecanico || "").trim();
+    if (!uId && !uNome) return;
+
+    setCarregandoLogs(true);
+    try {
+      let query = supabase
+        .from("logs_tunagem_reds")
+        .select("*")
+        .order("data", { ascending: false })
+        .order("hora", { ascending: false })
+        .limit(25);
+
+      if (uId && uNome) {
+        query = query.or(`tecnico_id.eq.${uId},tecnico_nome.ilike.%${uNome}%`);
+      } else if (uId) {
+        query = query.eq("tecnico_id", uId);
+      } else if (uNome) {
+        query = query.ilike("tecnico_nome", `%${uNome}%`);
+      }
+
+      const { data, error } = await query;
+      if (!error && data) {
+        setLogsRecentes(data);
+      }
+    } catch (e) {
+      console.warn("Aviso ao carregar logs recentes para auto-preenchimento:", e);
+    } finally {
+      setCarregandoLogs(false);
+    }
+  }, [usuarioLogado, nomeMecanico]);
+
+  useEffect(() => {
+    carregarLogsRecentes();
+
+    const channel = supabase
+      .channel("dashboard_logs_tunagem_live")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "logs_tunagem_reds" },
+        (payload) => {
+          if (payload.new) {
+            const uId = String(usuarioLogado?.id || usuarioLogado?.id_jogo || "");
+            const uNome = (usuarioLogado?.nome || nomeMecanico || "").toLowerCase().trim();
+            const logTecId = String(payload.new.tecnico_id || "");
+            const logTecNome = (payload.new.tecnico_nome || "").toLowerCase().trim();
+
+            if ((uId && logTecId === uId) || (uNome && logTecNome.includes(uNome))) {
+              setLogsRecentes((prev) => {
+                const filtered = prev.filter((l) => l.uuid !== payload.new.uuid);
+                return [payload.new, ...filtered].slice(0, 25);
+              });
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [carregarLogsRecentes, usuarioLogado, nomeMecanico]);
+
+  const aplicarLogNoFormulario = (uuidEscolhido) => {
+    setLogSelecionadoUuid(uuidEscolhido);
+    if (!uuidEscolhido) {
+      limparLogAplicado();
+      return;
+    }
+
+    const log = logsRecentes.find((l) => l.uuid === uuidEscolhido);
+    if (!log) return;
+
+    // 1. Dados do Cliente e Veículo
+    if (log.dono_id) setPassaporte(String(log.dono_id));
+    if (log.dono_nome) {
+      const nomeLog = log.dono_nome.trim();
+      setCliente(nomeLog);
+
+      // Substitui na base de dados de clientes pelo nome atualizado que veio da log
+      if (log.dono_id) {
+        const cid = Number(log.dono_id);
+        (async () => {
+          try {
+            const { data: cliExistente } = await supabase
+              .from("clientes")
+              .select("id, nome")
+              .eq("id", cid)
+              .maybeSingle();
+
+            if (cliExistente) {
+              await supabase
+                .from("clientes")
+                .update({
+                  nome: nomeLog,
+                  ultima_alteracao: usuarioLogado?.id || null,
+                  data_ultimo_servico: new Date().toISOString(),
+                })
+                .eq("id", cid);
+            } else {
+              await supabase
+                .from("clientes")
+                .insert({
+                  id: cid,
+                  nome: nomeLog,
+                  total_gasto: 0,
+                  ultima_alteracao: usuarioLogado?.id || null,
+                  data_ultimo_servico: new Date().toISOString(),
+                });
+            }
+          } catch (err) {
+            console.warn("Aviso ao atualizar nome do cliente na base:", err);
+          }
+        })();
+      }
+    }
+
+    // 2. Valor do Painel In-Game
+    if (log.valor_pago !== undefined && log.valor_pago !== null) {
+      setValorDigitadoEstetica(String(log.valor_pago));
+    }
+
+    // 3. Foto do serviço (se houver foto na log, exibe; se a log não tiver foto, exibe o campo em branco)
+    if (typeof setImagemPreview === "function") {
+      setImagemPreview(log.foto_url || null);
+    }
+    if (typeof setArquivoImagem === "function") {
+      setArquivoImagem(null);
+    }
+
+    // 4. Analisar peças com o motor oficial de tunagem
+    const analise = analisarServicoTunagem(log);
+    const itens = analise.itensCobrados || [];
+    const valorPagoNum = Number(log.valor_pago || 0);
+
+    // 5. Camaleão (Primária, Secundária e Rodas)
+    // Apenas marca se houve alteração real nesta sessão (detectada pelo diff oficial)
+    let temCamaleao1 = false;
+    let temCamaleao2 = false;
+    let temCamaleaoRodas = false;
+
+    itens.forEach((it) => {
+      if (it.isCamaleao) {
+        const desc = (it.descricao || "").toLowerCase();
+        if (desc.includes("primária") || desc.includes("primaria")) temCamaleao1 = true;
+        if (desc.includes("secundária") || desc.includes("secundaria")) temCamaleao2 = true;
+        if (desc.includes("rodas") || desc.includes("roda")) temCamaleaoRodas = true;
+      }
+    });
+
+    // Restrição matemática: Cada camaleão custa R$ 500 no painel in-game
+    if (valorPagoNum > 0) {
+      const maxCamaleao = Math.floor(valorPagoNum / 500);
+      const countCamaleao = [temCamaleao1, temCamaleao2, temCamaleaoRodas].filter(Boolean).length;
+      if (countCamaleao > maxCamaleao) {
+        if (maxCamaleao === 0) {
+          temCamaleao1 = false;
+          temCamaleao2 = false;
+          temCamaleaoRodas = false;
+        } else if (maxCamaleao === 1) {
+          if (temCamaleao1) { temCamaleao2 = false; temCamaleaoRodas = false; }
+          else if (temCamaleao2) { temCamaleaoRodas = false; }
+        } else if (maxCamaleao === 2) {
+          if (temCamaleaoRodas) temCamaleaoRodas = false;
+        }
+      }
+    }
+
+    setCamaleao1(temCamaleao1);
+    setCamaleao2(temCamaleao2);
+    setCamaleaoRodas(temCamaleaoRodas);
+
+    // 6. Fumaça de Pneu
+    // Apenas marca se houve alteração real nesta sessão
+    let temFumaca = false;
+    if (itens.some((it) => (it.descricao || "").toLowerCase().includes("fumaça") && !it.descricao.toLowerCase().includes("remoção"))) {
+      temFumaca = true;
+    }
+    // Restrição matemática: Fumaça custa R$ 5.000 no painel in-game. Se o valor pago for menor que 5.000, é matematicamente impossível.
+    if (valorPagoNum > 0 && valorPagoNum < 5000) {
+      temFumaca = false;
+    }
+    setFumaca(temFumaca);
+
+    // 7. Extras
+    let qtdExtrasFinal = 0;
+    const itemExtra = itens.find((it) => (it.categoria || "") === "Acessórios" && (it.descricao || "").includes("Extra"));
+    if (itemExtra) {
+      const match = itemExtra.descricao.match(/(\d+)x/i);
+      if (match) qtdExtrasFinal = Math.min(30, parseInt(match[1], 10));
+    }
+    // Restrição matemática: cada extra custa R$ 1.000 no painel
+    if (valorPagoNum > 0) {
+      const maxExtras = Math.floor(valorPagoNum / 1000);
+      qtdExtrasFinal = Math.min(qtdExtrasFinal, maxExtras);
+    }
+    setQuantidadeExtras(qtdExtrasFinal);
+
+    // 8. Performance (Motor, Freios, Transmissão, Suspensão, Blindagem, Turbo, Hidráulico)
+    setServicosSelecionados((prev) => {
+      const next = { ...prev };
+
+      ["m0", "m1", "m2", "m3", "m4", "m5",
+       "f0", "f1", "f2", "f3", "f4", "f5",
+       "t0", "t1", "t2", "t3", "t4", "t5",
+       "s0", "s1", "s2", "s3", "s4", "s5",
+       "b0", "b1", "b2", "b3", "b4", "b5",
+       "tu1", "h1"].forEach((k) => delete next[k]);
+
+      itens.forEach((it) => {
+        if (it.categoria === "Performance") {
+          const desc = it.descricao || "";
+          if (desc.startsWith("Motor")) {
+            const m = desc.match(/Nível (\d)/i);
+            const nivel = m ? m[1] : (desc.includes("Padrão") || desc.includes("Stock") ? "0" : null);
+            if (nivel !== null) next["m" + nivel] = true;
+          } else if (desc.startsWith("Freio")) {
+            const m = desc.match(/Nível (\d)/i);
+            const nivel = m ? m[1] : (desc.includes("Padrão") || desc.includes("Stock") ? "0" : null);
+            if (nivel !== null) next["f" + nivel] = true;
+          } else if (desc.startsWith("Transmissão")) {
+            const m = desc.match(/Nível (\d)/i);
+            const nivel = m ? m[1] : (desc.includes("Padrão") || desc.includes("Stock") ? "0" : null);
+            if (nivel !== null) next["t" + nivel] = true;
+          } else if (desc.startsWith("Suspensão") && !desc.includes("Hidráulica")) {
+            const m = desc.match(/Nível (\d)/i);
+            const nivel = m ? m[1] : (desc.includes("Padrão") || desc.includes("Stock") ? "0" : null);
+            if (nivel !== null) next["s" + nivel] = true;
+          } else if (desc.startsWith("Blindagem")) {
+            const m = desc.match(/Nível (\d)/i);
+            const nivel = m ? m[1] : (desc.includes("Padrão") || desc.includes("Stock") ? "0" : null);
+            if (nivel !== null) next["b" + nivel] = true;
+          } else if (desc.toLowerCase().includes("turbo")) {
+            next["tu1"] = true;
+          } else if (desc.toLowerCase().includes("hidráulic")) {
+            next["h1"] = true;
+          }
+        }
+      });
+
+      return next;
+    });
+
+    setLogAplicadoInfo({
+      veiculo: log.veiculo_nome || log.veiculo_modelo || "Veículo",
+      placa: log.placa || "Sem Placa",
+      hora: log.hora ? log.hora.slice(0, 5) : "",
+      valorPago: log.valor_pago || 0,
+      itensQtd: itens.length,
+    });
+  };
+
+  const limparLogAplicado = () => {
+    setLogSelecionadoUuid("");
+    setLogAplicadoInfo(null);
+    setPassaporte("");
+    setCliente("");
+    setValorDigitadoEstetica("");
+    setCamaleao1(false);
+    setCamaleao2(false);
+    setCamaleaoRodas(false);
+    setFumaca(false);
+    setQuantidadeExtras(0);
+    setServicosSelecionados({});
+    if (typeof setImagemPreview === "function") setImagemPreview(null);
+    if (typeof setArquivoImagem === "function") setArquivoImagem(null);
+    if (typeof setImagemPreview2 === "function") setImagemPreview2(null);
+    if (typeof setArquivoImagem2 === "function") setArquivoImagem2(null);
+  };
+
   return (
     <>
+      {layoutPreferido === "lateral" && avisoTopo && !avisoTopoOculto && (
+        <div style={{ margin: "18px 20px 0", padding: "13px 16px", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px", borderRadius: "13px", border: "1px solid rgba(250,204,21,.3)", borderLeft: "4px solid #facc15", background: isDarkMode ? "rgba(30,24,8,.94)" : "rgba(255,251,235,.96)", boxShadow: "0 8px 24px rgba(0,0,0,.16)", color: theme.text }}>
+          <div style={{ minWidth: 0 }}>
+            <strong style={{ display: "block", color: isDarkMode ? "#fde047" : "#a16207", fontSize: "13px", marginBottom: "4px" }}>{avisoTopo.titulo}</strong>
+            <div style={{ color: theme.subtext, fontSize: "12px", lineHeight: 1.5 }}>{formatarTextoAvisos(avisoTopo.texto)}</div>
+          </div>
+          <button type="button" onClick={() => setAvisoTopoOculto(true)} title="Ocultar aviso" aria-label="Ocultar aviso" style={{ width: "28px", height: "28px", flexShrink: 0, borderRadius: "8px", border: `1px solid ${theme.border}`, background: theme.card2, color: theme.subtext, cursor: "pointer", fontSize: "17px", lineHeight: 1 }}>×</button>
+        </div>
+      )}
       <div style={styles.grid}>
         <section style={{ display: "flex", flexDirection: "column", gap: "20px", flex: 1 }}>
+          {/* SELETOR RÁPIDO: LOGS DE TUNAGEM RECENTES */}
+          <div style={{
+            ...styles.whiteCard,
+            border: logAplicadoInfo 
+              ? (isDarkMode ? "1.5px solid #10b981" : "1.5px solid #059669") 
+              : (isDarkMode ? "1px solid rgba(255,255,255,0.1)" : `1px solid ${theme.border}`),
+            background: logAplicadoInfo 
+              ? (isDarkMode ? "rgba(16, 185, 129, 0.08)" : "rgba(16, 185, 129, 0.04)") 
+              : styles.whiteCard.background,
+            boxShadow: logAplicadoInfo 
+              ? "0 4px 20px rgba(16, 185, 129, 0.15)" 
+              : styles.whiteCard.boxShadow,
+            transition: "all 0.25s ease",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "16px" }}>⚡</span>
+                <strong style={{ fontSize: "13.5px", fontWeight: "800", color: theme.text }}>
+                  Pré-Preenchimento Automático via Log de Tunagem
+                </strong>
+                <span style={{ 
+                  fontSize: "11px", 
+                  fontWeight: "700", 
+                  background: isDarkMode ? "rgba(245, 158, 11, 0.2)" : "rgba(245, 158, 11, 0.15)", 
+                  color: "#f59e0b", 
+                  padding: "2px 8px", 
+                  borderRadius: "6px" 
+                }}>
+                  FiveM Live
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={carregarLogsRecentes}
+                disabled={carregandoLogs}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${theme.border}`,
+                  color: theme.subtext,
+                  padding: "5px 12px",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+                title="Buscar novos logs agora"
+              >
+                <span style={{ display: "inline-block", animation: carregandoLogs ? "spin 1s infinite linear" : "none" }}>🔄</span>
+                {carregandoLogs ? "Buscando..." : "Atualizar"}
+              </button>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+              <select
+                value={logSelecionadoUuid}
+                onChange={(e) => aplicarLogNoFormulario(e.target.value)}
+                style={{
+                  flex: 1,
+                  minWidth: "260px",
+                  background: theme.card2 || (isDarkMode ? "#1f1f1f" : "#f9fafb"),
+                  border: `1px solid ${logAplicadoInfo ? "#10b981" : theme.border}`,
+                  color: logSelecionadoUuid ? theme.text : theme.subtext,
+                  padding: "10px 14px",
+                  borderRadius: "10px",
+                  fontSize: "13px",
+                  fontWeight: logSelecionadoUuid ? "700" : "500",
+                  outline: "none",
+                  cursor: "pointer",
+                }}
+              >
+                <option value="">
+                  {carregandoLogs
+                    ? "Carregando serviços recentes..."
+                    : logsRecentes.length === 0
+                    ? "Nenhum log recente encontrado para o seu mecânico"
+                    : "⚡ Selecione um serviço recente para pré-preencher o formulário..."}
+                </option>
+                {logsRecentes.map((l) => (
+                  <option key={l.uuid} value={l.uuid}>
+                    [{l.hora ? l.hora.slice(0, 5) : ""}] Placa: {l.placa || "S/ Placa"} • {l.veiculo_nome || "Veículo"} • R$ {Number(l.valor_pago || 0).toLocaleString("pt-BR")} ({l.dono_nome || `ID #${l.dono_id}`})
+                  </option>
+                ))}
+              </select>
+
+              {logAplicadoInfo && (
+                <button
+                  type="button"
+                  onClick={limparLogAplicado}
+                  style={{
+                    background: isDarkMode ? "rgba(239, 68, 68, 0.15)" : "rgba(239, 68, 68, 0.1)",
+                    border: "1px solid rgba(239, 68, 68, 0.35)",
+                    color: "#ef4444",
+                    padding: "9px 14px",
+                    borderRadius: "10px",
+                    fontSize: "12.5px",
+                    fontWeight: "700",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                  title="Limpar formulário e desfazer seleção"
+                >
+                  <span>🧹</span> Limpar
+                </button>
+              )}
+            </div>
+
+            {logAplicadoInfo && (
+              <div style={{
+                marginTop: "12px",
+                padding: "10px 14px",
+                borderRadius: "10px",
+                background: isDarkMode ? "rgba(16, 185, 129, 0.15)" : "rgba(16, 185, 129, 0.08)",
+                border: "1px solid rgba(16, 185, 129, 0.3)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: "8px",
+                fontSize: "12.5px",
+                color: isDarkMode ? "#34d399" : "#059669",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span>✅</span>
+                  <span>
+                    Pré-preenchido com sucesso: <b>{logAplicadoInfo.veiculo}</b> (Placa: <b>{logAplicadoInfo.placa}</b>)
+                  </span>
+                  <span style={{ opacity: 0.85 }}>• Custo Painel: R$ {logAplicadoInfo.valorPago.toLocaleString("pt-BR")}</span>
+                  <span style={{ opacity: 0.85 }}>• {logAplicadoInfo.itensQtd} itens detectados</span>
+                </div>
+                <span style={{ fontSize: "11px", fontWeight: "700", opacity: 0.85 }}>
+                  Confira os dados abaixo e adicione o passaporte se necessário.
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* INFORMAÇÕES DO CLIENTE */}
           <div style={styles.whiteCard}>
             <div style={styles.cardHeader}>
@@ -262,7 +706,10 @@ export default function DashboardPage({
                     .filter(Boolean)
                     .filter((p) => p.preco > 0);
 
-                  const valorBasePainel = Math.max(0, valorPainel - somaExtrasPainel - valorFumacaPainel - descontoCamaleao - somaPainelPerformance);
+                  const custoPainelItensEspeciais = somaExtrasPainel + valorFumacaPainel + descontoCamaleao + somaPainelPerformance;
+                  const isInconsistente = valorPainel > 0 && valorPainel < custoPainelItensEspeciais;
+
+                  const valorBasePainel = Math.max(0, valorPainel - custoPainelItensEspeciais);
                   const valorEsteticaFinal = (valorBasePainel / rules.painel_referencia) * rules.valor_cliente_referencia;
                   const valorCamaleoes = qtdCamaleao * rules.valor_cliente_camaleao;
                   const totalEstetica = valorEsteticaFinal + valorCamaleoes + valorExtrasFinal + valorFumacaFinal;
@@ -270,6 +717,21 @@ export default function DashboardPage({
 
                   return (
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {isInconsistente && (
+                        <div style={{
+                          padding: "10px 14px",
+                          borderRadius: "8px",
+                          background: "rgba(239, 68, 68, 0.12)",
+                          border: "1px solid rgba(239, 68, 68, 0.4)",
+                          color: "#ef4444",
+                          fontSize: "12px",
+                          fontWeight: "700",
+                          marginBottom: "8px",
+                          lineHeight: "1.4"
+                        }}>
+                          ⚠️ <strong>Inconsistência de Valores:</strong> O valor digitado do painel (R$ {valorPainel.toLocaleString("pt-BR")}) é menor que o custo mínimo in-game dos itens marcados (R$ {custoPainelItensEspeciais.toLocaleString("pt-BR")}). Fumaça, Camaleão ou Performance excedem o valor pago no jogo!
+                        </div>
+                      )}
 
                       {/* Performance */}
                       {itensPerformance.length > 0 && (
@@ -417,7 +879,8 @@ export default function DashboardPage({
                 })()}
               </div>
 
-              <div style={{ ...styles.uploadArea, outline: "none" }} tabIndex={0} onPaste={handlePasteEstetica}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px", alignItems: "stretch" }}>
+              <div style={{ ...styles.uploadArea, outline: "none", minWidth: 0 }} tabIndex={0} onPaste={handlePasteEstetica}>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
                   <span style={{ fontSize: "10px", fontWeight: "700", color: theme.subtext, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "2px", display: "block" }}>📸 Foto do VTuning / Referência</span>
                   {imagemPreview && (
@@ -433,7 +896,7 @@ export default function DashboardPage({
                 </div>
               </div>
 
-              <div style={{ ...styles.uploadArea, outline: "none", borderColor: imagemPreview2 ? theme.green : theme.border }} tabIndex={0} onPaste={handlePasteEstetica2}>
+              <div style={{ ...styles.uploadArea, outline: "none", minWidth: 0, borderColor: imagemPreview2 ? theme.green : theme.border }} tabIndex={0} onPaste={handlePasteEstetica2}>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
                   <span style={{ fontSize: "10px", fontWeight: "700", color: theme.subtext, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "2px", display: "block" }}>🚗 Foto do Resultado / Carro do Cliente <span style={{ color: theme.subtext, fontWeight: "400", textTransform: "none", fontSize: "10px" }}>(opcional)</span></span>
                   {imagemPreview2 && (
@@ -448,6 +911,7 @@ export default function DashboardPage({
                   </label>
                 </div>
               </div>
+              </div>
             </div>
           </div>
 
@@ -455,8 +919,13 @@ export default function DashboardPage({
           <div style={styles.whiteCard}>
             <div style={styles.cardHeader}>
               <span style={styles.dot}></span> Guincho / Atendimento
+              <label style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "7px", cursor: "pointer", color: reboque ? theme.green : theme.subtext, fontSize: "12px", fontWeight: "800", textTransform: "none" }}>
+                <input type="checkbox" checked={reboque} onChange={(e) => setReboque(e.target.checked)} />
+                Serviço de Reboque
+              </label>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "14px" }}>
+            {reboque && <div style={{ marginBottom: "12px", padding: "10px 12px", borderRadius: "9px", background: "rgba(59,130,246,0.1)", border: "1px solid rgba(59,130,246,0.3)", color: "#93c5fd", fontSize: "12px" }}>Para registrar o reboque, somente a foto do serviço é obrigatória.</div>}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "14px", opacity: reboque ? 0.45 : 1 }}>
               <div>
                 <label style={styles.miniLabel}>Distância (KM)</label>
                 <input
@@ -464,6 +933,7 @@ export default function DashboardPage({
                   type="text"
                   inputMode="numeric"
                   placeholder="Ex: 5"
+                  disabled={reboque}
                   value={formatarNumero(kmGuincho)}
                   onChange={(e) => setKmGuincho(limparNumero(e.target.value))}
                 />
@@ -475,6 +945,7 @@ export default function DashboardPage({
                   type="text"
                   inputMode="numeric"
                   placeholder="0"
+                  disabled={reboque}
                   value={formatarNumero(qtdReparos)}
                   onChange={(e) => setQtdReparos(limparNumero(e.target.value))}
                 />
@@ -486,6 +957,7 @@ export default function DashboardPage({
                   type="text"
                   inputMode="numeric"
                   placeholder="0"
+                  disabled={reboque}
                   value={formatarNumero(qtdPneus)}
                   onChange={(e) => setQtdPneus(limparNumero(e.target.value))}
                 />
@@ -588,7 +1060,7 @@ export default function DashboardPage({
         </section>
 
         {/* ASIDE */}
-        <aside style={{ width: "250px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "12px" }}>
+        {layoutPreferido !== "lateral" && <aside style={{ width: "250px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "12px" }}>
           {userPodeFinancas() && (
             <button
               onClick={adicionarNovoQuadro}
@@ -674,7 +1146,7 @@ export default function DashboardPage({
               </div>
             );
           })}
-        </aside>
+        </aside>}
       </div>
 
       {/* FOOTER */}

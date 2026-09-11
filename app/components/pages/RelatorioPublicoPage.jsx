@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import { supabase } from "../../utils/supabaseClient";
+import { getHorarioObrigatorioParaData, sincronizarPontosDiscordParaReds } from "../../utils/helpers";
 
 function fmtMin(totalMin) {
   if (!totalMin || totalMin <= 0) return "0h 00min";
@@ -13,6 +14,35 @@ function fmtBR(isoDate) {
   return isoDate ? new Date(isoDate + "T12:00:00").toLocaleDateString("pt-BR") : "";
 }
 
+function obterSaidaValida(reg) {
+  if (!reg || !reg.entrada || reg.oculto) return null;
+  const dEntrada = new Date(reg.entrada);
+  if (isNaN(dEntrada.getTime())) return null;
+
+  if (reg.saida) {
+    const dSaida = new Date(reg.saida);
+    if (!isNaN(dSaida.getTime())) {
+      if (dSaida < dEntrada) return null;
+      const maxSaida = new Date(dEntrada.getTime() + 12 * 3600000);
+      return dSaida > maxSaida ? maxSaida : dSaida;
+    }
+  }
+
+  if (typeof reg.tempo === "number" && reg.tempo > 0) {
+    const dSaidaCalc = new Date(dEntrada.getTime() + reg.tempo * 60000);
+    const maxSaida = new Date(dEntrada.getTime() + 12 * 3600000);
+    return dSaidaCalc > maxSaida ? maxSaida : dSaidaCalc;
+  }
+
+  const agora = Date.now();
+  const diffHoras = (agora - dEntrada.getTime()) / 3600000;
+  if (diffHoras >= 0 && diffHoras <= 2) {
+    return new Date(agora);
+  }
+
+  return null;
+}
+
 function calcularMetricasMecanica(registros, diasPeriodo) {
   let totalMin = 0;
   const pessoasUnicas = new Set();
@@ -22,7 +52,8 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
     if (reg.oculto) return;
     if (reg.entrada) {
       const dEntrada = new Date(reg.entrada);
-      const dSaida = reg.saida ? new Date(reg.saida) : new Date();
+      const dSaida = obterSaidaValida(reg);
+      if (!dSaida) return;
       const diff = (dSaida - dEntrada) / 60000;
       if (diff > 0) {
         totalMin += diff;
@@ -37,7 +68,7 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
   let slotsCobertos = 0;
   let slotsObrigatoriosCobertos = 0;
   const totalSlots = diasPeriodo.length * 48;
-  const totalSlotsObrigatorios = diasPeriodo.length * 6;
+  const totalSlotsObrigatorios = diasPeriodo.reduce((acc, dia) => acc + getHorarioObrigatorioParaData(dia).totalSlots30Min, 0);
 
   if (totalSlots > 0) {
     diasPeriodo.forEach(dia => {
@@ -62,11 +93,12 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
 
         for (let i = 0; i < registros.length; i++) {
           const reg = registros[i];
-          if (reg.oculto) continue;
-          if (!reg.entrada) continue;
+          if (reg.oculto || !reg.entrada) continue;
 
           const tEntrada = new Date(reg.entrada).getTime();
-          const tSaida = reg.saida ? new Date(reg.saida).getTime() : Date.now();
+          const dSaidaVal = obterSaidaValida(reg);
+          if (!dSaidaVal) continue;
+          const tSaida = dSaidaVal.getTime();
 
           if (Math.max(tEntrada, start1) < Math.min(tSaida, end1)) {
             coberto1 = true;
@@ -78,7 +110,8 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
           if (coberto1 && coberto2) break;
         }
 
-        const ehObrigatorio = h >= 19 && h <= 21;
+        const infoObr = getHorarioObrigatorioParaData(dia);
+        const ehObrigatorio = h >= infoObr.horaInicioNum && h < infoObr.horaFimNum;
 
         if (coberto1) {
           slotsCobertos++;
@@ -95,8 +128,8 @@ function calcularMetricasMecanica(registros, diasPeriodo) {
   const taxaCobertura = totalSlots > 0 ? (slotsCobertos / totalSlots) * 100 : 0;
   const taxaCoberturaObrigatoria = totalSlotsObrigatorios > 0 ? (slotsObrigatoriosCobertos / totalSlotsObrigatorios) * 100 : 0;
   
-  const minutosObrigatoriosTotais = diasPeriodo.length * 180;
-  const minutosObrigatoriosCobertos = (slotsObrigatoriosCobertos / (diasPeriodo.length * 6 || 1)) * minutosObrigatoriosTotais;
+  const minutosObrigatoriosTotais = diasPeriodo.reduce((acc, dia) => acc + getHorarioObrigatorioParaData(dia).totalMinutos, 0);
+  const minutosObrigatoriosCobertos = totalSlotsObrigatorios > 0 ? (slotsObrigatoriosCobertos / totalSlotsObrigatorios) * minutosObrigatoriosTotais : 0;
   const minutosObrigatoriosNaoCumpridos = Math.max(0, minutosObrigatoriosTotais - minutosObrigatoriosCobertos);
 
   return {
@@ -142,11 +175,11 @@ function calcularSlotsGenerico(registros, dia) {
   return slots.map(slot => {
     const funcionariosTrabalhando = [];
     registros.forEach(reg => {
-      if (reg.oculto) return;
-      if (!reg.entrada) return;
+      if (reg.oculto || !reg.entrada) return;
       
       const entradaDate = new Date(reg.entrada);
-      const saidaDate = reg.saida ? new Date(reg.saida) : new Date();
+      const saidaDate = obterSaidaValida(reg);
+      if (!saidaDate) return;
       
       if (entradaDate < slot.end && saidaDate > slot.start) {
         let funcNome = reg.nome || reg.nome_personagem || `ID: ${reg.id_jogo}`;
@@ -167,7 +200,7 @@ function calcularSlotsGenerico(registros, dia) {
   });
 }
 
-export default function RelatorioPublicoPage({ sharedId }) {
+export default function RelatorioPublicoPage({ sharedId, onVoltar }) {
   const [relatorioInfo, setRelatorioInfo] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
@@ -175,23 +208,44 @@ export default function RelatorioPublicoPage({ sharedId }) {
   const [registrosM1, setRegistrosM1] = useState([]);
   const [registrosM2, setRegistrosM2] = useState([]);
   const [registrosM3, setRegistrosM3] = useState([]);
+  const [registrosM4, setRegistrosM4] = useState([]);
 
   useEffect(() => {
     async function carregarDados() {
       try {
         setCarregando(true);
-        // Buscar informações do link compartilhado
-        const { data: linkInfo, error: linkError } = await supabase
-          .from("relatorios_compartilhados")
-          .select("*")
-          .eq("id", sharedId)
-          .maybeSingle();
+        setErro(null);
 
-        if (linkError) throw linkError;
-        if (!linkInfo) {
-          setErro("O relatório solicitado não foi encontrado ou o compartilhamento foi revogado.");
-          setCarregando(false);
-          return;
+        let linkInfo = null;
+
+        if (sharedId) {
+          // Buscar informações do link compartilhado
+          const { data, error: linkError } = await supabase
+            .from("relatorios_compartilhados")
+            .select("*")
+            .eq("id", sharedId)
+            .maybeSingle();
+
+          if (linkError) throw linkError;
+          if (!data) {
+            setErro("O relatório solicitado não foi encontrado ou o compartilhamento foi revogado.");
+            setCarregando(false);
+            return;
+          }
+          linkInfo = data;
+        } else {
+          // Se aberto direto pelo painel sem link específico, gera visualização dos últimos 7 dias
+          const hoje = new Date();
+          const dFim = hoje.toLocaleDateString("en-CA");
+          const seteDiasAtras = new Date(hoje.getTime() - 7 * 24 * 60 * 60 * 1000);
+          const dInicio = seteDiasAtras.toLocaleDateString("en-CA");
+
+          linkInfo = {
+            titulo: "Relatório Comparativo de Mecânicas (Visão Geral)",
+            data_inicio: dInicio,
+            data_fim: dFim,
+            excluir_manuais: false,
+          };
         }
 
         setRelatorioInfo(linkInfo);
@@ -199,11 +253,19 @@ export default function RelatorioPublicoPage({ sharedId }) {
         const inicioISO = new Date(`${linkInfo.data_inicio}T00:00:00-03:00`).toISOString();
         const fimISO = new Date(`${linkInfo.data_fim}T23:59:59-03:00`).toISOString();
 
-        // Buscar pontos das 3 mecânicas
-        const [resM1, resM2, resM3] = await Promise.all([
-          supabase.from("ponto_cidade").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false),
+        // Sincronizar pontos recentes do Discord para o RED's caso haja novos logs
+        try {
+          await sincronizarPontosDiscordParaReds(supabase);
+        } catch (e) {
+          console.warn("Aviso ao sincronizar pontos do Discord:", e);
+        }
+
+        // Buscar pontos das 4 mecânicas
+        const [resM1, resM2, resM3, resM4] = await Promise.all([
+          supabase.from("ponto_cidade_reds").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false),
           supabase.from("ponto_cidade_mecanica_2").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false),
-          supabase.from("ponto_cidade_mecanica_3").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false)
+          supabase.from("ponto_cidade_mecanica_3").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false),
+          supabase.from("ponto_cidade_mecanica_4").select("*").gte("entrada", inicioISO).lte("entrada", fimISO).eq("oculto", false)
         ]);
 
         const filtrarManuais = (regs) => {
@@ -214,6 +276,7 @@ export default function RelatorioPublicoPage({ sharedId }) {
         setRegistrosM1(filtrarManuais(resM1.data || []));
         setRegistrosM2(filtrarManuais(resM2.data || []));
         setRegistrosM3(filtrarManuais(resM3.data || []));
+        setRegistrosM4(filtrarManuais(resM4.data || []));
 
       } catch (err) {
         console.error("Erro ao carregar dados do relatório:", err);
@@ -223,13 +286,21 @@ export default function RelatorioPublicoPage({ sharedId }) {
       }
     }
 
-    if (sharedId) carregarDados();
+    carregarDados();
   }, [sharedId]);
 
   if (carregando) {
     return (
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", background: "#0f172a", color: "#fff" }}>
-        <div style={{ fontSize: "16px", fontWeight: "700" }}>⏳ Carregando relatório compartilhado...</div>
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", minHeight: "100vh", background: "#0f172a", color: "#fff", gap: "16px" }}>
+        <div style={{ fontSize: "18px", fontWeight: "800", color: "#38bdf8" }}>⏳ Carregando relatório comparativo...</div>
+        {onVoltar && (
+          <button
+            onClick={onVoltar}
+            style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", padding: "8px 18px", borderRadius: "8px", cursor: "pointer", fontSize: "13px", fontWeight: "700" }}
+          >
+            ⬅️ Voltar ao Painel
+          </button>
+        )}
       </div>
     );
   }
@@ -240,6 +311,14 @@ export default function RelatorioPublicoPage({ sharedId }) {
         <span style={{ fontSize: "48px", marginBottom: "16px" }}>⚠️</span>
         <h2 style={{ fontSize: "20px", fontWeight: "800", color: "#f87171" }}>Link Inválido ou Revogado</h2>
         <p style={{ color: "#94a3b8", fontSize: "14px", marginTop: "8px", maxWidth: "450px" }}>{erro}</p>
+        {onVoltar && (
+          <button
+            onClick={onVoltar}
+            style={{ marginTop: "20px", background: "#0284c7", color: "#fff", border: "none", padding: "10px 22px", borderRadius: "8px", cursor: "pointer", fontSize: "14px", fontWeight: "700" }}
+          >
+            ⬅️ Voltar ao Painel
+          </button>
+        )}
       </div>
     );
   }
@@ -257,11 +336,13 @@ export default function RelatorioPublicoPage({ sharedId }) {
   const metricasM1 = calcularMetricasMecanica(registrosM1, diasPeriodo);
   const metricasM2 = calcularMetricasMecanica(registrosM2, diasPeriodo);
   const metricasM3 = calcularMetricasMecanica(registrosM3, diasPeriodo);
+  const metricasM4 = calcularMetricasMecanica(registrosM4, diasPeriodo);
 
   const rankingMecanicas = [
     { id: "m1", nome: "RED's Tunershop", cor: "#ef4444", ...metricasM1 },
     { id: "m2", nome: "Harmony", cor: "#eab308", ...metricasM2 },
     { id: "m3", nome: "Dudark", cor: "#38bdf8", ...metricasM3 },
+    { id: "m4", nome: "Vespucci Beach", cor: "#ec4899", ...metricasM4 },
   ].sort((a, b) => b.taxaCobertura - a.taxaCobertura || b.totalMin - a.totalMin);
 
   const coberturaComparativa = {};
@@ -270,6 +351,7 @@ export default function RelatorioPublicoPage({ sharedId }) {
       m1: calcularSlotsGenerico(registrosM1, dia),
       m2: calcularSlotsGenerico(registrosM2, dia),
       m3: calcularSlotsGenerico(registrosM3, dia),
+      m4: calcularSlotsGenerico(registrosM4, dia),
     };
   });
 
@@ -284,14 +366,28 @@ export default function RelatorioPublicoPage({ sharedId }) {
       <div style={{ maxWidth: "1200px", margin: "0 auto" }}>
         
         {/* Cabeçalho */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "30px", paddingBottom: "20px", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-          <div>
-            <h1 style={{ fontSize: "22px", fontWeight: "900", color: "#38bdf8", margin: 0 }}>
-              Relatório Comparativo de Atividades entre Mecânicas
-            </h1>
-            <p style={{ fontSize: "13px", color: "#94a3b8", margin: "4px 0 0 0" }}>
-              Período: {fmtBR(relatorioInfo.data_inicio)} – {fmtBR(relatorioInfo.data_fim)}
-            </p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "30px", paddingBottom: "20px", borderBottom: "1px solid rgba(255,255,255,0.1)", flexWrap: "wrap", gap: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+            {onVoltar && (
+              <button
+                onClick={onVoltar}
+                style={{
+                  background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#fff", padding: "8px 14px", borderRadius: "8px", cursor: "pointer",
+                  fontSize: "13px", fontWeight: "700", display: "flex", alignItems: "center", gap: "6px"
+                }}
+              >
+                ⬅️ Voltar ao Painel
+              </button>
+            )}
+            <div>
+              <h1 style={{ fontSize: "20px", fontWeight: "900", color: "#38bdf8", margin: 0 }}>
+                {relatorioInfo.titulo || "Relatório Comparativo de Atividades entre Mecânicas"}
+              </h1>
+              <p style={{ fontSize: "13px", color: "#94a3b8", margin: "4px 0 0 0" }}>
+                Período: {fmtBR(relatorioInfo.data_inicio)} – {fmtBR(relatorioInfo.data_fim)}
+              </p>
+            </div>
           </div>
           <button
             onClick={() => window.print()}
@@ -357,7 +453,7 @@ export default function RelatorioPublicoPage({ sharedId }) {
                 <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Mecânica</th>
                 <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Geral</th>
                 <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Tempo Aberto (Geral)</th>
-                <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Obrigatória (19h-22h)</th>
+                <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Cob. Obrigatória (Pico)</th>
                 <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Falta Obrigatório</th>
                 <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Total Horas Staff</th>
                 <th style={{ padding: "10px", color: "#94a3b8", fontSize: "11px", fontWeight: "700", textTransform: "uppercase" }}>Sessões</th>
@@ -441,8 +537,9 @@ export default function RelatorioPublicoPage({ sharedId }) {
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(48, 1fr)", flex: 1, gap: "3px" }}>
                       {slots.map((slot, idx) => {
-                        const ehObrigatorio = idx >= 38 && idx <= 43;
-                        const tooltipText = `${ehObrigatorio ? "⭐ [Horário Obrigatório 19h-22h] " : ""}${slot.label} (${labelMecanica})\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}`;
+                        const infoObr = getHorarioObrigatorioParaData(dia);
+                        const ehObrigatorio = idx >= infoObr.slotInicioIdx && idx <= infoObr.slotFimIdx;
+                        const tooltipText = `${ehObrigatorio ? `⭐ [Horário Obrigatório ${infoObr.labelCurto}] ` : ""}${slot.label} (${labelMecanica})\n${slot.coberto ? `🟢 Coberto por:\n${slot.funcionarios.map(f => `• ${f.nome}`).join("\n")}` : `🔴 Sem cobertura${ehObrigatorio ? " (FALHA NO HORÁRIO OBRIGATÓRIO)" : ""}`}`;
                         
                         let emptyColor = "";
                         let emptyBorder = "";
