@@ -3276,15 +3276,26 @@ export default function Home() {
       if (temPerformance) fields.push({ name: "⚙️ Peças Instaladas", value: nomesServicos || "Nenhuma", inline: false });
       if (!temReboque && temGuincho) fields.push({ name: "🚗 Guincho", value: `${kmGuincho} KM (x2)`, inline: true }, { name: "🔧 Reparos", value: `${qtdReparos}`, inline: true }, { name: "🛞 Pneus", value: `${qtdPneus}`, inline: true });
 
-      const discordEmbed = {
-        title: tituloRelatorio, color: corEmbed, fields,
-        image: { url: "attachment://print_veiculo.png" },
-        ...(arquivoImagem2 ? { thumbnail: { url: "attachment://resultado_cliente.png" } } : {}),
-        footer: { text: "RED'S TUNERSHOP - Sistema de Logs" }, timestamp: new Date()
-      };
-
       const img1 = await otimizarImagem(arquivoImagem);
       const img2 = await otimizarImagem(arquivoImagem2);
+
+      const imagePayload = img1
+        ? { url: "attachment://print_veiculo.png" }
+        : (imagemPreview && String(imagemPreview).startsWith("http") ? { url: imagemPreview } : null);
+
+      const thumbnailPayload = img2
+        ? { url: "attachment://resultado_cliente.png" }
+        : (imagemPreview2 && String(imagemPreview2).startsWith("http") ? { url: imagemPreview2 } : null);
+
+      const discordEmbed = {
+        title: tituloRelatorio,
+        color: corEmbed,
+        fields,
+        ...(imagePayload ? { image: imagePayload } : {}),
+        ...(thumbnailPayload ? { thumbnail: thumbnailPayload } : {}),
+        footer: { text: "RED'S TUNERSHOP - Sistema de Logs" },
+        timestamp: new Date(),
+      };
 
       const formData = new FormData();
       formData.append("payload_json", JSON.stringify({ embeds: [discordEmbed] }));
@@ -3292,7 +3303,7 @@ export default function Home() {
       if (img2) formData.append("files[1]", img2, "resultado_cliente.png");
 
       let response = { ok: true };
-      let linkDiscord = "";
+      let linkDiscord = (imagemPreview && String(imagemPreview).startsWith("http")) ? imagemPreview : "";
 
       if (webhookDestino) {
         const separador = webhookDestino.includes("?") ? "&" : "?";
