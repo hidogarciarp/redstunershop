@@ -1088,6 +1088,56 @@ export default function Home() {
         setErroLogin("Preencha o ID e a senha.");
         return;
       }
+
+      // Autenticação segura pelo servidor Next.js
+      let res;
+      try {
+        res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: idLimpo, senha: senhaLimpa }),
+        });
+      } catch (netErr) {
+        console.warn("Falha de rede na rota /api/auth/login:", netErr);
+      }
+
+      if (res) {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setErroLogin(data?.error || "Erro ao realizar login.");
+          return;
+        }
+
+        const usuario = data.usuario;
+        if (data.primeiroAcesso) {
+          alert("Primeiro acesso detectado! Por favor, altere sua senha.");
+          setUsuarioLogado(usuario);
+          setPaginaAtual("alterar-senha");
+          return;
+        }
+
+        if (data.sucesso && usuario) {
+          // ===== VERIFICAR BLOQUEIO FINANCEIRO =====
+          if (usuario.bloqueado_financeiro) {
+            const usadoEm = usuario.credito_24h_usado_em;
+            const dentroJanela = usadoEm && (Date.now() - new Date(usadoEm).getTime()) < 24 * 3600 * 1000;
+            if (!dentroJanela) {
+              setUsuarioLogado(usuario);
+              setNomeMecanico(usuario.nome);
+              buscarMeusPagamentos(usuario.id);
+              setPaginaAtual("bloqueado-financeiro");
+              return;
+            }
+          }
+          aplicarLayoutDoUsuario(usuario);
+          setUsuarioLogado(usuario);
+          setNomeMecanico(usuario.nome);
+          setPaginaAtual("dashboard");
+          return;
+        }
+      }
+
+      // Fallback de contingência caso o endpoint local falhe
       const usuario = await buscarUsuarioNoBanco(idLimpo);
       if (usuario) {
         if (usuario.status === "inativo" || usuario.status === "demitido") {
