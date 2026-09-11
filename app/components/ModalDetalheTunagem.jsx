@@ -345,9 +345,7 @@ export default function ModalDetalheTunagem({
       const temPerformance = itensFinais.some((item) => item.categoria === "Performance");
       const temEstetica = itensFinais.some((item) => item.categoria !== "Performance");
 
-      const WEBHOOK_ESTETICA = process.env.NEXT_PUBLIC_WEBHOOK_ESTETICA;
-      const WEBHOOK_TUNAGEM = process.env.NEXT_PUBLIC_WEBHOOK_TUNAGEM;
-      const webhookDestino = temPerformance ? (WEBHOOK_TUNAGEM || WEBHOOK_ESTETICA) : (WEBHOOK_ESTETICA || WEBHOOK_TUNAGEM);
+      const webhookDestino = temPerformance ? "/api/discord?tipo=tunagem" : "/api/discord?tipo=estetica";
       const canalNome = temPerformance ? "controle-tunagem" : "controle-estetica";
 
       const tituloRelatorio = temPerformance ? "🛠️ RELATÓRIO DE PERFORMANCE" : "🎨 RELATÓRIO DE ESTÉTICA";

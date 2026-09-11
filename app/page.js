@@ -510,15 +510,15 @@ export default function Home() {
     horas: Math.round(r.total_minutos / 60),
   }));
 
-  const WEBHOOK_ESTETICA = process.env.NEXT_PUBLIC_WEBHOOK_ESTETICA;
-  const WEBHOOK_TUNAGEM = process.env.NEXT_PUBLIC_WEBHOOK_TUNAGEM;
-  const WEBHOOK_VENDAS = process.env.NEXT_PUBLIC_WEBHOOK_VENDAS;
-  const WEBHOOK_GUINCHO = process.env.NEXT_PUBLIC_WEBHOOK_GUINCHO;
-  const WEBHOOK_REBOQUE = "https://discord.com/api/webhooks/1547358481122590870/iiYd9HgKm_Sk7Li67mNzlcdqOyXNsY-V2pSu13bqmAqeKfCSkZ4F2Vg-2aJoLI6X893V";
-  const WEBHOOK_RODAS = process.env.NEXT_PUBLIC_WEBHOOK_RODAS;
-  const WEBHOOK_REPORT = process.env.NEXT_PUBLIC_WEBHOOK_REPORT;
-  const WEBHOOK_PAGAMENTOS = process.env.NEXT_PUBLIC_WEBHOOK_PAGAMENTOS;
-  const WEBHOOK_CAIXA2 = process.env.NEXT_PUBLIC_WEBHOOK_CAIXA2;
+  const WEBHOOK_ESTETICA = "/api/discord?tipo=estetica";
+  const WEBHOOK_TUNAGEM = "/api/discord?tipo=tunagem";
+  const WEBHOOK_VENDAS = "/api/discord?tipo=vendas";
+  const WEBHOOK_GUINCHO = "/api/discord?tipo=guincho";
+  const WEBHOOK_REBOQUE = "/api/discord?tipo=reboque";
+  const WEBHOOK_RODAS = "/api/discord?tipo=rodas";
+  const WEBHOOK_REPORT = "/api/discord?tipo=report";
+  const WEBHOOK_PAGAMENTOS = "/api/discord?tipo=pagamentos";
+  const WEBHOOK_CAIXA2 = "/api/discord?tipo=caixa2";
 
   const tabelas = TABELA_PRECOS;
   const rules = REGRAS_PRECOS;
