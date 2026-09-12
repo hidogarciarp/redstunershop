@@ -634,7 +634,7 @@ export default function RelatorioPage({
   const [ordenacao,       setOrdenacao]       = useState("horas"); // "horas" | "nome"
   const [mostrarSemHoras, setMostrarSemHoras] = useState(true);
   const [jaGerou,         setJaGerou]         = useState(false);
-  const [abaRelatorio,    setAbaRelatorio]    = useState("funcionarios"); // "funcionarios" | "cobertura" | "comparativo"
+  const [abaRelatorio,    setAbaRelatorio]    = useState("funcionarios"); // "funcionarios" | "cobertura" | "comparativo" | "sem_saida"
   const [diaSelecionado,  setDiaSelecionado]  = useState("");
   const [filtroApenasSemCobertura, setFiltroApenasSemCobertura] = useState(false);
   const [visualizacaoCobertura,   setVisualizacaoCobertura]   = useState("linha"); // "linha" | "detalhes"
@@ -643,6 +643,55 @@ export default function RelatorioPage({
   const [modalRelatorioMecanicasAberta, setModalRelatorioMecanicasAberta] = useState(false);
   const [linksCompartilhados, setLinksCompartilhados] = useState([]);
   const [gerandoLinkShare, setGerandoLinkShare] = useState(false);
+  const [filtroBuscaSemSaida, setFiltroBuscaSemSaida] = useState("");
+
+  const abrirAuditoriaSessao = async (sessao) => {
+    setSessaoAuditModal(sessao);
+    if (sessao.detalhes && (sessao.detalhes.tunagens?.length || sessao.detalhes.bancada?.length || sessao.detalhes.bau?.length)) {
+      return;
+    }
+    try {
+      let q = supabase.from("sessoes_ponto_auditoria_reds").select("*");
+      if (sessao.uuid_entrada || sessao.uuid_sessao) {
+        q = q.eq("uuid_sessao", sessao.uuid_entrada || sessao.uuid_sessao);
+      } else if (sessao.entrada && (sessao.id_jogo || sessao.usuario_id)) {
+        const idVal = sessao.id_jogo || sessao.usuario_id;
+        q = q.eq("id_jogo", idVal).eq("entrada", sessao.entrada);
+      } else {
+        return;
+      }
+      const { data, error } = await q.maybeSingle();
+      if (!error && data) {
+        setSessaoAuditModal(prev => {
+          if (!prev) return null;
+          const det = data.detalhes_json || { tunagens: [], bancada: [], bau: [] };
+          return {
+            ...prev,
+            ...data,
+            detalhes: det,
+            totalTunagens: data.total_tunagens ?? det.tunagens?.length ?? 0,
+            totalBancada: data.total_bancada ?? det.bancada?.length ?? 0,
+            totalBau: data.total_bau ?? det.bau?.length ?? 0,
+            valorTunagens: data.valor_tunagens ?? (det.tunagens?.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0) || 0),
+            valorBancada: data.valor_bancada ?? (det.bancada?.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0) || 0),
+          };
+        });
+      }
+    } catch (err) {
+      console.warn("Aviso ao buscar detalhes de auditoria:", err);
+    }
+  };
+
+  const abrirHistoricoFunc = (item) => {
+    const funcObj = item.funcRef || {
+      id: item.usuario_id || item.id_jogo || item.id,
+      idJogo: item.id_jogo || item.usuario_id || item.id,
+      nome: item.nomeExibicao || item.nome_personagem || item.nome,
+      cargo: item.cargoExibicao || item.cargo
+    };
+    setFuncModal({ func: funcObj, status: "aberto" });
+    fetchAllLogsFunc(funcObj);
+  };
 
   const filtrarManuais = (regs) => {
     if (!ocultarManuais) return regs;
@@ -899,7 +948,69 @@ export default function RelatorioPage({
   const funcAtivos    = dadosFuncionarios.filter(r => r.totalMin > 0).length;
   const totalSessoes  = dadosFuncionarios.reduce((acc, r) => acc + r.sessoes, 0);
 
+  const pontosSemSaidaPeriodo = React.useMemo(() => {
+    const regs = registrosRelatorio || [];
+    const mapaFuncPorId = new Map();
+    const mapaFuncPorNome = new Map();
+    (listaFuncionarios || []).forEach(f => {
+      const fid = f.idJogo || f.id_jogo || f.id;
+      if (fid) mapaFuncPorId.set(String(fid), f);
+      if (f.id) mapaFuncPorId.set(String(f.id), f);
+      if (f.nome) mapaFuncPorNome.set(f.nome.toLowerCase().trim(), f);
+    });
 
+    const lista = [];
+    const vistos = new Set();
+
+    regs.forEach(reg => {
+      if (reg.oculto || !reg.entrada) return;
+      if (ocultarManuais && reg.manual === true) return;
+      
+      const dEntrada = new Date(reg.entrada);
+      if (isNaN(dEntrada.getTime())) return;
+
+      let semSaida = false;
+      let motivo = "";
+
+      if (!reg.saida) {
+        semSaida = true;
+        motivo = "Sem registro de saída (Ponto em aberto)";
+      } else {
+        const dSaida = new Date(reg.saida);
+        if (isNaN(dSaida.getTime()) || reg.saida === reg.entrada || dSaida <= dEntrada) {
+          semSaida = true;
+          motivo = "Saída igual à entrada (0 min / Miss-click)";
+        } else if (reg.tempo === 0 || (reg.duracao_min !== undefined && reg.duracao_min === 0) || (reg.duracaoMin !== undefined && reg.duracaoMin === 0)) {
+          semSaida = true;
+          motivo = "Duração zerada (0 min)";
+        }
+      }
+
+      if (semSaida) {
+        const key = String(reg.uuid_entrada || reg.uuid_sessao || `${reg.usuario_id || reg.id_jogo || reg.id}_${reg.entrada}`);
+        if (vistos.has(key)) return;
+        vistos.add(key);
+
+        const uid = reg.usuario_id || reg.id_jogo || reg.id;
+        const nomeReg = reg.nome_personagem || reg.nome || "";
+        const func = (uid && mapaFuncPorId.get(String(uid))) || (nomeReg && mapaFuncPorNome.get(nomeReg.toLowerCase().trim())) || null;
+
+        const durMin = (reg.entrada && reg.saida) ? Math.max(0, Math.round((new Date(reg.saida) - new Date(reg.entrada)) / 60000)) : 0;
+
+        lista.push({
+          ...reg,
+          funcRef: func,
+          motivoSemSaida: reg.observacao || motivo,
+          nomeExibicao: func?.nome || nomeReg || "Desconhecido",
+          idJogoExibicao: func?.idJogo || func?.id_jogo || uid || "—",
+          cargoExibicao: func?.cargo || reg.cargo || "",
+          durMinCalculada: durMin
+        });
+      }
+    });
+
+    return lista.sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
+  }, [registrosRelatorio, ocultarManuais, listaFuncionarios]);
 
   const diasPeriodo = React.useMemo(() => {
     if (!periodoInicio || !periodoFim) return [];
@@ -1116,6 +1227,196 @@ export default function RelatorioPage({
 
   const colunasHeader = ["#", "ID Jogo", "Funcionário", "Cargo", "Total de Horas", "Sessões", "Status"];
 
+  const renderModalAuditoriaSessao = () => {
+    if (!sessaoAuditModal) return null;
+    const activeAudit = (sessaoAuditModal.detalhes?.tunagens?.length || sessaoAuditModal.detalhes?.bancada?.length || sessaoAuditModal.detalhes?.bau?.length)
+      ? sessaoAuditModal
+      : (logsCompletosFunc?.find(l => {
+          if (sessaoAuditModal.uuid_entrada && (l.uuid_sessao === sessaoAuditModal.uuid_entrada || l.uuid_entrada === sessaoAuditModal.uuid_entrada)) return true;
+          if (l.entrada && sessaoAuditModal.entrada) {
+            return Math.abs(new Date(l.entrada).getTime() - new Date(sessaoAuditModal.entrada).getTime()) < 180000;
+          }
+          return false;
+        }) || sessaoAuditModal);
+
+    const det = activeAudit.detalhes || { tunagens: [], bancada: [], bau: [] };
+    const listTun = det.tunagens || [];
+    const listBanc = det.bancada || [];
+    const listBau = det.bau || [];
+    const valTun = activeAudit.valorTunagens || listTun.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0);
+    const valBanc = activeAudit.valorBancada || listBanc.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0);
+    const nomeAudit = activeAudit.nome || activeAudit.nome_personagem || activeAudit.nomeExibicao || (funcModal?.func?.nome) || "Mecânico";
+    const idJogoAudit = activeAudit.id_jogo || activeAudit.usuario_id || activeAudit.id || (funcModal?.func?.idJogo) || (funcModal?.func?.id) || "—";
+
+    return (
+      <div
+        style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(0, 0, 0, 0.85)",
+          backdropFilter: "blur(10px)",
+          zIndex: 100005,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "20px"
+        }}
+        onClick={() => setSessaoAuditModal(null)}
+      >
+        <div
+          style={{
+            background: "#0f172a",
+            border: "1.5px solid rgba(56, 189, 248, 0.3)",
+            borderRadius: "20px",
+            width: "100%",
+            maxWidth: "680px",
+            maxHeight: "85vh",
+            overflowY: "auto",
+            padding: "24px",
+            color: "#fff",
+            boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.8)"
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid rgba(255, 255, 255, 0.1)", paddingBottom: "16px", marginBottom: "16px" }}>
+            <div>
+              <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "800", textTransform: "uppercase" }}>
+                🔍 Auditoria de Atividades no Expediente
+              </span>
+              <h2 style={{ fontSize: "18px", fontWeight: "900", color: "#fff", margin: "4px 0" }}>
+                {nomeAudit} <span style={{ color: "#94a3b8", fontSize: "14px" }}>(ID: {idJogoAudit})</span>
+              </h2>
+              <div style={{ fontSize: "12px", color: "#cbd5e1" }}>
+                ⏱️ <strong>{activeAudit.duracaoMin || Math.round((new Date(activeAudit.saida) - new Date(activeAudit.entrada)) / 60000) || 0} min de serviço</strong> &bull; {new Date(activeAudit.entrada).toLocaleString("pt-BR")} até {activeAudit.saida ? new Date(activeAudit.saida).toLocaleTimeString("pt-BR") : "Em Aberto"}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setSessaoAuditModal(null)}
+              style={{
+                background: "rgba(255, 255, 255, 0.1)",
+                border: "none",
+                color: "#cbd5e1",
+                borderRadius: "8px",
+                padding: "6px 12px",
+                fontSize: "14px",
+                cursor: "pointer",
+                fontWeight: "bold"
+              }}
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* TUNAGENS */}
+          <div style={{ marginBottom: "20px" }}>
+            <div style={{ fontSize: "13px", fontWeight: "800", color: "#22c55e", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>🚗 Tunagens no Expediente ({listTun.length || activeAudit.totalTunagens || 0})</span>
+              <span style={{ fontSize: "13px", color: "#4ade80", fontWeight: "800" }}>
+                R$ {valTun.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            {listTun.length === 0 ? (
+              <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma tunagem realizada neste expediente.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {listTun.map((t, tIdx) => (
+                  <div key={tIdx} style={{ background: "rgba(34, 197, 94, 0.05)", border: "1px solid rgba(34, 197, 94, 0.2)", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <strong>🚗 {t.veiculo_nome || t.veiculo || t.veiculo_modelo || "Veículo"}</strong>
+                      <span style={{ color: "#4ade80", fontWeight: "800" }}>R$ {(parseFloat(t.valor_pago || t.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
+                      {t.placa && <span style={{ background: "rgba(255,255,255,0.08)", padding: "1px 6px", borderRadius: "4px", fontWeight: "600", color: "#cbd5e1" }}>🔖 {t.placa}</span>}
+                      {(t.dono_nome || t.cliente_nome) && <span>👤 Cliente: {t.dono_nome || t.cliente_nome} {(t.dono_id || t.cliente_id) ? `(ID: ${t.dono_id || t.cliente_id})` : ""}</span>}
+                      {(t.baia_nome || t.baia) && <span>🏷️ Baia: {t.baia_nome || t.baia}</span>}
+                      {(t.timestampz || t.created_at || t.timestamp) && <span>🕒 {new Date(t.timestampz || t.created_at || t.timestamp).toLocaleTimeString("pt-BR")}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* COMPRAS NA BANCADA */}
+          <div style={{ marginBottom: "20px" }}>
+            <div style={{ fontSize: "13px", fontWeight: "800", color: "#c084fc", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>🛠️ Compras na Bancada ({listBanc.length || activeAudit.totalBancada || 0})</span>
+              <span style={{ fontSize: "13px", color: "#e9d5ff", fontWeight: "800" }}>
+                ${valBanc.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            {listBanc.length === 0 ? (
+              <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma compra na bancada realizada neste expediente.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {listBanc.map((b, bIdx) => (
+                  <div key={bIdx} style={{ background: "rgba(192, 132, 252, 0.05)", border: "1px solid rgba(192, 132, 252, 0.2)", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <strong>🛠️ {b.item || b.nomeItem || b.nome_item || "Item de Bancada"}</strong>
+                      <span style={{ color: "#c084fc", fontWeight: "800" }}>${(parseFloat(b.valor) || 0).toLocaleString("pt-BR")}</span>
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", display: "flex", gap: "12px" }}>
+                      {(b.qtd || b.quantidade) && <span>📦 Quantidade: {b.qtd || b.quantidade}x</span>}
+                      {(b.timestamp || b.created_at) && <span>🕒 {new Date(b.timestamp || b.created_at).toLocaleTimeString("pt-BR")}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* MOVIMENTAÇÕES NO BAÚ */}
+          <div style={{ marginBottom: "20px" }}>
+            <div style={{ fontSize: "13px", fontWeight: "800", color: "#fbbf24", marginBottom: "8px" }}>
+              📦 Movimentações no Baú ({listBau.length || activeAudit.totalBau || 0})
+            </div>
+            {listBau.length === 0 ? (
+              <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma movimentação de baú realizada neste expediente.</div>
+            ) : (
+              <div style={{ maxHeight: "200px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "rgba(0,0,0,0.2)", padding: "8px", borderRadius: "8px" }}>
+                {listBau.map((m, mIdx) => {
+                  const isRetirou = (m.acao === "RETIROU" || m.tipo === "RETIROU" || String(m.acao).toLowerCase().includes("retir"));
+                  return (
+                    <div key={mIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", padding: "6px 10px", background: "rgba(255,255,255,0.02)", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                      <span style={{ color: isRetirou ? "#fca5a5" : "#86efac", fontWeight: "700" }}>
+                        {isRetirou ? "📤 Retirou:" : "📥 Guardou:"} {m.item || m.nome_item || m.nomeItem}
+                      </span>
+                      {(m.timestamp || m.created_at) && <span style={{ color: "#94a3b8", fontSize: "10px" }}>{new Date(m.timestamp || m.created_at).toLocaleTimeString("pt-BR")}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Botão Fechar */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
+            <button
+              onClick={() => setSessaoAuditModal(null)}
+              style={{
+                background: "rgba(255,255,255,0.1)",
+                border: "1px solid rgba(255,255,255,0.2)",
+                color: "#fff",
+                padding: "8px 20px",
+                borderRadius: "8px",
+                fontWeight: "800",
+                fontSize: "12px",
+                cursor: "pointer"
+              }}
+            >
+              Fechar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderModalDetalhes = () => {
     if (!funcModal) return null;
     const { func, status } = funcModal;
@@ -1140,8 +1441,11 @@ export default function RelatorioPage({
       }
     });
 
+    const totalSessoesFunc = todosRegs.length;
+    const sessoesSemSaidaFuncCount = todosRegs.filter(r => r.entrada && (!r.saida || r.saida === r.entrada || r.duracaoMin === 0 || r.tempo === 0)).length;
+
     if (status === "aberto") {
-      todosRegs = todosRegs.filter(r => r.entrada && !r.saida);
+      todosRegs = todosRegs.filter(r => r.entrada && (!r.saida || r.saida === r.entrada || r.duracaoMin === 0 || r.tempo === 0));
     }
 
     // Enriquecer registros com os dados detalhados de auditoria se disponíveis em logsCompletosFunc
@@ -1168,6 +1472,8 @@ export default function RelatorioPage({
             totalBancada: matched.totalBancada ?? reg.totalBancada ?? (matched.detalhes?.bancada?.length || 0),
             valorBancada: matched.valorBancada ?? reg.valorBancada ?? (matched.detalhes?.bancada?.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0) || 0),
             totalBau: matched.totalBau ?? reg.totalBau ?? (matched.detalhes?.bau?.length || 0),
+            duracaoMin: matched.duracaoMin ?? reg.duracaoMin ?? ((matched.entrada && matched.saida) ? Math.round((new Date(matched.saida) - new Date(matched.entrada)) / 60000) : 0),
+            statusPonto: matched.statusPonto || reg.statusPonto
           };
         }
         return reg;
@@ -1303,6 +1609,40 @@ export default function RelatorioPage({
                 )}
               </div>
             ) : null}
+
+            {/* FILTRO DE SESSÕES DO FUNCIONÁRIO */}
+            <div style={{ display: "flex", gap: "8px", marginBottom: "14px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                onClick={() => setFuncModal(prev => ({ ...prev, status: null }))}
+                style={{
+                  background: !status ? "rgba(56, 189, 248, 0.2)" : "rgba(255, 255, 255, 0.05)",
+                  border: `1px solid ${!status ? "#38bdf8" : theme.border}`,
+                  color: !status ? "#38bdf8" : theme.text,
+                  padding: "6px 14px",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                📋 Todas as Sessões ({totalSessoesFunc})
+              </button>
+              <button
+                onClick={() => setFuncModal(prev => ({ ...prev, status: "aberto" }))}
+                style={{
+                  background: status === "aberto" ? "rgba(250, 204, 21, 0.2)" : "rgba(255, 255, 255, 0.05)",
+                  border: `1px solid ${status === "aberto" ? "#facc15" : theme.border}`,
+                  color: status === "aberto" ? "#facc15" : theme.text,
+                  padding: "6px 14px",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                ⚠️ Apenas sem Saída / Zeradas ({sessoesSemSaidaFuncCount})
+              </button>
+            </div>
 
             {todosRegs.length === 0 ? (
               <div style={{ padding: "40px", textAlign: "center", color: theme.subtext }}>Nenhum registro encontrado para este filtro.</div>
@@ -1456,195 +1796,6 @@ export default function RelatorioPage({
             )}
           </div>
         </div>
-
-        {/* SUB-MODAL DE AUDITORIA DE ATIVIDADES DA SESSÃO */}
-        {(() => {
-          if (!sessaoAuditModal) return null;
-          const activeAudit = (sessaoAuditModal.detalhes?.tunagens?.length || sessaoAuditModal.detalhes?.bancada?.length || sessaoAuditModal.detalhes?.bau?.length)
-            ? sessaoAuditModal
-            : (logsCompletosFunc?.find(l => {
-                if (sessaoAuditModal.uuid_entrada && (l.uuid_sessao === sessaoAuditModal.uuid_entrada || l.uuid_entrada === sessaoAuditModal.uuid_entrada)) return true;
-                if (l.entrada && sessaoAuditModal.entrada) {
-                  return Math.abs(new Date(l.entrada).getTime() - new Date(sessaoAuditModal.entrada).getTime()) < 180000;
-                }
-                return false;
-              }) || sessaoAuditModal);
-
-          const det = activeAudit.detalhes || { tunagens: [], bancada: [], bau: [] };
-          const listTun = det.tunagens || [];
-          const listBanc = det.bancada || [];
-          const listBau = det.bau || [];
-          const valTun = activeAudit.valorTunagens || listTun.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0);
-          const valBanc = activeAudit.valorBancada || listBanc.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0);
-
-          return (
-            <div
-              style={{
-                position: "fixed",
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                background: "rgba(0, 0, 0, 0.85)",
-                backdropFilter: "blur(10px)",
-                zIndex: 100005,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: "20px"
-              }}
-              onClick={() => setSessaoAuditModal(null)}
-            >
-              <div
-                style={{
-                  background: "#0f172a",
-                  border: "1.5px solid rgba(56, 189, 248, 0.3)",
-                  borderRadius: "20px",
-                  width: "100%",
-                  maxWidth: "680px",
-                  maxHeight: "85vh",
-                  overflowY: "auto",
-                  padding: "24px",
-                  color: "#fff",
-                  boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.8)"
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Header */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid rgba(255, 255, 255, 0.1)", paddingBottom: "16px", marginBottom: "16px" }}>
-                  <div>
-                    <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "800", textTransform: "uppercase" }}>
-                      🔍 Auditoria de Atividades no Expediente
-                    </span>
-                    <h2 style={{ fontSize: "18px", fontWeight: "900", color: "#fff", margin: "4px 0" }}>
-                      {activeAudit.nome || func.nome} <span style={{ color: "#94a3b8", fontSize: "14px" }}>(ID: {activeAudit.id_jogo || activeAudit.id || func.idJogo})</span>
-                    </h2>
-                    <div style={{ fontSize: "12px", color: "#cbd5e1" }}>
-                      ⏱️ <strong>{activeAudit.duracaoMin || Math.round((new Date(activeAudit.saida) - new Date(activeAudit.entrada)) / 60000) || 0} min de serviço</strong> &bull; {new Date(activeAudit.entrada).toLocaleString("pt-BR")} até {activeAudit.saida ? new Date(activeAudit.saida).toLocaleTimeString("pt-BR") : "Em Aberto"}
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => setSessaoAuditModal(null)}
-                    style={{
-                      background: "rgba(255, 255, 255, 0.1)",
-                      border: "none",
-                      color: "#cbd5e1",
-                      borderRadius: "8px",
-                      padding: "6px 12px",
-                      fontSize: "14px",
-                      cursor: "pointer",
-                      fontWeight: "bold"
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-
-                {/* TUNAGENS */}
-                <div style={{ marginBottom: "20px" }}>
-                  <div style={{ fontSize: "13px", fontWeight: "800", color: "#22c55e", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>🚗 Tunagens no Expediente ({listTun.length || activeAudit.totalTunagens || 0})</span>
-                    <span style={{ fontSize: "13px", color: "#4ade80", fontWeight: "800" }}>
-                      R$ {valTun.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  {listTun.length === 0 ? (
-                    <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma tunagem realizada neste expediente.</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {listTun.map((t, tIdx) => (
-                        <div key={tIdx} style={{ background: "rgba(34, 197, 94, 0.05)", border: "1px solid rgba(34, 197, 94, 0.2)", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <strong>🚗 {t.veiculo_nome || t.veiculo || t.veiculo_modelo || "Veículo"}</strong>
-                            <span style={{ color: "#4ade80", fontWeight: "800" }}>R$ {(parseFloat(t.valor_pago || t.valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
-                          </div>
-                          <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
-                            {t.placa && <span style={{ background: "rgba(255,255,255,0.08)", padding: "1px 6px", borderRadius: "4px", fontWeight: "600", color: "#cbd5e1" }}>🔖 {t.placa}</span>}
-                            {(t.dono_nome || t.cliente_nome) && <span>👤 Cliente: {t.dono_nome || t.cliente_nome} {(t.dono_id || t.cliente_id) ? `(ID: ${t.dono_id || t.cliente_id})` : ""}</span>}
-                            {(t.baia_nome || t.baia) && <span>🏷️ Baia: {t.baia_nome || t.baia}</span>}
-                            {(t.timestampz || t.created_at || t.timestamp) && <span>🕒 {new Date(t.timestampz || t.created_at || t.timestamp).toLocaleTimeString("pt-BR")}</span>}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* COMPRAS NA BANCADA */}
-                <div style={{ marginBottom: "20px" }}>
-                  <div style={{ fontSize: "13px", fontWeight: "800", color: "#c084fc", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>🛠️ Compras na Bancada ({listBanc.length || activeAudit.totalBancada || 0})</span>
-                    <span style={{ fontSize: "13px", color: "#e9d5ff", fontWeight: "800" }}>
-                      ${valBanc.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  {listBanc.length === 0 ? (
-                    <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma compra na bancada realizada neste expediente.</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {listBanc.map((b, bIdx) => (
-                        <div key={bIdx} style={{ background: "rgba(192, 132, 252, 0.05)", border: "1px solid rgba(192, 132, 252, 0.2)", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <strong>🛠️ {b.item || b.nomeItem || b.nome_item || "Item de Bancada"}</strong>
-                            <span style={{ color: "#c084fc", fontWeight: "800" }}>${(parseFloat(b.valor) || 0).toLocaleString("pt-BR")}</span>
-                          </div>
-                          <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", display: "flex", gap: "12px" }}>
-                            {(b.qtd || b.quantidade) && <span>📦 Quantidade: {b.qtd || b.quantidade}x</span>}
-                            {(b.timestamp || b.created_at) && <span>🕒 {new Date(b.timestamp || b.created_at).toLocaleTimeString("pt-BR")}</span>}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* MOVIMENTAÇÕES NO BAÚ */}
-                <div style={{ marginBottom: "20px" }}>
-                  <div style={{ fontSize: "13px", fontWeight: "800", color: "#fbbf24", marginBottom: "8px" }}>
-                    📦 Movimentações no Baú ({listBau.length || activeAudit.totalBau || 0})
-                  </div>
-                  {listBau.length === 0 ? (
-                    <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "rgba(255,255,255,0.02)", padding: "10px", borderRadius: "8px" }}>Nenhuma movimentação de baú realizada neste expediente.</div>
-                  ) : (
-                    <div style={{ maxHeight: "200px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px", background: "rgba(0,0,0,0.2)", padding: "8px", borderRadius: "8px" }}>
-                      {listBau.map((m, mIdx) => {
-                        const isRetirou = (m.acao === "RETIROU" || m.tipo === "RETIROU" || String(m.acao).toLowerCase().includes("retir"));
-                        return (
-                          <div key={mIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", padding: "6px 10px", background: "rgba(255,255,255,0.02)", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
-                            <span style={{ color: isRetirou ? "#fca5a5" : "#86efac", fontWeight: "700" }}>
-                              {isRetirou ? "📤 Retirou:" : "📥 Guardou:"} {m.item || m.nome_item || m.nomeItem}
-                            </span>
-                            {(m.timestamp || m.created_at) && <span style={{ color: "#94a3b8", fontSize: "10px" }}>{new Date(m.timestamp || m.created_at).toLocaleTimeString("pt-BR")}</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Botão Fechar */}
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "16px" }}>
-                  <button
-                    onClick={() => setSessaoAuditModal(null)}
-                    style={{
-                      background: "rgba(255,255,255,0.1)",
-                      border: "1px solid rgba(255,255,255,0.2)",
-                      color: "#fff",
-                      padding: "8px 20px",
-                      borderRadius: "8px",
-                      fontWeight: "800",
-                      fontSize: "12px",
-                      cursor: "pointer"
-                    }}
-                  >
-                    Voltar ao Histórico
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
       </div>
     );
   };
@@ -1652,6 +1803,7 @@ export default function RelatorioPage({
   return (
     <div style={{ padding: "28px 36px", maxWidth: "1200px", margin: "0 auto" }}>
       {renderModalDetalhes()}
+      {renderModalAuditoriaSessao()}
 
       {/* HEADER */}
       <div style={{ marginBottom: "24px", display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
@@ -1842,6 +1994,37 @@ export default function RelatorioPage({
         >
           📊 Comparativo das Mecânicas
         </button>
+        <button
+          onClick={() => setAbaRelatorio("sem_saida")}
+          style={{
+            background: "transparent",
+            border: "none",
+            borderBottom: abaRelatorio === "sem_saida" ? "3px solid #facc15" : "3px solid transparent",
+            color: abaRelatorio === "sem_saida" ? "#facc15" : theme.subtext,
+            fontWeight: "700",
+            fontSize: "14px",
+            padding: "8px 16px",
+            cursor: "pointer",
+            transition: "all 0.2s",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
+          }}
+        >
+          <span>⚠️ Pontos sem Saída</span>
+          {pontosSemSaidaPeriodo.length > 0 && (
+            <span style={{
+              background: "#ef4444",
+              color: "#fff",
+              fontSize: "11px",
+              fontWeight: "800",
+              padding: "1px 7px",
+              borderRadius: "10px"
+            }}>
+              {pontosSemSaidaPeriodo.length}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* ABA: FUNCIONÁRIOS (RELATÓRIO TRADICIONAL) */}
@@ -1849,13 +2032,33 @@ export default function RelatorioPage({
         <>
           {/* CARDS DE RESUMO */}
           {jaGerou && !relatorioCarregando && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px", marginBottom: "20px" }}>
               {[
                 { label: "Total de Horas",      valor: fmtMin(totalGeralMin), cor: "#22c55e", emoji: "⏱️" },
                 { label: "Funcionários Ativos", valor: funcAtivos,            cor: "#38bdf8", emoji: "👤" },
                 { label: "Sessões Completas",   valor: totalSessoes,          cor: "#a78bfa", emoji: "📋" },
-              ].map(({ label, valor, cor, emoji }) => (
-                <div key={label} style={{ ...styles.whiteCard, padding: "14px 18px", borderLeft: `3px solid ${cor}`, textAlign: "center" }}>
+                { 
+                  label: "Sem Saída / Zerados", 
+                  valor: pontosSemSaidaPeriodo.length, 
+                  cor: pontosSemSaidaPeriodo.length > 0 ? "#facc15" : "#22c55e", 
+                  emoji: "⚠️",
+                  onClick: () => setAbaRelatorio("sem_saida")
+                },
+              ].map(({ label, valor, cor, emoji, onClick }) => (
+                <div 
+                  key={label} 
+                  onClick={onClick}
+                  style={{ 
+                    ...styles.whiteCard, 
+                    padding: "14px 18px", 
+                    borderLeft: `3px solid ${cor}`, 
+                    textAlign: "center",
+                    cursor: onClick ? "pointer" : "default",
+                    transition: "transform 0.15s"
+                  }}
+                  onMouseEnter={(e) => { if (onClick) e.currentTarget.style.transform = "translateY(-2px)"; }}
+                  onMouseLeave={(e) => { if (onClick) e.currentTarget.style.transform = "none"; }}
+                >
                   <div style={{ fontSize: "22px" }}>{emoji}</div>
                   <div style={{ fontSize: "22px", fontWeight: "800", color: cor }}>{valor}</div>
                   <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>{label}</div>
@@ -3052,6 +3255,335 @@ export default function RelatorioPage({
               {relatorioCarregando ? "Carregando dados comparativos..." : "Selecione um período acima e clique em 'Gerar Relatório' para ver a comparação."}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ABA: PONTOS SEM SAÍDA / ZERADOS */}
+      {abaRelatorio === "sem_saida" && (
+        <div>
+          {/* CARDS DE RESUMO DA ABA SEM SAÍDA */}
+          {jaGerou && !relatorioCarregando && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px", marginBottom: "20px" }}>
+              <div style={{ ...styles.whiteCard, padding: "14px 18px", borderLeft: "3px solid #facc15", textAlign: "center" }}>
+                <div style={{ fontSize: "22px" }}>⚠️</div>
+                <div style={{ fontSize: "22px", fontWeight: "800", color: "#facc15" }}>{pontosSemSaidaPeriodo.length}</div>
+                <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>Total Sem Saída / Zerados</div>
+              </div>
+
+              <div style={{ ...styles.whiteCard, padding: "14px 18px", borderLeft: "3px solid #ef4444", textAlign: "center" }}>
+                <div style={{ fontSize: "22px" }}>🔓</div>
+                <div style={{ fontSize: "22px", fontWeight: "800", color: "#ef4444" }}>
+                  {pontosSemSaidaPeriodo.filter(p => !p.saida).length}
+                </div>
+                <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>Sem Registro de Saída (Abertos)</div>
+              </div>
+
+              <div style={{ ...styles.whiteCard, padding: "14px 18px", borderLeft: "3px solid #f97316", textAlign: "center" }}>
+                <div style={{ fontSize: "22px" }}>⚡</div>
+                <div style={{ fontSize: "22px", fontWeight: "800", color: "#f97316" }}>
+                  {pontosSemSaidaPeriodo.filter(p => p.saida).length}
+                </div>
+                <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>Zerados / Miss-Clicks (0 min)</div>
+              </div>
+
+              <div style={{ ...styles.whiteCard, padding: "14px 18px", borderLeft: "3px solid #22c55e", textAlign: "center" }}>
+                <div style={{ fontSize: "22px" }}>🛠️</div>
+                <div style={{ fontSize: "22px", fontWeight: "800", color: "#22c55e" }}>
+                  {pontosSemSaidaPeriodo.filter(p => {
+                    const totTun = p.totalTunagens || (p.detalhes?.tunagens ? p.detalhes.tunagens.length : 0);
+                    const totBanc = p.totalBancada || (p.detalhes?.bancada ? p.detalhes.bancada.length : 0);
+                    const totBau = p.totalBau || (p.detalhes?.bau ? p.detalhes.bau.length : 0);
+                    return totTun > 0 || totBanc > 0 || totBau > 0;
+                  }).length}
+                </div>
+                <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>Com Atividades Registradas</div>
+              </div>
+            </div>
+          )}
+
+          {/* TABELA DE PONTOS SEM SAÍDA */}
+          <div style={{ ...styles.whiteCard, padding: "0", overflow: "hidden" }}>
+            {/* Header da Tabela com Barra de Pesquisa */}
+            <div style={{ padding: "18px 22px", borderBottom: `1px solid ${theme.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", background: theme.card2 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "800", color: theme.text, display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span>⚠️ Sessões sem Saída Registrada ou Zeradas</span>
+                  <span style={{ fontSize: "12px", background: "rgba(250, 204, 21, 0.15)", color: "#facc15", padding: "2px 8px", borderRadius: "12px", fontWeight: "700", border: "1px solid rgba(250, 204, 21, 0.3)" }}>
+                    {pontosSemSaidaPeriodo.length} ocorrência(s)
+                  </span>
+                </h3>
+                <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: theme.subtext }}>
+                  Sessões no período selecionado onde o colaborador bateu entrada mas não houve saída oficial, ou o registro encerrou em 0 minutos.
+                </p>
+              </div>
+
+              {/* Campo de Busca */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input
+                  type="text"
+                  placeholder="🔎 Filtrar mecânico ou passaporte..."
+                  value={filtroBuscaSemSaida}
+                  onChange={(e) => setFiltroBuscaSemSaida(e.target.value)}
+                  style={{
+                    ...styles.input,
+                    width: "240px",
+                    padding: "7px 12px",
+                    fontSize: "12px",
+                    height: "34px",
+                    background: "rgba(255,255,255,0.05)"
+                  }}
+                />
+                {filtroBuscaSemSaida && (
+                  <button
+                    onClick={() => setFiltroBuscaSemSaida("")}
+                    style={{
+                      background: "rgba(255,255,255,0.1)",
+                      border: "none",
+                      color: theme.subtext,
+                      borderRadius: "6px",
+                      padding: "6px 10px",
+                      fontSize: "11px",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Conteúdo da Tabela */}
+            {relatorioCarregando ? (
+              <div style={{ padding: "40px", textAlign: "center", color: theme.subtext }}>
+                ⏳ Carregando relatório...
+              </div>
+            ) : pontosSemSaidaPeriodo.length === 0 ? (
+              <div style={{ padding: "50px 20px", textAlign: "center", color: theme.subtext }}>
+                <div style={{ fontSize: "36px", marginBottom: "10px" }}>✅</div>
+                <div style={{ fontSize: "15px", fontWeight: "700", color: "#22c55e" }}>Tudo em ordem!</div>
+                <div style={{ fontSize: "13px", marginTop: "4px" }}>
+                  Nenhum ponto sem saída ou com duração zerada foi encontrado no período selecionado.
+                </div>
+              </div>
+            ) : (() => {
+              const filtrados = pontosSemSaidaPeriodo.filter(p => {
+                if (!filtroBuscaSemSaida) return true;
+                const q = filtroBuscaSemSaida.toLowerCase();
+                const nome = (p.nomeExibicao || "").toLowerCase();
+                const idStr = String(p.idJogoExibicao || "");
+                const cargoStr = (p.cargoExibicao || "").toLowerCase();
+                const obsStr = (p.motivoSemSaida || "").toLowerCase();
+                return nome.includes(q) || idStr.includes(q) || cargoStr.includes(q) || obsStr.includes(q);
+              });
+
+              if (filtrados.length === 0) {
+                return (
+                  <div style={{ padding: "40px", textAlign: "center", color: theme.subtext }}>
+                    Nenhum registro encontrado para a busca "{filtroBuscaSemSaida}".
+                  </div>
+                );
+              }
+
+              return (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: theme.card2, borderBottom: `1px solid ${theme.border}`, textAlign: "left" }}>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase", width: "40px" }}>#</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Mecânico / Colaborador</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Entrada Registrada</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Saída Registrada</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Diagnóstico / Motivo</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Atividades no Ponto</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase", textAlign: "right" }}>Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtrados.map((item, idx) => {
+                        const dEntrada = new Date(item.entrada);
+                        const dSaida = item.saida ? new Date(item.saida) : null;
+                        const dataEntradaStr = !isNaN(dEntrada.getTime()) 
+                          ? dEntrada.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) 
+                          : item.entrada;
+                        const dataSaidaStr = dSaida && !isNaN(dSaida.getTime())
+                          ? dSaida.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                          : null;
+
+                        const totTun = item.totalTunagens || (item.detalhes?.tunagens ? item.detalhes.tunagens.length : 0);
+                        const totBanc = item.totalBancada || (item.detalhes?.bancada ? item.detalhes.bancada.length : 0);
+                        const totBau = item.totalBau || (item.detalhes?.bau ? item.detalhes.bau.length : 0);
+                        const temAtividades = totTun > 0 || totBanc > 0 || totBau > 0;
+
+                        const cargoTag = getCargoTag(item.cargoExibicao);
+
+                        return (
+                          <tr 
+                            key={idx} 
+                            style={{ borderBottom: `1px solid ${theme.border}22`, transition: "background 0.15s" }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.02)")}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                          >
+                            <td style={{ padding: "12px 14px", fontSize: "12px", color: theme.subtext }}>{idx + 1}</td>
+                            
+                            {/* MECÂNICO */}
+                            <td style={{ padding: "12px 14px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <div style={{
+                                  width: "32px",
+                                  height: "32px",
+                                  borderRadius: "8px",
+                                  background: "linear-gradient(135deg, rgba(239,68,68,0.2), rgba(249,115,22,0.2))",
+                                  border: "1px solid rgba(239,68,68,0.3)",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  fontWeight: "800",
+                                  fontSize: "12px",
+                                  color: "#f87171"
+                                }}>
+                                  {(item.nomeExibicao || "?").substring(0, 2).toUpperCase()}
+                                </div>
+                                <div>
+                                  <div style={{ fontWeight: "700", color: theme.text, fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <span>{item.nomeExibicao}</span>
+                                    {cargoTag && (
+                                      <span style={{ fontSize: "10px", padding: "1px 5px", borderRadius: "4px", background: "rgba(255,255,255,0.08)", color: theme.subtext, fontWeight: "700" }}>
+                                        {cargoTag}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "600", marginTop: "1px" }}>
+                                    Passaporte: #{item.idJogoExibicao}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* ENTRADA */}
+                            <td style={{ padding: "12px 14px", fontSize: "12px", color: theme.text }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span style={{ color: "#22c55e" }}>🟢</span>
+                                <span style={{ fontWeight: "600" }}>{dataEntradaStr}</span>
+                              </div>
+                            </td>
+
+                            {/* SAÍDA */}
+                            <td style={{ padding: "12px 14px", fontSize: "12px" }}>
+                              {dataSaidaStr ? (
+                                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                  <span style={{ color: "#facc15" }}>🟡</span>
+                                  <span style={{ color: theme.text, fontWeight: "600" }}>{dataSaidaStr}</span>
+                                  <span style={{ fontSize: "10px", color: theme.subtext }}>(0 min)</span>
+                                </div>
+                              ) : (
+                                <span style={{
+                                  background: "rgba(239, 68, 68, 0.15)",
+                                  color: "#f87171",
+                                  border: "1px solid rgba(239, 68, 68, 0.3)",
+                                  padding: "3px 8px",
+                                  borderRadius: "6px",
+                                  fontSize: "11px",
+                                  fontWeight: "700",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px"
+                                }}>
+                                  ⚠️ Não registrada
+                                </span>
+                              )}
+                            </td>
+
+                            {/* DIAGNÓSTICO */}
+                            <td style={{ padding: "12px 14px", fontSize: "12px" }}>
+                              <div style={{
+                                background: "rgba(255, 255, 255, 0.03)",
+                                border: `1px solid ${theme.border}44`,
+                                padding: "4px 8px",
+                                borderRadius: "6px",
+                                fontSize: "11px",
+                                color: theme.subtext,
+                                maxWidth: "260px"
+                              }}>
+                                {item.motivoSemSaida || "Sem saída registrada"}
+                              </div>
+                            </td>
+
+                            {/* ATIVIDADES NO PONTO */}
+                            <td style={{ padding: "12px 14px" }}>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", alignItems: "center" }}>
+                                {totTun > 0 && (
+                                  <span style={{ background: "rgba(34, 197, 94, 0.15)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                                    🚗 {totTun}x
+                                  </span>
+                                )}
+                                {totBanc > 0 && (
+                                  <span style={{ background: "rgba(192, 132, 252, 0.15)", color: "#c084fc", border: "1px solid rgba(192, 132, 252, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                                    🛠️ {totBanc}x
+                                  </span>
+                                )}
+                                {totBau > 0 && (
+                                  <span style={{ background: "rgba(251, 191, 36, 0.15)", color: "#fbbf24", border: "1px solid rgba(251, 191, 36, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
+                                    📦 {totBau}x
+                                  </span>
+                                )}
+                                {!temAtividades && (
+                                  <span style={{ color: theme.subtext, fontSize: "11px" }}>Nenhuma</span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* AÇÕES */}
+                            <td style={{ padding: "12px 14px", textAlign: "right" }}>
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px" }}>
+                                <button
+                                  onClick={() => abrirAuditoriaSessao(item)}
+                                  style={{
+                                    background: temAtividades ? "rgba(56, 189, 248, 0.15)" : "rgba(255, 255, 255, 0.05)",
+                                    border: `1px solid ${temAtividades ? "#38bdf8" : theme.border}`,
+                                    color: temAtividades ? "#38bdf8" : theme.text,
+                                    padding: "5px 10px",
+                                    borderRadius: "6px",
+                                    fontSize: "11px",
+                                    fontWeight: "700",
+                                    cursor: "pointer",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px"
+                                  }}
+                                  title="Ver atividades realizadas durante este ponto"
+                                >
+                                  🔍 Atividades
+                                </button>
+                                <button
+                                  onClick={() => abrirHistoricoFunc(item)}
+                                  style={{
+                                    background: "rgba(255, 255, 255, 0.05)",
+                                    border: `1px solid ${theme.border}`,
+                                    color: theme.text,
+                                    padding: "5px 10px",
+                                    borderRadius: "6px",
+                                    fontSize: "11px",
+                                    fontWeight: "700",
+                                    cursor: "pointer",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px"
+                                  }}
+                                  title="Ver histórico de todos os pontos deste funcionário"
+                                >
+                                  👤 Histórico
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
         </div>
       )}
       {/* FLOATING TIMELINE TOOLTIP */}
