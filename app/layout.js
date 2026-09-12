@@ -1,5 +1,10 @@
 export const metadata = {
   title: "Red's Tunershop",
+  icons: {
+    icon: [{ url: "/logo_reds.png?v=2", type: "image/png" }],
+    shortcut: [{ url: "/logo_reds.png?v=2", type: "image/png" }],
+    apple: [{ url: "/logo_reds.png?v=2", type: "image/png" }],
+  },
 };
 
 export default function RootLayout({ children }) {
