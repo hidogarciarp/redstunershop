@@ -45,6 +45,29 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
   const janelaRef = useRef(null);
   const arrasteRef = useRef(null);
   const [posicaoJanela, setPosicaoJanela] = useState(null);
+  const pontosPersistidosRef = useRef(new Set());
+
+  const persistirPontoRecuperado = useCallback((payload) => {
+    if (!payload?.idJogo || !payload?.timestamp) return;
+    const chave = `${payload.idJogo}_${payload.timestamp.slice(0, 16)}`;
+    if (pontosPersistidosRef.current.has(chave)) return;
+    pontosPersistidosRef.current.add(chave);
+
+    fetch("/api/ponto/recuperar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        if (res?.inserted) {
+          console.log(`[Auto-Recuperação] Ponto gravado no banco para ID ${payload.idJogo} (${res.mecanico})`);
+        }
+      })
+      .catch((err) => {
+        console.warn("[Auto-Recuperação] Falha ao persistir ponto recuperado:", err);
+      });
+  }, []);
 
   const copiarLogItem = (texto, tipoNome) => {
     if (!texto) return;
@@ -427,6 +450,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       // Mapeia todas as atividades registradas por idJogo (bancada, tunagem e baú)
       const mapaAtividadesMecanico = {};
       const mapaTunagensMecanico = {};
+      const atividadesObrigatoriasPonto = {}; // idJogo -> [{ tsMs, tsISO, nome, oficina, oficinaId, tipo }]
 
       (logsAtividades || []).forEach((msg) => {
         const c = msg.content || "";
@@ -440,8 +464,35 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         }
         if (idMatch) {
           const id = idMatch[1].trim();
+          const tsMs = new Date(ts).getTime();
           if (!mapaAtividadesMecanico[id]) mapaAtividadesMecanico[id] = [];
-          mapaAtividadesMecanico[id].push(new Date(ts).getTime());
+          mapaAtividadesMecanico[id].push(tsMs);
+
+          const nomeMatch = c.match(/\[NOME COMPLETO\]:\s*([^\n\r]+)/i);
+          const storeMatch = c.match(/\[STORENAME\]:\s*([^\n\r]+)/i);
+          let oficina = "Reds Tunnershop";
+          let oficinaId = "reds";
+          const storeStr = storeMatch ? storeMatch[1].trim().toLowerCase() : "";
+          if (storeStr.includes("harmony")) {
+            oficina = "Harmony";
+            oficinaId = "harmony";
+          } else if (storeStr.includes("dudark")) {
+            oficina = "Dudark Motors";
+            oficinaId = "dudark";
+          } else if (storeStr.includes("beach") || storeStr.includes("vespucci")) {
+            oficina = "Beach Tunershop";
+            oficinaId = "vespucci";
+          }
+
+          if (!atividadesObrigatoriasPonto[id]) atividadesObrigatoriasPonto[id] = [];
+          atividadesObrigatoriasPonto[id].push({
+            tsMs,
+            tsISO: ts,
+            nome: nomeMatch ? nomeMatch[1].trim() : "",
+            oficina,
+            oficinaId,
+            tipo: "bancada",
+          });
         }
       });
 
@@ -454,6 +505,16 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
 
           if (!mapaTunagensMecanico[id]) mapaTunagensMecanico[id] = [];
           mapaTunagensMecanico[id].push(ts);
+
+          if (!atividadesObrigatoriasPonto[id]) atividadesObrigatoriasPonto[id] = [];
+          atividadesObrigatoriasPonto[id].push({
+            tsMs: ts,
+            tsISO: new Date(ts).toISOString(),
+            nome: t.tecnico_nome ? String(t.tecnico_nome).trim() : "",
+            oficina: "Reds Tunnershop",
+            oficinaId: "reds",
+            tipo: "tunagem",
+          });
         }
       });
 
@@ -493,6 +554,105 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         }
         mapaMecanicos[parsed.idJogo].nome = parsed.nome || mapaMecanicos[parsed.idJogo].nome;
         mapaMecanicos[parsed.idJogo].eventos.push(parsed);
+      });
+
+      // AUTO-RECUPERAÇÃO DE PONTOS NÃO CAPTURADOS:
+      // No FiveM é impossível usar bancada ou aplicar tunagem sem estar de ponto batido.
+      // Atividades dessas sem sessão de ponto aberta comprovam entrada omitida/perdida.
+      const UMA_HORA_MS_REC = 60 * 60 * 1000;
+      Object.entries(atividadesObrigatoriasPonto).forEach(([id, ativsObr]) => {
+        ativsObr.sort((a, b) => a.tsMs - b.tsMs);
+
+        if (!mapaMecanicos[id]) {
+          mapaMecanicos[id] = {
+            idJogo: id,
+            nome: ativsObr[0]?.nome || `Mecânico ${id}`,
+            eventos: []
+          };
+        }
+
+        const evs = mapaMecanicos[id].eventos;
+        mapaMecanicos[id].nome = mapaMecanicos[id].nome || ativsObr[0]?.nome;
+
+        const evsOrdenados = [...evs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        // Identifica quais atividades de bancada/tunagem não estão cobertas por nenhuma sessão de ponto
+        const ativsSemPonto = [];
+        ativsObr.forEach((ativ) => {
+          let cobertaPorPonto = false;
+          let pontoAbertoTs = null;
+
+          for (const ev of evsOrdenados) {
+            const evTs = new Date(ev.timestamp).getTime();
+            if (ev.tipo === "entrada") {
+              pontoAbertoTs = evTs;
+            } else if (ev.tipo === "saida") {
+              if (pontoAbertoTs !== null && ativ.tsMs >= pontoAbertoTs && ativ.tsMs <= evTs) {
+                cobertaPorPonto = true;
+                break;
+              }
+              pontoAbertoTs = null;
+            }
+          }
+
+          if (!cobertaPorPonto && pontoAbertoTs !== null && ativ.tsMs >= pontoAbertoTs && ativ.tsMs <= (pontoAbertoTs + UMA_HORA_MS_REC * 2)) {
+            cobertaPorPonto = true;
+          }
+
+          if (!cobertaPorPonto) {
+            ativsSemPonto.push(ativ);
+          }
+        });
+
+        if (ativsSemPonto.length > 0) {
+          // Agrupa em sessões contínuas (gap <= 60 min)
+          const sessoesRec = [];
+          let sessaoAtual = null;
+
+          ativsSemPonto.forEach((ativ) => {
+            if (!sessaoAtual) {
+              sessaoAtual = { inicio: ativ, fim: ativ };
+            } else if (ativ.tsMs - sessaoAtual.fim.tsMs <= UMA_HORA_MS_REC) {
+              sessaoAtual.fim = ativ;
+            } else {
+              sessoesRec.push(sessaoAtual);
+              sessaoAtual = { inicio: ativ, fim: ativ };
+            }
+          });
+          if (sessaoAtual) sessoesRec.push(sessaoAtual);
+
+          sessoesRec.forEach((sess) => {
+            const primeiraAtiv = sess.inicio;
+            const timestampEntrada = new Date(primeiraAtiv.tsMs - 15000).toISOString();
+            const uuidAuto = `auto_rec_${id}_${primeiraAtiv.tsMs}`;
+
+            const jaExiste = evs.some((ev) => ev.uuid === uuidAuto || Math.abs(new Date(ev.timestamp).getTime() - primeiraAtiv.tsMs) < 45 * 60 * 1000);
+            if (!jaExiste) {
+              const eventoRecuperado = {
+                idJogo: id,
+                nome: primeiraAtiv.nome || mapaMecanicos[id].nome,
+                oficina: primeiraAtiv.oficina,
+                oficinaId: primeiraAtiv.oficinaId,
+                tipo: "entrada",
+                timestamp: timestampEntrada,
+                uuid: uuidAuto,
+                isAutoRecuperado: true,
+                motivoRecuperacao: primeiraAtiv.tipo
+              };
+              evs.push(eventoRecuperado);
+
+              // Persiste em segundo plano no Supabase via API do site
+              persistirPontoRecuperado({
+                idJogo: id,
+                nome: eventoRecuperado.nome,
+                oficina: eventoRecuperado.oficina,
+                oficinaId: eventoRecuperado.oficinaId,
+                timestamp: timestampEntrada,
+                motivo: primeiraAtiv.tipo
+              });
+            }
+          });
+        }
       });
 
       const todosAbertos = [];
@@ -560,6 +720,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
               duracaoMin: 0,
               isDuploClique: false,
               isAutoFechadoInatividade: false,
+              isAutoRecuperado: Boolean(ev.isAutoRecuperado),
+              motivoRecuperacao: ev.motivoRecuperacao || null,
               motivoCrash: null,
               justificativa: null,
               comprovanteImg: null,
@@ -718,6 +880,17 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       supabase.removeChannel(canal);
     };
   }, [isAuthorized, carregarPontosRecentes]);
+
+  // Keep-alive passivo do bot no Render enquanto o painel/monitor estiver aberto
+  useEffect(() => {
+    if (!isAuthorized) return;
+    const pingBot = () => {
+      fetch("/api/bot/health").catch(() => {});
+    };
+    pingBot();
+    const interval = setInterval(pingBot, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [isAuthorized]);
 
   const abrirAuditoriaFuncionario = async (ponto) => {
     setFuncionarioInspecao(ponto);
@@ -1761,6 +1934,25 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           >
                             ID: {p.idJogo}
                           </span>
+                          {p.isAutoRecuperado && (
+                            <span
+                              title={`Ponto recuperado automaticamente pela atividade de ${p.motivoRecuperacao || "bancada"}`}
+                              style={{
+                                fontSize: "9.5px",
+                                fontWeight: "800",
+                                background: "rgba(56, 189, 248, 0.18)",
+                                border: "1px solid rgba(56, 189, 248, 0.4)",
+                                color: "#38bdf8",
+                                padding: "1px 6px",
+                                borderRadius: "4px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "3px"
+                              }}
+                            >
+                              ⚡ Auto-Recuperado
+                            </span>
+                          )}
                           {isInativo30 && (
                             <span
                               style={{
@@ -1899,6 +2091,22 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           >
                             ID: {p.idJogo}
                           </span>
+                          {p.isAutoRecuperado && (
+                            <span
+                              title={`Ponto recuperado automaticamente pela atividade de ${p.motivoRecuperacao || "bancada"}`}
+                              style={{
+                                fontSize: "9px",
+                                fontWeight: "800",
+                                background: "rgba(56, 189, 248, 0.18)",
+                                border: "1px solid rgba(56, 189, 248, 0.4)",
+                                color: "#38bdf8",
+                                padding: "1px 5px",
+                                borderRadius: "4px"
+                              }}
+                            >
+                              ⚡ Auto-Recuperado
+                            </span>
+                          )}
                           {isCrash && (
                             <span
                               style={{
