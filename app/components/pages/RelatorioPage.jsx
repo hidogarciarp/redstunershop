@@ -663,7 +663,7 @@ export default function RelatorioPage({
       dtFimObj.setDate(dtFimObj.getDate() + 1);
       const fimISO = dtFimObj.toISOString();
 
-      const [resAud, resTun, resBanc] = await Promise.all([
+      const [resAud, resTun, resBanc, resDiscordPonto] = await Promise.all([
         supabase
           .from("sessoes_ponto_auditoria_reds")
           .select("id_jogo, nome, entrada, saida, uuid_sessao, total_tunagens, total_bancada, total_bau, detalhes_json")
@@ -681,23 +681,20 @@ export default function RelatorioPage({
           .select("id, nome, item, quantidade, valor, timestampz, data, hora")
           .gte("data", dataQueryInicio)
           .lte("data", dtFimObj.toLocaleDateString("en-CA"))
+          .limit(10000),
+        supabase
+          .from("discord_log_messages")
+          .select("id, content, created_at")
+          .eq("log_type", "ponto")
+          .gte("created_at", iniISO)
+          .lte("created_at", fimISO)
           .limit(10000)
       ]);
 
       const auds = resAud.data || [];
       const tuns = resTun.data || [];
       const banc = resBanc.data || [];
-
-      const pontosPorMecanico = {};
-      pontosSemSaidaPeriodo.forEach(p => {
-        const k = String(p.idJogoExibicao || p.usuario_id || p.id || "").trim();
-        if (!pontosPorMecanico[k]) pontosPorMecanico[k] = [];
-        pontosPorMecanico[k].push(p);
-      });
-
-      Object.values(pontosPorMecanico).forEach(arr => {
-        arr.sort((a, b) => new Date(a.entrada) - new Date(b.entrada));
-      });
+      const discordLogs = resDiscordPonto.data || [];
 
       const novoMapa = {};
 
@@ -707,16 +704,49 @@ export default function RelatorioPage({
         const idVal = String(p.idJogoExibicao || p.usuario_id || p.id || "").trim();
         const nomeNorm = (p.nomeExibicao || p.nome || "").toLowerCase().trim();
 
-        let pLimTs = pEntTs + 12 * 3600000;
-        const listaMesmoMec = pontosPorMecanico[idVal] || [];
-        const idxAtual = listaMesmoMec.findIndex(item => item.entrada === p.entrada);
-        if (idxAtual !== -1 && idxAtual + 1 < listaMesmoMec.length) {
-          const proxEntTs = new Date(listaMesmoMec[idxAtual + 1].entrada).getTime();
-          if (proxEntTs > pEntTs && proxEntTs < pLimTs) {
-            pLimTs = proxEntTs;
+        // 1. Delimitar o fim da busca pela PRÓXIMA sessão do colaborador em TODAS as sessões (fechadas ou abertas)
+        const todasSessoesMec = (registrosRelatorio || []).filter(r => {
+          const rId = String(r.idJogoExibicao || r.id || r.usuario_id || "").trim();
+          const rNome = (r.nomeExibicao || r.nome || "").toLowerCase().trim();
+          return (rId && rId === idVal) || (rNome && rNome === nomeNorm);
+        });
+
+        const proxEntradas = todasSessoesMec
+          .map(r => new Date(r.entrada).getTime())
+          .filter(ts => ts > pEntTs)
+          .sort((a, b) => a - b);
+
+        let pLimTs = proxEntradas.length > 0 ? proxEntradas[0] : (pEntTs + 12 * 3600000);
+
+        // 2. Checar se existe um log oficial de "SAIU DE SERVIÇO" no Discord para esse período
+        const userDiscordLogs = discordLogs.filter(l => {
+          const c = l.content || "";
+          const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
+          return idMatch && String(idMatch[1]).trim() === idVal;
+        });
+
+        let discordExit = null;
+        userDiscordLogs.forEach(l => {
+          const c = l.content || "";
+          if (!c.includes("SAIU DE SERVIÇO")) return;
+          const dataMatch = c.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}):(\d{2}):(\d{2})/i);
+          let ts = new Date(l.created_at).getTime();
+          if (dataMatch) {
+            const [_, dia, mes, ano, hora, min, seg] = dataMatch;
+            ts = new Date(`${ano}-${mes}-${dia}T${hora}:${min}:${seg}-03:00`).getTime();
           }
+          if (ts >= pEntTs - 60000 && ts < pLimTs) {
+            if (!discordExit || ts < discordExit.ts) {
+              discordExit = { ts, iso: new Date(ts).toISOString(), raw: c };
+            }
+          }
+        });
+
+        if (discordExit) {
+          pLimTs = discordExit.ts;
         }
 
+        // 3. Coletar atividades reais (apenas tunagens e bancada)
         const ativs = [];
 
         const aud = auds.find(a => 
@@ -749,9 +779,6 @@ export default function RelatorioPage({
           }
         });
 
-        // NOTA: Movimentações de baú NÃO são consideradas atividades de trabalho
-        // Apenas Tunagem e Bancada contam para registro de ponto
-
         tuns.forEach(t => {
           if (String(t.tecnico_id).trim() === idVal || (t.tecnico_nome && t.tecnico_nome.toLowerCase().trim() === nomeNorm)) {
             const ts = t.timestampz ? new Date(t.timestampz).getTime() : (t.data && t.hora ? new Date(`${t.data}T${t.hora}-03:00`).getTime() : null);
@@ -780,6 +807,7 @@ export default function RelatorioPage({
           }
         });
 
+        // 4. Deduplicação e ordenação cronológica
         const dedup = [];
         ativs.sort((a, b) => a.ts - b.ts);
         ativs.forEach(a => {
@@ -788,15 +816,41 @@ export default function RelatorioPage({
           }
         });
 
-        const totalTunagens = dedup.filter(a => a.tipo === "tunagem").length;
-        const totalBancada = dedup.filter(a => a.tipo === "bancada").length;
+        // 5. Filtro de Inatividade Máxima (Se houver vácuo > 60 minutos sem atividades, o expediente encerrou antes)
+        const ativsValidas = [];
+        let ultimoTsAtiv = pEntTs;
+        for (const a of dedup) {
+          if (a.ts - ultimoTsAtiv > 60 * 60 * 1000) {
+            break;
+          }
+          ativsValidas.push(a);
+          ultimoTsAtiv = a.ts;
+        }
 
-        if (dedup.length > 0) {
-          const last = dedup[dedup.length - 1];
+        const totalTunagens = ativsValidas.filter(a => a.tipo === "tunagem").length;
+        const totalBancada = ativsValidas.filter(a => a.tipo === "bancada").length;
+
+        // 6. Decisão de Saída Sugerida
+        if (discordExit) {
+          const durMin = Math.max(0, Math.round((discordExit.ts - pEntTs) / 60000));
+          novoMapa[chave] = {
+            temAtividades: ativsValidas.length > 0 || durMin > 0,
+            totalAtividades: ativsValidas.length,
+            totalTunagens,
+            totalBancada,
+            totalBau: 0,
+            ultimaAtividade: ativsValidas.length > 0 ? ativsValidas[ativsValidas.length - 1] : { desc: "Saída registrada no Discord", ts: discordExit.ts },
+            saidaSugerida: discordExit.iso,
+            duracaoSugeridaMin: durMin,
+            motivoSugerido: `Saída oficial do Discord registrada às ${new Date(discordExit.ts).toLocaleTimeString("pt-BR")}`,
+            atividadesLista: ativsValidas
+          };
+        } else if (ativsValidas.length > 0) {
+          const last = ativsValidas[ativsValidas.length - 1];
           const durMin = Math.max(0, Math.round((last.ts - pEntTs) / 60000));
           novoMapa[chave] = {
             temAtividades: true,
-            totalAtividades: dedup.length,
+            totalAtividades: ativsValidas.length,
             totalTunagens,
             totalBancada,
             totalBau: 0,
@@ -804,7 +858,7 @@ export default function RelatorioPage({
             saidaSugerida: new Date(last.ts).toISOString(),
             duracaoSugeridaMin: durMin,
             motivoSugerido: `Fechado na última atividade (${last.desc})`,
-            atividadesLista: dedup
+            atividadesLista: ativsValidas
           };
         } else {
           novoMapa[chave] = {
