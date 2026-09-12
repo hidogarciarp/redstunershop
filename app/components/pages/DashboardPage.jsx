@@ -1015,8 +1015,10 @@ export default function DashboardPage({
                         src={imagemPreview} 
                         alt="preview" 
                         onError={() => {
-                          console.warn("Imagem indisponível ou expirada no Discord:", imagemPreview);
-                          if (typeof setImagemPreview === "function") setImagemPreview(null);
+                          if (typeof imagemPreview === "string" && imagemPreview.startsWith("http")) {
+                            console.warn("Imagem remota indisponível ou expirada no Discord:", imagemPreview);
+                            if (typeof setImagemPreview === "function") setImagemPreview(null);
+                          }
                         }}
                         style={{ borderRadius: "12px", maxHeight: "230px", maxWidth: "100%" }} 
                       />
@@ -1039,8 +1041,10 @@ export default function DashboardPage({
                         src={imagemPreview2} 
                         alt="preview resultado" 
                         onError={() => {
-                          console.warn("Imagem de resultado indisponível ou expirada no Discord:", imagemPreview2);
-                          if (typeof setImagemPreview2 === "function") setImagemPreview2(null);
+                          if (typeof imagemPreview2 === "string" && imagemPreview2.startsWith("http")) {
+                            console.warn("Imagem de resultado remota indisponível ou expirada no Discord:", imagemPreview2);
+                            if (typeof setImagemPreview2 === "function") setImagemPreview2(null);
+                          }
                         }}
                         style={{ borderRadius: "12px", maxHeight: "230px", maxWidth: "100%" }} 
                       />

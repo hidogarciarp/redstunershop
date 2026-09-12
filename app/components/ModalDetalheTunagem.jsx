@@ -82,9 +82,22 @@ export default function ModalDetalheTunagem({
 
   const listaExibicao = [...listaExibicaoBase, ...itensEsteticosManuais];
 
-  const logUuidAtual = modalLogDetalhe
-    ? (modalLogDetalhe.uuid || modalLogDetalhe.id || modalLogDetalhe.created_at || modalLogDetalhe.data_hora || modalLogDetalhe)
-    : null;
+  const getLogId = (l) => {
+    if (!l) return null;
+    if (typeof l === "string") return l;
+    if (l.uuid) return String(l.uuid);
+    if (l.discord_message_id) return `disc-${l.discord_message_id}`;
+    if (l.id) return `id-${l.id}`;
+    if (l.placa && l.data && l.hora) return `${l.placa}_${l.data}_${l.hora}`;
+    if (l.raw_text) return `txt-${l.raw_text.slice(0, 80)}`;
+    try {
+      return `obj-${JSON.stringify(l).slice(0, 100)}`;
+    } catch (_) {
+      return "log-aberto";
+    }
+  };
+
+  const logUuidAtual = getLogId(modalLogDetalhe);
   const ultimoLogUuidRef = useRef(null);
 
   // Ao abrir ou alterar para um log diferente, carrega a foto existente e seleciona os itens padrão
@@ -101,19 +114,19 @@ export default function ModalDetalheTunagem({
     }
 
     // Se já estamos com o modal aberto para ESTE MESMO log, NÃO reseta o estado (evita perder foto colada ao re-renderizar)
-    if (ultimoLogUuidRef.current === logUuidAtual) {
+    if (ultimoLogUuidRef.current && ultimoLogUuidRef.current === logUuidAtual) {
       return;
     }
 
     ultimoLogUuidRef.current = logUuidAtual;
     setFotoRegistro(modalLogDetalhe.foto_url || modalLogDetalhe.comprovante_url || "");
     setAbaModalDetalhe("extrato");
-    setItensSelecionados((analiseModal.itensCobrados || []).map((i) => i.id));
+    setItensSelecionados((analiseModal?.itensCobrados || []).map((i) => i.id));
     setAdicionaisBancada([]);
     setItensEsteticosManuais([]);
     setModalSeletorEstetico(false);
     setBuscaEstetica("");
-  }, [logUuidAtual, modalLogDetalhe, analiseModal]);
+  }, [logUuidAtual]);
 
   // Listener global de Ctrl + V para colar imagem
   useEffect(() => {

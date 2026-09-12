@@ -1372,17 +1372,23 @@ export default function Home() {
           const ts = getLogTimestamp(userLog);
           const dtEntrada = new Date(ts);
           if (Date.now() - dtEntrada.getTime() < 18 * 60 * 60 * 1000) {
-            setPontoAtivo({
-              entrada: dtEntrada.toISOString(),
-              usuario_id: usuarioLogado.id,
-              nome: usuarioLogado.nome,
-              rawLog: c
+            const novaEntradaISO = dtEntrada.toISOString();
+            setPontoAtivo((prev) => {
+              if (prev && prev.entrada === novaEntradaISO && String(prev.usuario_id) === String(usuarioLogado.id)) {
+                return prev;
+              }
+              return {
+                entrada: novaEntradaISO,
+                usuario_id: usuarioLogado.id,
+                nome: usuarioLogado.nome,
+                rawLog: c
+              };
             });
             return;
           }
         }
       }
-      setPontoAtivo(null);
+      setPontoAtivo((prev) => (prev ? null : prev));
     } catch (e) {
       console.error("Erro ao verificar ponto ativo do jogo:", e);
     }
@@ -5341,12 +5347,14 @@ export default function Home() {
         theme={theme}
         isDarkMode={isDarkMode}
       />
-      <ModalDetalheTunagem
-        theme={theme}
-        modalLogDetalhe={logTunagemParaAbrir}
-        setModalLogDetalhe={setLogTunagemParaAbrir}
-        usuarioLogado={usuarioParaInterface}
-      />
+      {paginaAtual !== "tunagem" && (
+        <ModalDetalheTunagem
+          theme={theme}
+          modalLogDetalhe={logTunagemParaAbrir}
+          setModalLogDetalhe={setLogTunagemParaAbrir}
+          usuarioLogado={usuarioParaInterface}
+        />
+      )}
     </>
   );
 

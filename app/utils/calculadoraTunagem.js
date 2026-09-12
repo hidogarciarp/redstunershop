@@ -1491,8 +1491,15 @@ export function parseLogsTunagemTexto(rawText) {
         }
       }
 
+      let hashBloco = 0;
+      for (let h = 0; h < bloco.length; h++) {
+        hashBloco = ((hashBloco << 5) - hashBloco) + bloco.charCodeAt(h);
+        hashBloco |= 0;
+      }
+      const uuidEstavel = matchUuid ? matchUuid[1].trim() : `sim-${Math.abs(hashBloco)}-${idx}`;
+
       logs.push({
-        uuid: matchUuid ? matchUuid[1].trim() : `sim-${Date.now()}-${idx}`,
+        uuid: uuidEstavel,
         oficina_nome: matchOficina ? matchOficina[1].trim() : "RED'S TUNERSHOP",
         baia_nome: matchBaia ? matchBaia[1].trim() : null,
         tecnico_id: matchTecnico && matchTecnico[2] ? matchTecnico[2].trim() : "0",

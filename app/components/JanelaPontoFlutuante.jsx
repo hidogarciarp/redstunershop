@@ -221,6 +221,16 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     }
   };
 
+  // Listener de colar imagem globalmente quando o modal de crash estiver aberto
+  useEffect(() => {
+    if (!modoFecharCrash) return;
+    const handlePasteGlobal = (e) => {
+      handleColarImagem(e);
+    };
+    window.addEventListener("paste", handlePasteGlobal);
+    return () => window.removeEventListener("paste", handlePasteGlobal);
+  }, [modoFecharCrash]);
+
   // Helper para tocar som de alerta (entrada, saída ou inatividade)
   const tocarSomNotificacao = (tipo = "entrada") => {
     if (!somAtivo) return;
