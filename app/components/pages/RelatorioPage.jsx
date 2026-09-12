@@ -297,7 +297,8 @@ export default function RelatorioPage({
     if (!func) return;
     setCarregandoLogsFunc(true);
     try {
-      const idVal = func.id_jogo || func.idJogo || func.id;
+      const idVal = String(func.id_jogo || func.idJogo || func.id || "").trim();
+      const nomeVal = (func.nome || "").trim();
 
       // 1. Tentar buscar da tabela consolidada de auditoria com atividades (tunagens, bancada, bau)
       let queryAuditoria = supabase
@@ -313,17 +314,84 @@ export default function RelatorioPage({
       if (func.id && String(func.id) !== String(idVal) && !isNaN(Number(func.id))) {
         conditionsAud.push(`id_jogo.eq.${func.id}`);
       }
-      if (func.nome) {
-        conditionsAud.push(`nome.ilike.%${func.nome.trim()}%`);
+      if (nomeVal) {
+        conditionsAud.push(`nome.ilike.%${nomeVal}%`);
       }
       if (conditionsAud.length > 0) {
         queryAuditoria = queryAuditoria.or(conditionsAud.join(","));
       }
 
-      const { data: dataAud, error: errAud } = await queryAuditoria;
+      // 2. Buscar da tabela/view ponto_cidade_reds (para trazer sessões recentes e em tempo real)
+      let query = supabase
+        .from("ponto_cidade_reds")
+        .select("*")
+        .or("oculto.is.null,oculto.eq.false")
+        .order("entrada", { ascending: false })
+        .limit(10000);
+
+      const conditions = [];
+      if (idVal && !isNaN(Number(idVal))) {
+        conditions.push(`usuario_id.eq.${idVal}`);
+        conditions.push(`id_jogo.eq.${idVal}`);
+      } else if (func.id) {
+        conditions.push(`usuario_id.eq.${func.id}`);
+      }
+
+      if (nomeVal) {
+        conditions.push(`nome.ilike.%${nomeVal}%`);
+        conditions.push(`nome_personagem.ilike.%${nomeVal}%`);
+        const partes = nomeVal.split(/\s+/).filter(Boolean);
+        if (partes.length >= 2) {
+          conditions.push(`nome.ilike.%${partes[0]}%${partes[partes.length - 1]}%`);
+          conditions.push(`nome_personagem.ilike.%${partes[0]}%${partes[partes.length - 1]}%`);
+        }
+      }
+
+      if (conditions.length > 0) {
+        query = query.or(conditions.join(","));
+      }
+
+      // 3. Buscar logs de atividades reais para este colaborador (tunagens, bancada, baú)
+      const condsTun = [];
+      const condsBanc = [];
+      const condsBau = [];
+
+      if (idVal) {
+        condsTun.push(`tecnico_id.eq.${idVal}`);
+        condsBanc.push(`id.eq.${idVal}`);
+        condsBau.push(`id.eq.${idVal}`);
+      }
+      if (nomeVal) {
+        condsTun.push(`tecnico_nome.ilike.%${nomeVal}%`);
+        condsBanc.push(`nome.ilike.%${nomeVal}%`);
+        condsBau.push(`nome.ilike.%${nomeVal}%`);
+      }
+
+      let qTun = supabase.from("logs_tunagem_reds").select("*").order("data", { ascending: false }).limit(2000);
+      if (condsTun.length > 0) qTun = qTun.or(condsTun.join(","));
+
+      let qBanc = supabase.from("log_bancada_reds").select("id, nome, data, hora, timestampz, uuid").order("data", { ascending: false }).limit(2000);
+      if (condsBanc.length > 0) qBanc = qBanc.or(condsBanc.join(","));
+
+      let qBau = supabase.from("log_bau_reds").select("id, nome, data, hora, timestampz, uuid").order("data", { ascending: false }).limit(2000);
+      if (condsBau.length > 0) qBau = qBau.or(condsBau.join(","));
+
+      const [resAud, resPonto, resTun, resBanc, resBau] = await Promise.all([
+        queryAuditoria,
+        query,
+        qTun,
+        qBanc,
+        qBau
+      ]);
+
+      const dataAud = resAud.data || [];
+      const logsPontoCidade = resPonto.data || [];
+      const tunsMec = resTun.data || [];
+      const bancMec = resBanc.data || [];
+      const bauMec = resBau.data || [];
 
       let formatadosAud = [];
-      if (!errAud && dataAud && dataAud.length > 0) {
+      if (dataAud && dataAud.length > 0) {
         formatadosAud = dataAud.map((r) => {
           const det = r.detalhes_json || { bau: [], bancada: [], tunagens: [] };
           const totTun = r.total_tunagens || (det.tunagens ? det.tunagens.length : 0);
@@ -354,40 +422,6 @@ export default function RelatorioPage({
           };
         });
       }
-
-      // Buscar sempre da tabela/view ponto_cidade_reds (para trazer sessões recentes e em tempo real)
-      let query = supabase
-        .from("ponto_cidade_reds")
-        .select("*")
-        .or("oculto.is.null,oculto.eq.false")
-        .order("entrada", { ascending: false })
-        .limit(10000);
-
-      const conditions = [];
-      if (idVal && !isNaN(Number(idVal))) {
-        conditions.push(`usuario_id.eq.${idVal}`);
-        conditions.push(`id_jogo.eq.${idVal}`);
-      } else if (func.id) {
-        conditions.push(`usuario_id.eq.${func.id}`);
-      }
-
-      if (func.nome) {
-        const nomeTrim = func.nome.trim();
-        conditions.push(`nome.ilike.%${nomeTrim}%`);
-        conditions.push(`nome_personagem.ilike.%${nomeTrim}%`);
-        const partes = nomeTrim.split(/\s+/).filter(Boolean);
-        if (partes.length >= 2) {
-          conditions.push(`nome.ilike.%${partes[0]}%${partes[partes.length - 1]}%`);
-          conditions.push(`nome_personagem.ilike.%${partes[0]}%${partes[partes.length - 1]}%`);
-        }
-      }
-
-      if (conditions.length > 0) {
-        query = query.or(conditions.join(","));
-      }
-
-      const { data, error } = await query;
-      const logsPontoCidade = data || [];
 
       // Unir as sessões de ponto_cidade_reds com as sessões auditadas sem perder nada
       const mapaLogs = new Map();
@@ -420,6 +454,47 @@ export default function RelatorioPage({
       });
 
       const listaFinal = Array.from(mapaLogs.values()).sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
+
+      // 3. Cruzamento Dinâmico de Atividades: Garante que sessões recentes sem auditoria pré-calculada mostrem suas tunagens, bancada e baú em tempo real
+      listaFinal.forEach((s) => {
+        const entTs = new Date(s.entrada).getTime();
+        const saiTs = s.saida ? new Date(s.saida).getTime() : (entTs + 4 * 3600000);
+
+        const det = s.detalhes || { tunagens: [], bancada: [], bau: [] };
+        let tunagens = (det.tunagens && det.tunagens.length > 0) ? det.tunagens : [];
+        let bancada = (det.bancada && det.bancada.length > 0) ? det.bancada : [];
+        let bau = (det.bau && det.bau.length > 0) ? det.bau : [];
+
+        // Se a sessão está sem atividades gravadas, busca nos logs reais do banco
+        if (tunagens.length === 0 && tunsMec.length > 0) {
+          tunagens = tunsMec.filter((t) => {
+            const ts = t.timestampz ? new Date(t.timestampz).getTime() : (t.data && t.hora ? new Date(`${t.data}T${t.hora}-03:00`).getTime() : null);
+            return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+          });
+        }
+
+        if (bancada.length === 0 && bancMec.length > 0) {
+          bancada = bancMec.filter((b) => {
+            const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
+            return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+          });
+        }
+
+        if (bau.length === 0 && bauMec.length > 0) {
+          bau = bauMec.filter((b) => {
+            const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
+            return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+          });
+        }
+
+        s.totalTunagens = tunagens.length;
+        s.valorTunagens = tunagens.reduce((acc, t) => acc + (parseFloat(t.valor_pago || t.valor) || 0), 0);
+        s.totalBancada = bancada.length;
+        s.valorBancada = bancada.reduce((acc, b) => acc + (parseFloat(b.valor) || 0), 0);
+        s.totalBau = bau.length;
+        s.detalhes = { tunagens, bancada, bau };
+      });
+
       setLogsCompletosFunc(listaFinal);
     } catch (err) {
       console.error(err);
@@ -1066,7 +1141,7 @@ export default function RelatorioPage({
         return;
       }
       const { data, error } = await q.maybeSingle();
-      if (!error && data) {
+      if (!error && data && (data.total_tunagens || (data.detalhes_json && (data.detalhes_json.tunagens?.length || data.detalhes_json.bancada?.length || data.detalhes_json.bau?.length)))) {
         setSessaoAuditModal(prev => {
           if (!prev) return null;
           const det = data.detalhes_json || { tunagens: [], bancada: [], bau: [] };
@@ -1079,6 +1154,46 @@ export default function RelatorioPage({
             totalBau: data.total_bau ?? det.bau?.length ?? 0,
             valorTunagens: data.valor_tunagens ?? (det.tunagens?.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0) || 0),
             valorBancada: data.valor_bancada ?? (det.bancada?.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0) || 0),
+          };
+        });
+      } else {
+        // Fallback dinâmico: busca direto nas tabelas de tunagem, bancada e bau para este intervalo
+        const idMec = String(sessao.id_jogo || sessao.usuario_id || sessao.id || "").trim();
+        const nomeMec = (sessao.nome || sessao.nome_personagem || "").trim();
+        const entTs = new Date(sessao.entrada).getTime();
+        const saiTs = sessao.saida ? new Date(sessao.saida).getTime() : (entTs + 4 * 3600000);
+
+        let qT = supabase.from("logs_tunagem_reds").select("*");
+        if (idMec) qT = qT.or(`tecnico_id.eq.${idMec},tecnico_nome.ilike.%${nomeMec}%`);
+        let qB = supabase.from("log_bancada_reds").select("id, nome, data, hora, timestampz, uuid");
+        if (idMec) qB = qB.or(`id.eq.${idMec},nome.ilike.%${nomeMec}%`);
+        let qBau = supabase.from("log_bau_reds").select("id, nome, data, hora, timestampz, uuid");
+        if (idMec) qBau = qBau.or(`id.eq.${idMec},nome.ilike.%${nomeMec}%`);
+
+        const [rT, rB, rBau] = await Promise.all([qT, qB, qBau]);
+        const tunagens = (rT.data || []).filter(t => {
+          const ts = t.timestampz ? new Date(t.timestampz).getTime() : (t.data && t.hora ? new Date(`${t.data}T${t.hora}-03:00`).getTime() : null);
+          return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+        });
+        const bancada = (rB.data || []).filter(b => {
+          const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
+          return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+        });
+        const bau = (rBau.data || []).filter(b => {
+          const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
+          return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+        });
+
+        setSessaoAuditModal(prev => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            detalhes: { tunagens, bancada, bau },
+            totalTunagens: tunagens.length,
+            valorTunagens: tunagens.reduce((a, t) => a + (parseFloat(t.valor_pago || t.valor) || 0), 0),
+            totalBancada: bancada.length,
+            valorBancada: bancada.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0),
+            totalBau: bau.length
           };
         });
       }

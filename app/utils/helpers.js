@@ -263,24 +263,34 @@ export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetro
       }
     }
 
-    // Sincroniza também na tabela sessoes_ponto_auditoria_reds para manter o Gerenciador do Banco e Auditoria 100% atualizados
+    // Sincroniza também na tabela sessoes_ponto_auditoria_reds apenas novas sessões para não sobrescrever auditorias existentes
     try {
-      const auditRecords = sessoes.map((s) => ({
-        uuid_sessao: s.uuid_entrada || `${s.id}_${s.entrada}`,
-        id_jogo: String(s.id),
-        nome: s.nome,
-        oficina: "Red's Tunershop",
-        oficina_id: "reds",
-        entrada: s.entrada,
-        saida: s.saida || null,
-        duracao_min: s.tempo || 0,
-        status_ponto: s.saida ? "normal" : "aberto"
-      }));
-      for (let i = 0; i < auditRecords.length; i += 50) {
-        const lote = auditRecords.slice(i, i + 50);
-        await supabaseClient
-          .from("sessoes_ponto_auditoria_reds")
-          .upsert(lote, { onConflict: "uuid_sessao" });
+      const { data: existAud } = await supabaseClient
+        .from("sessoes_ponto_auditoria_reds")
+        .select("uuid_sessao")
+        .gte("entrada", dataLimite);
+      const setExistAud = new Set((existAud || []).map((a) => a.uuid_sessao));
+
+      const auditRecords = sessoes
+        .filter((s) => !setExistAud.has(s.uuid_entrada || `${s.id}_${s.entrada}`))
+        .map((s) => ({
+          uuid_sessao: s.uuid_entrada || `${s.id}_${s.entrada}`,
+          id_jogo: String(s.id),
+          nome: s.nome,
+          oficina: "Red's Tunershop",
+          oficina_id: "reds",
+          entrada: s.entrada,
+          saida: s.saida || null,
+          duracao_min: s.tempo || 0,
+          status_ponto: s.saida ? "normal" : "aberto"
+        }));
+      if (auditRecords.length > 0) {
+        for (let i = 0; i < auditRecords.length; i += 50) {
+          const lote = auditRecords.slice(i, i + 50);
+          await supabaseClient
+            .from("sessoes_ponto_auditoria_reds")
+            .insert(lote);
+        }
       }
     } catch (eAudit) {
       console.warn("Aviso ao atualizar sessoes_ponto_auditoria_reds:", eAudit?.message);
