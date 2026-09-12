@@ -660,14 +660,17 @@ export default function RelatorioPage({
       const dataQueryFim = fim || "2026-12-31";
       const iniISO = new Date(`${dataQueryInicio}T00:00:00-03:00`).toISOString();
       const dtFimObj = new Date(`${dataQueryFim}T23:59:59-03:00`);
-      dtFimObj.setDate(dtFimObj.getDate() + 1);
+      dtFimObj.setDate(dtFimObj.getDate() + 2);
       const fimISO = dtFimObj.toISOString();
+      const lookbackISO = new Date(new Date(iniISO).getTime() - 48 * 60 * 60 * 1000).toISOString();
+      const UMA_HORA_MS = 60 * 60 * 1000;
 
-      const [resAud, resTun, resBanc, resDiscordPonto] = await Promise.all([
+      // 1. Buscar registros com lookback adequado e paginação para Discord logs
+      const [resAud, resTun, resBanc] = await Promise.all([
         supabase
           .from("sessoes_ponto_auditoria_reds")
           .select("id_jogo, nome, entrada, saida, uuid_sessao, total_tunagens, total_bancada, total_bau, detalhes_json")
-          .gte("entrada", iniISO)
+          .gte("entrada", lookbackISO)
           .lte("entrada", fimISO)
           .limit(10000),
         supabase
@@ -681,20 +684,53 @@ export default function RelatorioPage({
           .select("id, nome, item, quantidade, valor, timestampz, data, hora")
           .gte("data", dataQueryInicio)
           .lte("data", dtFimObj.toLocaleDateString("en-CA"))
-          .limit(10000),
-        supabase
+          .limit(10000)
+      ]);
+
+      let allDiscordLogs = [];
+      let pageDiscord = 0;
+      while (pageDiscord < 10) {
+        const { data: dData, error: dErr } = await supabase
           .from("discord_log_messages")
           .select("id, content, created_at")
           .eq("log_type", "ponto")
-          .gte("created_at", iniISO)
+          .gte("created_at", lookbackISO)
           .lte("created_at", fimISO)
-          .limit(10000)
-      ]);
+          .range(pageDiscord * 1000, (pageDiscord + 1) * 1000 - 1);
+        if (dErr || !dData || dData.length === 0) break;
+        allDiscordLogs.push(...dData);
+        if (dData.length < 1000) break;
+        pageDiscord++;
+      }
 
       const auds = resAud.data || [];
       const tuns = resTun.data || [];
       const banc = resBanc.data || [];
-      const discordLogs = resDiscordPonto.data || [];
+
+      // Parser de eventos de ponto do Discord com extração de ID, Nome, Tipo e Timestamp exato
+      const parseDiscordPonto = (l) => {
+        const c = l.content || "";
+        const isEntrou = c.includes("ENTROU EM SERVIÇO");
+        const isSaiu = c.includes("SAIU DE SERVIÇO");
+        if (!isEntrou && !isSaiu) return null;
+
+        const dataMatch = c.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}):(\d{2}):(\d{2})/i);
+        let ts = new Date(l.created_at).getTime();
+        if (dataMatch) {
+          const [_, d, m, y, h, min, s] = dataMatch;
+          ts = new Date(`${y}-${m}-${d}T${h}:${min}:${s}-03:00`).getTime();
+        }
+
+        const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
+        const id = idMatch ? String(idMatch[1]).trim() : null;
+
+        const nomeMatch = c.match(/\[ID\]:\s*\d+\s+([^(]+)/i) || c.match(/\[NOME\]:\s*([^\n\r]+)/i);
+        const nome = nomeMatch ? nomeMatch[1].trim().toLowerCase() : null;
+
+        return { id: l.id, tipo: isEntrou ? "entrada" : "saida", ts, idJogo: id, nome, raw: c };
+      };
+
+      const parsedDiscord = allDiscordLogs.map(parseDiscordPonto).filter(Boolean);
 
       const novoMapa = {};
 
@@ -704,49 +740,39 @@ export default function RelatorioPage({
         const idVal = String(p.idJogoExibicao || p.usuario_id || p.id || "").trim();
         const nomeNorm = (p.nomeExibicao || p.nome || "").toLowerCase().trim();
 
-        // 1. Delimitar o fim da busca pela PRÓXIMA sessão do colaborador em TODAS as sessões (fechadas ou abertas)
+        // 1. Filtrar eventos de ponto do Discord deste colaborador
+        const userDiscordEvs = parsedDiscord
+          .filter(e => (idVal && e.idJogo === idVal) || (nomeNorm && e.nome && (e.nome.includes(nomeNorm) || nomeNorm.includes(e.nome))))
+          .sort((a, b) => a.ts - b.ts);
+
+        // Próximos eventos no Discord estritamente após esta entrada (+5 segundos de tolerância)
+        const subsequentDiscordEvs = userDiscordEvs.filter(e => e.ts > pEntTs + 5000);
+        const nextDiscordEv = subsequentDiscordEvs[0];
+
+        // 2. Verificar próximas entradas em registrosRelatorio para delimitar limite superior
         const todasSessoesMec = (registrosRelatorio || []).filter(r => {
           const rId = String(r.idJogoExibicao || r.id || r.usuario_id || "").trim();
           const rNome = (r.nomeExibicao || r.nome || "").toLowerCase().trim();
-          return (rId && rId === idVal) || (rNome && rNome === nomeNorm);
+          return (rId && rId === idVal) || (rNome && (rNome.includes(nomeNorm) || nomeNorm.includes(rNome)));
         });
 
         const proxEntradas = todasSessoesMec
           .map(r => new Date(r.entrada).getTime())
-          .filter(ts => ts > pEntTs)
+          .filter(ts => ts > pEntTs + 5000)
           .sort((a, b) => a - b);
 
-        let pLimTs = proxEntradas.length > 0 ? proxEntradas[0] : (pEntTs + 12 * 3600000);
+        const proxEntradaRelatorioTs = proxEntradas.length > 0 ? proxEntradas[0] : null;
 
-        // 2. Checar se existe um log oficial de "SAIU DE SERVIÇO" no Discord para esse período
-        const userDiscordLogs = discordLogs.filter(l => {
-          const c = l.content || "";
-          const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
-          return idMatch && String(idMatch[1]).trim() === idVal;
-        });
-
-        let discordExit = null;
-        userDiscordLogs.forEach(l => {
-          const c = l.content || "";
-          if (!c.includes("SAIU DE SERVIÇO")) return;
-          const dataMatch = c.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}):(\d{2}):(\d{2})/i);
-          let ts = new Date(l.created_at).getTime();
-          if (dataMatch) {
-            const [_, dia, mes, ano, hora, min, seg] = dataMatch;
-            ts = new Date(`${ano}-${mes}-${dia}T${hora}:${min}:${seg}-03:00`).getTime();
-          }
-          if (ts >= pEntTs - 60000 && ts < pLimTs) {
-            if (!discordExit || ts < discordExit.ts) {
-              discordExit = { ts, iso: new Date(ts).toISOString(), raw: c };
-            }
-          }
-        });
-
-        if (discordExit) {
-          pLimTs = discordExit.ts;
+        // Limite máximo que qualquer atividade pode ser atribuída a este expediente
+        let tetoSessaoTs = pEntTs + 12 * 3600000;
+        if (nextDiscordEv && nextDiscordEv.tipo === "entrada") {
+          tetoSessaoTs = Math.min(tetoSessaoTs, nextDiscordEv.ts);
+        }
+        if (proxEntradaRelatorioTs) {
+          tetoSessaoTs = Math.min(tetoSessaoTs, proxEntradaRelatorioTs);
         }
 
-        // 3. Coletar atividades reais (apenas tunagens e bancada)
+        // 3. Coletar atividades reais (apenas tunagens e compras de bancada)
         const ativs = [];
 
         const aud = auds.find(a => 
@@ -757,7 +783,7 @@ export default function RelatorioPage({
 
         (det.tunagens || []).forEach(t => {
           const ts = new Date(t.timestampz || t.timestamp || t.created_at).getTime();
-          if (ts >= pEntTs - 60000 && ts <= pLimTs) {
+          if (ts >= pEntTs - 60000 && ts <= tetoSessaoTs) {
             ativs.push({
               tipo: "tunagem",
               desc: `🚗 Tunagem: ${t.veiculo_nome || t.veiculo || "Veículo"}${t.placa ? ` (${t.placa})` : ""}`,
@@ -769,7 +795,7 @@ export default function RelatorioPage({
 
         (det.bancada || []).forEach(b => {
           const ts = new Date(b.timestampz || b.timestamp || b.created_at).getTime();
-          if (ts >= pEntTs - 60000 && ts <= pLimTs) {
+          if (ts >= pEntTs - 60000 && ts <= tetoSessaoTs) {
             ativs.push({
               tipo: "bancada",
               desc: `🛠️ Bancada: ${b.item || b.nome_item || "Peças"}${b.quantidade ? ` x${b.quantidade}` : ""}`,
@@ -780,9 +806,9 @@ export default function RelatorioPage({
         });
 
         tuns.forEach(t => {
-          if (String(t.tecnico_id).trim() === idVal || (t.tecnico_nome && t.tecnico_nome.toLowerCase().trim() === nomeNorm)) {
+          if (String(t.tecnico_id).trim() === idVal || (t.tecnico_nome && t.tecnico_nome.toLowerCase().trim().includes(nomeNorm))) {
             const ts = t.timestampz ? new Date(t.timestampz).getTime() : (t.data && t.hora ? new Date(`${t.data}T${t.hora}-03:00`).getTime() : null);
-            if (ts && ts >= pEntTs - 60000 && ts <= pLimTs) {
+            if (ts && ts >= pEntTs - 60000 && ts <= tetoSessaoTs) {
               ativs.push({
                 tipo: "tunagem",
                 desc: `🚗 Tunagem: ${t.veiculo_nome || t.veiculo_modelo || "Veículo"}${t.placa ? ` (${t.placa})` : ""}`,
@@ -794,9 +820,9 @@ export default function RelatorioPage({
         });
 
         banc.forEach(b => {
-          if (String(b.id).trim() === idVal || (b.nome && b.nome.toLowerCase().trim() === nomeNorm)) {
+          if (String(b.id).trim() === idVal || (b.nome && b.nome.toLowerCase().trim().includes(nomeNorm))) {
             const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
-            if (ts && ts >= pEntTs - 60000 && ts <= pLimTs) {
+            if (ts && ts >= pEntTs - 60000 && ts <= tetoSessaoTs) {
               ativs.push({
                 tipo: "bancada",
                 desc: `🛠️ Bancada: ${b.item || "Compra de Peças"}${b.quantidade ? ` x${b.quantidade}` : ""}`,
@@ -807,7 +833,7 @@ export default function RelatorioPage({
           }
         });
 
-        // 4. Deduplicação e ordenação cronológica
+        // Deduplicação e ordenação cronológica
         const dedup = [];
         ativs.sort((a, b) => a.ts - b.ts);
         ativs.forEach(a => {
@@ -816,64 +842,83 @@ export default function RelatorioPage({
           }
         });
 
-        // 5. Filtro de Inatividade Máxima (Se houver vácuo > 60 minutos sem atividades, o expediente encerrou antes)
-        const ativsValidas = [];
-        let ultimoTsAtiv = pEntTs;
-        for (const a of dedup) {
-          if (a.ts - ultimoTsAtiv > 60 * 60 * 1000) {
-            break;
+        // 4. Aplicação das Regras Estritas do Sistema
+        let saidaSugerida = p.entrada;
+        let duracaoSugeridaMin = 0;
+        let motivoSugerido = "";
+        let ativsValidas = [];
+
+        if (nextDiscordEv && nextDiscordEv.tipo === "saida") {
+          // Caso 1: Saída oficial no Discord
+          saidaSugerida = new Date(nextDiscordEv.ts).toISOString();
+          duracaoSugeridaMin = Math.max(1, Math.round((nextDiscordEv.ts - pEntTs) / 60000));
+          motivoSugerido = `Saída oficial do Discord registrada às ${new Date(nextDiscordEv.ts).toLocaleTimeString("pt-BR")}`;
+          ativsValidas = dedup.filter(a => a.ts <= nextDiscordEv.ts);
+        } else if (nextDiscordEv && nextDiscordEv.tipo === "entrada") {
+          // Caso 2: Nova entrada registrada sem saída anterior
+          const diffMs = nextDiscordEv.ts - pEntTs;
+          if (diffMs <= UMA_HORA_MS) {
+            // Reconexão rápida (queda / reinício em até 1 hora)
+            saidaSugerida = new Date(nextDiscordEv.ts).toISOString();
+            duracaoSugeridaMin = Math.max(1, Math.round(diffMs / 60000));
+            motivoSugerido = `Fechado por reconexão rápida às ${new Date(nextDiscordEv.ts).toLocaleTimeString("pt-BR")}`;
+            ativsValidas = dedup.filter(a => a.ts <= nextDiscordEv.ts);
+          } else {
+            // Mais de 1h de distância: encerra na última atividade antes de inatividade
+            let ant = pEntTs;
+            for (const a of dedup) {
+              if (a.ts - ant > UMA_HORA_MS) break;
+              ativsValidas.push(a);
+              ant = a.ts;
+            }
+            if (ativsValidas.length > 0) {
+              const ult = ativsValidas[ativsValidas.length - 1];
+              saidaSugerida = new Date(ult.ts).toISOString();
+              duracaoSugeridaMin = Math.max(1, Math.round((ult.ts - pEntTs) / 60000));
+              motivoSugerido = `Inatividade (> 60m). Última atividade: ${ult.desc} às ${new Date(ult.ts).toLocaleTimeString("pt-BR")}`;
+            } else {
+              saidaSugerida = p.entrada;
+              duracaoSugeridaMin = 0;
+              motivoSugerido = "Sem atividades antes da próxima entrada (fechado em 0 min)";
+            }
           }
-          ativsValidas.push(a);
-          ultimoTsAtiv = a.ts;
+        } else {
+          // Caso 3: Não há próximo evento no Discord
+          let ant = pEntTs;
+          for (const a of dedup) {
+            if (a.ts - ant > UMA_HORA_MS) break;
+            ativsValidas.push(a);
+            ant = a.ts;
+          }
+          if (ativsValidas.length > 0) {
+            const ult = ativsValidas[ativsValidas.length - 1];
+            saidaSugerida = new Date(ult.ts).toISOString();
+            duracaoSugeridaMin = Math.max(1, Math.round((ult.ts - pEntTs) / 60000));
+            motivoSugerido = `Última atividade antes de inatividade: ${ult.desc} às ${new Date(ult.ts).toLocaleTimeString("pt-BR")}`;
+          } else {
+            saidaSugerida = p.entrada;
+            duracaoSugeridaMin = 0;
+            motivoSugerido = "Miss-click / Sem atividades registradas (0 min)";
+          }
         }
 
         const totalTunagens = ativsValidas.filter(a => a.tipo === "tunagem").length;
         const totalBancada = ativsValidas.filter(a => a.tipo === "bancada").length;
 
-        // 6. Decisão de Saída Sugerida
-        if (discordExit) {
-          const durMin = Math.max(0, Math.round((discordExit.ts - pEntTs) / 60000));
-          novoMapa[chave] = {
-            temAtividades: ativsValidas.length > 0 || durMin > 0,
-            totalAtividades: ativsValidas.length,
-            totalTunagens,
-            totalBancada,
-            totalBau: 0,
-            ultimaAtividade: ativsValidas.length > 0 ? ativsValidas[ativsValidas.length - 1] : { desc: "Saída registrada no Discord", ts: discordExit.ts },
-            saidaSugerida: discordExit.iso,
-            duracaoSugeridaMin: durMin,
-            motivoSugerido: `Saída oficial do Discord registrada às ${new Date(discordExit.ts).toLocaleTimeString("pt-BR")}`,
-            atividadesLista: ativsValidas
-          };
-        } else if (ativsValidas.length > 0) {
-          const last = ativsValidas[ativsValidas.length - 1];
-          const durMin = Math.max(0, Math.round((last.ts - pEntTs) / 60000));
-          novoMapa[chave] = {
-            temAtividades: true,
-            totalAtividades: ativsValidas.length,
-            totalTunagens,
-            totalBancada,
-            totalBau: 0,
-            ultimaAtividade: last,
-            saidaSugerida: new Date(last.ts).toISOString(),
-            duracaoSugeridaMin: durMin,
-            motivoSugerido: `Fechado na última atividade (${last.desc})`,
-            atividadesLista: ativsValidas
-          };
-        } else {
-          novoMapa[chave] = {
-            temAtividades: false,
-            totalAtividades: 0,
-            totalTunagens: 0,
-            totalBancada: 0,
-            totalBau: 0,
-            ultimaAtividade: null,
-            saidaSugerida: p.entrada,
-            duracaoSugeridaMin: 0,
-            motivoSugerido: "Miss-click / Sem atividades de trabalho (fechado na entrada)",
-            atividadesLista: []
-          };
-        }
+        novoMapa[chave] = {
+          temAtividades: duracaoSugeridaMin > 0,
+          totalAtividades: ativsValidas.length,
+          totalTunagens,
+          totalBancada,
+          totalBau: 0,
+          ultimaAtividade: ativsValidas.length > 0
+            ? ativsValidas[ativsValidas.length - 1]
+            : (duracaoSugeridaMin > 0 ? { desc: motivoSugerido, ts: new Date(saidaSugerida).getTime() } : null),
+          saidaSugerida,
+          duracaoSugeridaMin,
+          motivoSugerido,
+          atividadesLista: ativsValidas
+        };
       });
 
       setMapaAnaliseAtividades(novoMapa);
@@ -894,7 +939,7 @@ export default function RelatorioPage({
     }
 
     const confirmMsg = analise.temAtividades
-      ? `Deseja fechar o ponto de ${item.nomeExibicao} às ${new Date(analise.saidaSugerida).toLocaleTimeString("pt-BR")} (+${fmtMin(analise.duracaoSugeridaMin)}) baseado na última atividade (${analise.ultimaAtividade.desc})?`
+      ? `Deseja fechar o ponto de ${item.nomeExibicao} às ${new Date(analise.saidaSugerida).toLocaleTimeString("pt-BR")} (+${fmtMin(analise.duracaoSugeridaMin)}) baseado na última atividade (${analise.ultimaAtividade?.desc || analise.motivoSugerido})?`
       : `Nenhuma atividade detectada para ${item.nomeExibicao}. Deseja fechar o ponto com duração 0 min (mesma hora da entrada)?`;
 
     if (!confirm(confirmMsg)) return;
@@ -3961,8 +4006,8 @@ export default function RelatorioPage({
                                         +{fmtMin(analise.duracaoSugeridaMin)}
                                       </span>
                                     </div>
-                                    <div style={{ fontSize: "11px", color: theme.text, fontWeight: "600", maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={analise.ultimaAtividade.desc}>
-                                      {analise.ultimaAtividade.desc}
+                                    <div style={{ fontSize: "11px", color: theme.text, fontWeight: "600", maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={analise.ultimaAtividade?.desc || analise.motivoSugerido}>
+                                      {analise.ultimaAtividade?.desc || analise.motivoSugerido}
                                     </div>
                                   </div>
                                 ) : (
