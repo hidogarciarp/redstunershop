@@ -388,6 +388,9 @@ export default function DashboardPage({
       valorPago: log.valor_pago || 0,
       itensQtd: itens.length,
       tecnicoNome: log.tecnico_nome || "",
+      temFumaca: temFumaca,
+      qtdExtras: qtdExtrasFinal,
+      temCamaleao: temCamaleao1 || temCamaleao2 || temCamaleaoRodas,
     });
   };
 
@@ -601,6 +604,21 @@ export default function DashboardPage({
                   )}
                   <span style={{ opacity: 0.85 }}>• Custo Painel: R$ {logAplicadoInfo.valorPago.toLocaleString("pt-BR")}</span>
                   <span style={{ opacity: 0.85 }}>• {logAplicadoInfo.itensQtd} itens detectados</span>
+                  {logAplicadoInfo.temFumaca && (
+                    <span style={{ background: isDarkMode ? "rgba(34, 197, 94, 0.2)" : "rgba(16, 185, 129, 0.15)", border: "1px solid rgba(16, 185, 129, 0.4)", padding: "1px 7px", borderRadius: "6px", fontSize: "11px", fontWeight: "800", color: isDarkMode ? "#4ade80" : "#059669" }}>
+                      💨 Fumaça
+                    </span>
+                  )}
+                  {logAplicadoInfo.qtdExtras > 0 && (
+                    <span style={{ background: isDarkMode ? "rgba(59, 130, 246, 0.2)" : "rgba(59, 130, 246, 0.15)", border: "1px solid rgba(59, 130, 246, 0.4)", padding: "1px 7px", borderRadius: "6px", fontSize: "11px", fontWeight: "800", color: isDarkMode ? "#93c5fd" : "#2563eb" }}>
+                      🧩 {logAplicadoInfo.qtdExtras}x Extra(s)
+                    </span>
+                  )}
+                  {logAplicadoInfo.temCamaleao && (
+                    <span style={{ background: isDarkMode ? "rgba(168, 85, 247, 0.2)" : "rgba(168, 85, 247, 0.15)", border: "1px solid rgba(168, 85, 247, 0.4)", padding: "1px 7px", borderRadius: "6px", fontSize: "11px", fontWeight: "800", color: isDarkMode ? "#c084fc" : "#7c3aed" }}>
+                      🦎 Camaleão
+                    </span>
+                  )}
                 </div>
                 <span style={{ fontSize: "11px", fontWeight: "700", opacity: 0.85 }}>
                   Confira os dados abaixo e adicione o passaporte se necessário.

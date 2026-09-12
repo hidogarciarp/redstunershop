@@ -3248,10 +3248,10 @@ export default function Home() {
       setSalvandoServico(true);
 
       const rulesLocal = REGRAS_PRECOS;
-      const somaExtras = quantidadeExtras * 1000;
-      const somaExtrasFinal = somaExtras * 1.5;
-      const valorFumacaPainel = fumaca ? 5000 : 0;
-      const valorFumacaFinal = fumaca ? 5000 * 1.4 : 0;
+      const somaExtras = quantidadeExtras * (rulesLocal.estetica?.painel_extra || 1000);
+      const somaExtrasFinal = quantidadeExtras * (rulesLocal.estetica?.valor_cliente_extra || 3500);
+      const valorFumacaPainel = fumaca ? (rulesLocal.estetica?.painel_fumaca || 5000) : 0;
+      const valorFumacaFinal = fumaca ? (rulesLocal.estetica?.valor_cliente_fumaca || 9000) : 0;
       const valorPainel = Number(valorDigitadoEstetica) || 0;
 
       // Soma o valor de painel dos itens de performance selecionados
@@ -3273,11 +3273,9 @@ export default function Home() {
       }
 
       const valorBaseEstetica = Math.max(0, valorPainel - custoMinimoPainel);
-      let valorAdicionalCamaleao = 0;
-      if (camaleao1) valorAdicionalCamaleao += 6000;
-      if (camaleao2) valorAdicionalCamaleao += 6000;
-      if (camaleaoRodas) valorAdicionalCamaleao += 6000;
-      const valorEsteticaFinal = valorBaseEstetica * 4 + valorAdicionalCamaleao + somaExtrasFinal + valorFumacaFinal;
+      const valorBaseEsteticaCliente = (valorBaseEstetica / rulesLocal.estetica.painel_referencia) * rulesLocal.estetica.valor_cliente_referencia;
+      const valorCamaleaoCliente = qtdCamaleaoDiscord * (rulesLocal.estetica?.valor_cliente_camaleao || 10000);
+      const valorEsteticaFinal = valorBaseEsteticaCliente + valorCamaleaoCliente + somaExtrasFinal + valorFumacaFinal;
 
       const todasPeças = Object.values(tabelas).flat();
       const nomesServicos = Object.keys(servicosSelecionados).filter((id) => servicosSelecionados[id]).map((id) => todasPeças.find((p) => p.id === id)?.nome).join(", ");
@@ -3322,8 +3320,10 @@ export default function Home() {
         { name: "💰 Total Final", value: temReboque ? "**R$ 0,00 (Apreensão)**" : `**R$ ${total.toLocaleString("pt-BR")}**`, inline: false },
       ];
       if (temReboque) fields.push({ name: "🚨 Tipo de Atendimento", value: "Apreensão de Veículo (Reboque)", inline: true });
-      else if (!soGuincho) fields.push({ name: "🎨 Estética", value: `R$ ${valorEsteticaFinal.toLocaleString("pt-BR")}`, inline: true });
+      else if (!soGuincho && valorEsteticaFinal > 0) fields.push({ name: "🎨 Estética", value: `R$ ${valorEsteticaFinal.toLocaleString("pt-BR")}`, inline: true });
       if (camaleoesSelecionados.length > 0) fields.push({ name: "🦎 Camaleão", value: camaleoesSelecionados.join(", "), inline: true });
+      if (fumaca) fields.push({ name: "💨 Fumaça", value: "Instalada (Personalizada)", inline: true });
+      if (quantidadeExtras > 0) fields.push({ name: "🧩 Extras", value: `${quantidadeExtras}x instalado(s)`, inline: true });
       if (temPerformance) fields.push({ name: "⚙️ Peças Instaladas", value: nomesServicos || "Nenhuma", inline: false });
       if (!temReboque && temGuincho) fields.push({ name: "🚗 Guincho", value: `${kmGuincho} KM (x2)`, inline: true }, { name: "🔧 Reparos", value: `${qtdReparos}`, inline: true }, { name: "🛞 Pneus", value: `${qtdPneus}`, inline: true });
 
