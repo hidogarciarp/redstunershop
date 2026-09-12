@@ -1164,59 +1164,21 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
 
     setEnviandoCrash(true);
     try {
-      const dia = String(dataSaidaObj.getDate()).padStart(2, "0");
-      const mes = String(dataSaidaObj.getMonth() + 1).padStart(2, "0");
-      const ano = dataSaidaObj.getFullYear();
-      const hora = String(dataSaidaObj.getHours()).padStart(2, "0");
-      const min = String(dataSaidaObj.getMinutes()).padStart(2, "0");
-      const seg = String(dataSaidaObj.getSeconds()).padStart(2, "0");
+      const res = await fetch("/api/ponto/fechar-crash", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          funcionarioInspecao,
+          justificativaCrash: justificativaCrash.trim(),
+          printCrashBase64,
+          saidaDataHoraCrash,
+          usuarioLogado
+        })
+      });
 
-      const dataFormatadaDiscord = `${dia}/${mes}/${ano}, ${hora}:${min}:${seg}`;
-      const idJogo = funcionarioInspecao.idJogo;
-      const nome = funcionarioInspecao.nome;
-      const oficina = funcionarioInspecao.oficina || "Red's Tunershop";
-      const dataSaidaISO = dataSaidaObj.toISOString();
-
-      const contentDiscord = `[ID]: ${idJogo} ${nome} ( SAIU DE SERVIÇO - ${oficina} )\n[DATA]: ${dataFormatadaDiscord}\n[MOTIVO_CRASH]: ${justificativaCrash.trim()}\n[FECHADO_POR]: ${usuarioLogado?.nome || "Admin"}\n[UUID]: manual-crash-${Date.now()}`;
-
-      const embedDataPayload = {
-        motivo: "crash",
-        justificativa: justificativaCrash.trim(),
-        fechado_por_nome: usuarioLogado?.nome || "Administrador",
-        fechado_por_id: usuarioLogado?.id || null,
-        imagem_comprovante: printCrashBase64,
-        horario_saida_manual: dataSaidaISO,
-        tipo_fechamento: "manual_crash",
-        criado_em: new Date().toISOString()
-      };
-
-      const { error: discordError } = await supabase.from("discord_log_messages").insert([
-        {
-          discord_id: String(Date.now()),
-          channel_id: "manual-crash",
-          mechanic_id: funcionarioInspecao.oficinaId || "reds",
-          log_type: "ponto",
-          author_name: `${usuarioLogado?.nome || "Admin"} (Fechamento Manual / Crash)`,
-          content: contentDiscord,
-          embed_data: embedDataPayload,
-          created_at: dataSaidaISO
-        }
-      ]);
-
-      if (discordError) throw discordError;
-
-      try {
-        await supabase
-          .from("ponto_horas")
-          .update({
-            saida: dataSaidaISO,
-            verificado: true,
-            verificado_por: usuarioLogado?.nome || "Admin"
-          })
-          .eq("nome", nome)
-          .is("saida", null);
-      } catch (e) {
-        console.warn("Aviso ao atualizar tabela ponto_horas:", e);
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Erro ao processar fechamento de ponto.");
       }
 
       tocarSomNotificacao("saida");
