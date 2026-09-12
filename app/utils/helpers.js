@@ -209,16 +209,6 @@ export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetro
             pontoAtual.tempo = Math.max(0, diffMin);
             sessoes.push(pontoAtual);
             pontoAtual = null;
-          } else {
-            sessoes.push({
-              id: m.idJogo,
-              nome: m.nome,
-              entrada: ev.timestamp,
-              saida: ev.timestamp,
-              tempo: 0,
-              uuid_entrada: ev.uuid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `auto-${Date.now()}-${Math.random()}`),
-              uuid_saida: ev.uuid,
-            });
           }
         }
       });

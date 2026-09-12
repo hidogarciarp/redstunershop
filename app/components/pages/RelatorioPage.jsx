@@ -491,11 +491,30 @@ export default function RelatorioPage({
         s.valorTunagens = tunagens.reduce((acc, t) => acc + (parseFloat(t.valor_pago || t.valor) || 0), 0);
         s.totalBancada = bancada.length;
         s.valorBancada = bancada.reduce((acc, b) => acc + (parseFloat(b.valor) || 0), 0);
-        s.totalBau = bau.length;
         s.detalhes = { tunagens, bancada, bau };
       });
 
-      setLogsCompletosFunc(listaFinal);
+      // 4. Filtrar duplicatas fantasmas de saída avulsa (sessões de 0 min com entrada === saida que coincidem com a saída de uma sessão legítima)
+      const listaLimpa = listaFinal.filter((s) => {
+        const entTs = new Date(s.entrada).getTime();
+        const saiTs = s.saida ? new Date(s.saida).getTime() : null;
+        const ehZeroMin = entTs === saiTs || (!s.duracaoMin && !s.tempo);
+
+        if (ehZeroMin && saiTs) {
+          const temSessaoReal = listaFinal.some((outro) => {
+            if (outro === s) return false;
+            if (!outro.entrada || !outro.saida) return false;
+            const oEntTs = new Date(outro.entrada).getTime();
+            const oSaiTs = new Date(outro.saida).getTime();
+            if (oEntTs === oSaiTs) return false;
+            return Math.abs(oSaiTs - saiTs) <= 120000;
+          });
+          if (temSessaoReal) return false;
+        }
+        return true;
+      });
+
+      setLogsCompletosFunc(listaLimpa);
     } catch (err) {
       console.error(err);
     } finally {
