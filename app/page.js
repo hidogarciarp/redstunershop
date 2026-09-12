@@ -1072,13 +1072,29 @@ export default function Home() {
   };
 
   const atualizarSenhaNoBanco = async (id, novaSenha) => {
-    const { error } = await supabase.from("usuarios").update({ senha: novaSenha }).eq("id", id);
-    if (error) {
-      alert("Erro ao atualizar senha");
-      return false;
+    try {
+      const res = await fetch("/api/auth/alterar-senha", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, novaSenha }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data?.error || "Erro ao atualizar senha");
+        return false;
+      }
+      encerrarSessao();
+      return true;
+    } catch (e) {
+      console.warn("Falha na rota /api/auth/alterar-senha, usando fallback:", e);
+      const { error } = await supabase.from("usuarios").update({ senha: novaSenha }).eq("id", id);
+      if (error) {
+        alert("Erro ao atualizar senha");
+        return false;
+      }
+      encerrarSessao();
+      return true;
     }
-    encerrarSessao();
-    return true;
   };
 
   const userPodeGerenciarCursos = () => Boolean(
