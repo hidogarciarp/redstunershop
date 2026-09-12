@@ -23,6 +23,80 @@ function usePontoElapsed(pontoAtivo) {
   return segundos;
 }
 
+const parseDiscordPontoMessage = (content, createdAt, embedData) => {
+  if (!content) return null;
+  const isEntrou = content.includes("ENTROU EM SERVIÇO");
+  const isSaiu = content.includes("SAIU DE SERVIÇO");
+  if (!isEntrou && !isSaiu) return null;
+
+  const regexIdNomeOficina = /\[ID\]:\s*(\d+)\s+([^(]+?)\s*\(\s*(?:ENTROU\s+EM|SAIU\s+DE)\s+SERVIÇO\s*-\s*([^)]+)\)/i;
+  const match = content.match(regexIdNomeOficina);
+
+  let idJogo = "";
+  let nome = "";
+  let tipo = isEntrou ? "entrada" : "saida";
+  let oficina = "Red's Tunershop";
+
+  if (match) {
+    idJogo = match[1].trim();
+    nome = match[2].trim();
+    oficina = match[3].trim();
+  } else {
+    const idMatch = content.match(/\[ID\]:\s*(\d+)/i);
+    if (idMatch) idJogo = idMatch[1].trim();
+    const nomeMatch = content.match(/\[ID\]:\s*\d+\s+([^(]+)/i);
+    if (nomeMatch) nome = nomeMatch[1].trim();
+    const ofcMatch = content.match(/-\s*([^)]+)\)/i);
+    if (ofcMatch) oficina = ofcMatch[1].trim();
+  }
+
+  const dataMatch = content.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
+  let timestamp = createdAt ? new Date(createdAt).toISOString() : new Date().toISOString();
+
+  if (dataMatch) {
+    const [_, dataStr, horaStr] = dataMatch;
+    const [dia, mes, ano] = dataStr.split("/");
+    timestamp = new Date(`${ano}-${mes}-${dia}T${horaStr}-03:00`).toISOString();
+  }
+
+  const uuidMatch = content.match(/\[UUID\]:\s*([a-f0-9-]+)/i);
+  const uuid = uuidMatch ? uuidMatch[1].trim() : null;
+
+  const ofcLower = (oficina || "").toLowerCase();
+  let oficinaId = "outras";
+  if (ofcLower.includes("red")) oficinaId = "reds";
+  else if (ofcLower.includes("beach") || ofcLower.includes("vespucci")) oficinaId = "vespucci";
+  else if (ofcLower.includes("harmony")) oficinaId = "harmony";
+  else if (ofcLower.includes("dudark") || ofcLower.includes("salt") || ofcLower.includes("lab")) oficinaId = "dudark";
+
+  let motivoCrash = null;
+  let justificativa = null;
+  let comprovanteImg = null;
+  let fechadoPor = null;
+
+  if (embedData) {
+    const dataObj = Array.isArray(embedData) ? embedData[0] : embedData;
+    if (dataObj && (dataObj.motivo === "crash" || dataObj.tipo_fechamento === "manual_crash")) {
+      motivoCrash = "crash";
+      justificativa = dataObj.justificativa;
+      comprovanteImg = dataObj.imagem_comprovante;
+      fechadoPor = dataObj.fechado_por_nome;
+    }
+  }
+
+  if (!motivoCrash && content.includes("[MOTIVO_CRASH]:")) {
+    const motMatch = content.match(/\[MOTIVO_CRASH\]:\s*([^\n\r]+)/i);
+    if (motMatch) {
+      motivoCrash = "crash";
+      justificativa = motMatch[1].trim();
+    }
+    const fechMatch = content.match(/\[FECHADO_POR\]:\s*([^\n\r]+)/i);
+    if (fechMatch) fechadoPor = fechMatch[1].trim();
+  }
+
+  return { idJogo, nome, tipo, oficina, oficinaId, timestamp, uuid, motivoCrash, justificativa, comprovanteImg, fechadoPor };
+};
+
 export default function PontoPage({
   styles,
   theme,
@@ -64,6 +138,7 @@ export default function PontoPage({
 
   const [sessoesPonto, setSessoesPonto] = useState([]);
   const [carregandoSessoes, setCarregandoSessoes] = useState(false);
+  const [pontosAbertosAoVivo, setPontosAbertosAoVivo] = useState([]);
 
   const carregarSessoes = useCallback(async (filtrosCustom = {}) => {
     if (!usuarioLogado) return;
@@ -140,13 +215,36 @@ export default function PontoPage({
         queryCidade = queryCidade.lte("entrada", `${fimBusca}T23:59:59.999Z`);
       }
 
-      const [{ data: dataAud, error: errAud }, { data: dataCid, error: errCid }] = await Promise.all([
+      let lookbackDiscordMs = 72 * 60 * 60 * 1000;
+      if (inicioBusca) {
+        const msInicio = new Date(`${inicioBusca}T00:00:00-03:00`).getTime();
+        if (!isNaN(msInicio) && Date.now() - msInicio > lookbackDiscordMs) {
+          lookbackDiscordMs = Date.now() - msInicio + 24 * 60 * 60 * 1000;
+        }
+      }
+      const lookbackDiscord = new Date(Date.now() - Math.min(lookbackDiscordMs, 7 * 24 * 60 * 60 * 1000)).toISOString();
+
+      let queryDiscord = supabase
+        .from("discord_log_messages")
+        .select("*")
+        .eq("log_type", "ponto")
+        .gte("created_at", lookbackDiscord)
+        .order("id", { ascending: true })
+        .limit(2000);
+
+      const [
+        { data: dataAud, error: errAud },
+        { data: dataCid, error: errCid },
+        { data: dataDiscord, error: errDiscord }
+      ] = await Promise.all([
         queryAuditoria,
-        queryCidade
+        queryCidade,
+        queryDiscord
       ]);
 
       if (errAud) console.warn("Aviso ao buscar sessoes_ponto_auditoria_reds:", errAud);
       if (errCid) console.warn("Aviso ao buscar ponto_cidade_reds:", errCid);
+      if (errDiscord) console.warn("Aviso ao buscar discord_log_messages ponto:", errDiscord);
 
       const mapa = new Map();
 
@@ -202,6 +300,147 @@ export default function PontoPage({
         }
       });
 
+      // Processar eventos em tempo real vindos diretamente do Discord (últimos dias)
+      const mapaMecanicos = {};
+      (dataDiscord || []).forEach((msg) => {
+        const parsed = parseDiscordPontoMessage(msg.content, msg.created_at, msg.embed_data);
+        if (!parsed || !parsed.idJogo) return;
+        if (parsed.oficinaId && parsed.oficinaId !== "reds") return;
+
+        if (!mapaMecanicos[parsed.idJogo]) {
+          mapaMecanicos[parsed.idJogo] = {
+            idJogo: parsed.idJogo,
+            nome: parsed.nome,
+            eventos: []
+          };
+        }
+        mapaMecanicos[parsed.idJogo].nome = parsed.nome || mapaMecanicos[parsed.idJogo].nome;
+        mapaMecanicos[parsed.idJogo].eventos.push(parsed);
+      });
+
+      const sessoesFechadasRealtime = [];
+      const sessoesAbertasRealtime = [];
+
+      Object.values(mapaMecanicos).forEach((mec) => {
+        const evs = [...mec.eventos].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        let pontoAtual = null;
+
+        evs.forEach((ev) => {
+          if (ev.tipo === "entrada") {
+            if (pontoAtual) {
+              const diffMs = new Date(ev.timestamp) - new Date(pontoAtual.entrada);
+              pontoAtual.saida = ev.timestamp;
+              pontoAtual.duracaoMin = Math.max(1, Math.round(diffMs / 60000));
+              sessoesFechadasRealtime.push(pontoAtual);
+            }
+            pontoAtual = {
+              idJogo: mec.idJogo,
+              nome: mec.nome,
+              oficina: ev.oficina,
+              oficinaId: ev.oficinaId,
+              entrada: ev.timestamp,
+              uuidEntrada: ev.uuid,
+              saida: null,
+              uuidSaida: null,
+              duracaoMin: 0,
+              motivoCrash: null,
+              justificativa: null,
+              comprovanteImg: null,
+              fechadoPor: null
+            };
+          } else if (ev.tipo === "saida") {
+            if (pontoAtual) {
+              const diffMs = new Date(ev.timestamp) - new Date(pontoAtual.entrada);
+              pontoAtual.saida = ev.timestamp;
+              pontoAtual.uuidSaida = ev.uuid;
+              pontoAtual.duracaoMin = Math.max(1, Math.round(diffMs / 60000));
+              pontoAtual.motivoCrash = ev.motivoCrash;
+              pontoAtual.justificativa = ev.justificativa;
+              pontoAtual.comprovanteImg = ev.comprovanteImg;
+              pontoAtual.fechadoPor = ev.fechadoPor;
+              sessoesFechadasRealtime.push(pontoAtual);
+              pontoAtual = null;
+            } else {
+              sessoesFechadasRealtime.push({
+                idJogo: mec.idJogo,
+                nome: mec.nome,
+                oficina: ev.oficina,
+                oficinaId: ev.oficinaId,
+                entrada: ev.timestamp,
+                uuidEntrada: null,
+                saida: ev.timestamp,
+                uuidSaida: ev.uuid,
+                duracaoMin: 1,
+                motivoCrash: ev.motivoCrash,
+                justificativa: ev.justificativa,
+                comprovanteImg: ev.comprovanteImg,
+                fechadoPor: ev.fechadoPor
+              });
+            }
+          }
+        });
+
+        if (pontoAtual && !pontoAtual.saida) {
+          const horasAberto = (Date.now() - new Date(pontoAtual.entrada).getTime()) / 3600000;
+          if (horasAberto < 12) {
+            sessoesAbertasRealtime.push({
+              id: pontoAtual.uuidEntrada || `ao_vivo_${pontoAtual.idJogo}_${pontoAtual.entrada}`,
+              id_jogo: pontoAtual.idJogo,
+              usuario_id: pontoAtual.idJogo,
+              nome: pontoAtual.nome,
+              entrada: pontoAtual.entrada,
+              oficina: pontoAtual.oficina,
+              oficinaId: pontoAtual.oficinaId,
+              status_ponto: "aberto"
+            });
+          }
+        }
+      });
+
+      setPontosAbertosAoVivo(sessoesAbertasRealtime);
+
+      sessoesFechadasRealtime.forEach((sessao) => {
+        if (inicioBusca && sessao.entrada < `${inicioBusca}T00:00:00.000Z`) return;
+        if (fimBusca && sessao.entrada > `${fimBusca}T23:59:59.999Z`) return;
+
+        const jaExiste = Array.from(mapa.values()).some((s) => {
+          if (sessao.uuidEntrada && (s.uuid_sessao === sessao.uuidEntrada || s.uuid_entrada === sessao.uuidEntrada)) {
+            return true;
+          }
+          const mesmoId = String(s.id_jogo || s.usuario_id || "") === String(sessao.idJogo);
+          if (!mesmoId) return false;
+          const entS = new Date(s.entrada).getTime();
+          const entNova = new Date(sessao.entrada).getTime();
+          return Math.abs(entS - entNova) < 120000;
+        });
+
+        if (!jaExiste) {
+          let dataStr = "";
+          try {
+            dataStr = new Date(sessao.entrada).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+          } catch (e) {
+            dataStr = sessao.entrada ? sessao.entrada.substring(0, 10) : "";
+          }
+
+          const key = `discord_${sessao.idJogo}_${sessao.entrada}`;
+          mapa.set(key, {
+            id: sessao.uuidEntrada || key,
+            uuid_sessao: sessao.uuidEntrada,
+            origem: "discord_realtime",
+            data: dataStr,
+            id_jogo: sessao.idJogo,
+            nome: sessao.nome,
+            entrada: sessao.entrada,
+            saida: sessao.saida,
+            duracao_min: sessao.duracaoMin,
+            status_ponto: "normal",
+            observacao: sessao.justificativa || sessao.motivoCrash || null,
+            motivo_crash: sessao.motivoCrash || null,
+            comprovante_img: sessao.comprovanteImg || null
+          });
+        }
+      });
+
       const sessoesOrdenadas = Array.from(mapa.values()).sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
       setSessoesPonto(sessoesOrdenadas);
     } catch (e) {
@@ -213,6 +452,28 @@ export default function PontoPage({
 
   useEffect(() => {
     carregarSessoes();
+  }, [carregarSessoes]);
+
+  useEffect(() => {
+    const canal = supabase
+      .channel("ponto-page-discord-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "discord_log_messages",
+          filter: "log_type=eq.ponto",
+        },
+        () => {
+          carregarSessoes();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canal);
+    };
   }, [carregarSessoes]);
 
   const pertenceAoUsuario = useCallback(
@@ -257,11 +518,17 @@ export default function PontoPage({
     setPaginaAtualSessoes(1);
   }, [filtroNome, filtroInicio, filtroFim, usuarioLogado]);
 
-  const emServicoVisivel = useMemo(
-    () => (podeVerTodosPontos ? emServico : emServico.filter(pertenceAoUsuario))
-      .filter((p) => !p.oculto || isAdminOuDono(usuarioLogado?.role || "")),
-    [podeVerTodosPontos, emServico, pertenceAoUsuario, isAdminOuDono, usuarioLogado?.role]
-  );
+  const emServicoVisivel = useMemo(() => {
+    const lista = [...pontosAbertosAoVivo];
+    (emServico || []).forEach((p) => {
+      const pId = String(p.id_jogo || p.usuario_id || p.id || "");
+      if (pId && !lista.some((x) => String(x.id_jogo || x.usuario_id || x.id || "") === pId)) {
+        lista.push(p);
+      }
+    });
+    return (podeVerTodosPontos ? lista : lista.filter(pertenceAoUsuario))
+      .filter((p) => !p.oculto || isAdminOuDono(usuarioLogado?.role || ""));
+  }, [podeVerTodosPontos, pontosAbertosAoVivo, emServico, pertenceAoUsuario, isAdminOuDono, usuarioLogado?.role]);
 
   const obterLabelSemana = (dataStr) => {
     if (!dataStr) return { key: "", label: "" };
