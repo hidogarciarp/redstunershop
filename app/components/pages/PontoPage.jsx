@@ -392,19 +392,68 @@ export default function PontoPage({
         .order("id", { ascending: true })
         .limit(2000);
 
+      let queryAtividades = supabase
+        .from("discord_log_messages")
+        .select("id, log_type, content, created_at")
+        .in("log_type", ["bancada", "bau"])
+        .gte("created_at", lookbackDiscord)
+        .order("id", { ascending: true })
+        .limit(2000);
+
+      let queryTunagemRecente = supabase
+        .from("logs_tunagem_reds")
+        .select("tecnico_id, tecnico_nome, data, hora")
+        .gte("data", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString().split("T")[0]);
+
       const [
         { data: dataAud, error: errAud },
         { data: dataCid, error: errCid },
-        { data: dataDiscord, error: errDiscord }
+        { data: dataDiscord, error: errDiscord },
+        { data: dataAtivs },
+        { data: dataTun }
       ] = await Promise.all([
         queryAuditoria,
         queryCidade,
-        queryDiscord
+        queryDiscord,
+        queryAtividades,
+        queryTunagemRecente
       ]);
 
       if (errAud) console.warn("Aviso ao buscar sessoes_ponto_auditoria_reds:", errAud);
       if (errCid) console.warn("Aviso ao buscar ponto_cidade_reds:", errCid);
       if (errDiscord) console.warn("Aviso ao buscar discord_log_messages ponto:", errDiscord);
+
+      // Mapeia atividades de mecânicos para detecção de inatividade / auto-fechamento
+      const mapaAtividadesMecanico = {};
+      (dataAtivs || []).forEach((msg) => {
+        const c = msg.content || "";
+        const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
+        let ts = msg.created_at;
+        const dataMatch = c.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
+        if (dataMatch) {
+          const [_, dStr, hStr] = dataMatch;
+          const [dia, mes, ano] = dStr.split("/");
+          ts = new Date(`${ano}-${mes}-${dia}T${hStr}-03:00`).toISOString();
+        }
+        if (idMatch) {
+          const id = idMatch[1].trim();
+          if (!mapaAtividadesMecanico[id]) mapaAtividadesMecanico[id] = [];
+          mapaAtividadesMecanico[id].push(new Date(ts).getTime());
+        }
+      });
+
+      (dataTun || []).forEach((t) => {
+        if (t.tecnico_id && t.data && t.hora) {
+          const id = String(t.tecnico_id).trim();
+          const ts = new Date(`${t.data}T${t.hora}-03:00`).getTime();
+          if (!isNaN(ts)) {
+            if (!mapaAtividadesMecanico[id]) mapaAtividadesMecanico[id] = [];
+            mapaAtividadesMecanico[id].push(ts);
+          }
+        }
+      });
+
+      Object.values(mapaAtividadesMecanico).forEach((arr) => arr.sort((a, b) => a - b));
 
       const mapa = new Map();
 
@@ -482,7 +531,15 @@ export default function PontoPage({
       const sessoesAbertasRealtime = [];
 
       Object.values(mapaMecanicos).forEach((mec) => {
-        const evs = [...mec.eventos].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        const evs = [...mec.eventos].sort((a, b) => {
+          const diff = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+          if (diff !== 0) return diff;
+          // Se mesmo timestamp exato: SAIU fecha a sessão anterior antes de novo ENTROU
+          if (a.tipo === "saida" && b.tipo === "entrada") return -1;
+          if (a.tipo === "entrada" && b.tipo === "saida") return 1;
+          return 0;
+        });
+
         let pontoAtual = null;
 
         evs.forEach((ev) => {
@@ -541,8 +598,31 @@ export default function PontoPage({
         });
 
         if (pontoAtual && !pontoAtual.saida) {
-          const horasAberto = (Date.now() - new Date(pontoAtual.entrada).getTime()) / 3600000;
-          if (horasAberto < 12) {
+          const entMs = new Date(pontoAtual.entrada).getTime();
+          const ativs = mapaAtividadesMecanico[mec.idJogo] || [];
+          const ativsNaSessao = ativs.filter((ts) => ts >= entMs);
+          const agoraMs = Date.now();
+          const ultAtivMs = ativsNaSessao.length > 0 ? ativsNaSessao[ativsNaSessao.length - 1] : entMs;
+          const tempoSemAtividade = agoraMs - ultAtivMs;
+
+          // Se está há mais de 60 minutos sem nenhuma atividade registrada:
+          // O mecânico saiu do jogo sem bater /ponto ou crashou/duplo clique acidental
+          const isAbandonadoOuInativo = tempoSemAtividade >= 60 * 60 * 1000;
+
+          if (isAbandonadoOuInativo) {
+            if (ativsNaSessao.length > 0) {
+              pontoAtual.saida = new Date(ultAtivMs).toISOString();
+              pontoAtual.duracaoMin = Math.max(1, Math.round((ultAtivMs - entMs) / 60000));
+              pontoAtual.observacao = `Encerrado por inatividade (> 60 min sem movimentação).`;
+              sessoesFechadasRealtime.push(pontoAtual);
+            } else {
+              pontoAtual.saida = new Date(entMs + 60000).toISOString();
+              pontoAtual.duracaoMin = 1;
+              pontoAtual.observacao = `Duplo clique / Inativo (> 60 min sem ações).`;
+              sessoesFechadasRealtime.push(pontoAtual);
+            }
+          } else {
+            // Ponto realmente em andamento!
             sessoesAbertasRealtime.push({
               id: pontoAtual.uuidEntrada || `ao_vivo_${pontoAtual.idJogo}_${pontoAtual.entrada}`,
               id_jogo: pontoAtual.idJogo,
@@ -609,6 +689,48 @@ export default function PontoPage({
       setCarregandoSessoes(false);
     }
   }, [usuarioLogado, podeVerTodosPontos, filtroNome, filtroInicio, filtroFim]);
+
+  const handleFecharPontoAoVivo = async (ponto) => {
+    const confirmar = window.confirm(`Deseja realmente encerrar o ponto de ${ponto.nome}?`);
+    if (!confirmar) return;
+
+    try {
+      const agoraISO = new Date().toISOString();
+      const dataDiaStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+
+      if (typeof ponto.id === "number") {
+        await fecharPontoAdmin(ponto.id);
+      } else {
+        const durMin = Math.max(1, Math.round((Date.now() - new Date(ponto.entrada).getTime()) / 60000));
+        await supabase.from("ponto_horas").insert([
+          {
+            nome: ponto.nome,
+            usuario_id: ponto.usuario_id || ponto.id_jogo,
+            data_ponto: dataDiaStr,
+            entrada: ponto.entrada,
+            saida: agoraISO,
+            duracao_minutos: durMin,
+            verificado: true,
+            verificado_por: usuarioLogado?.nome || "Admin"
+          }
+        ]);
+
+        if (ponto.id_jogo) {
+          await supabase
+            .from("ponto_cidade_reds")
+            .update({ saida: agoraISO })
+            .eq("id_jogo", String(ponto.id_jogo))
+            .is("saida", null);
+        }
+      }
+
+      alert("✅ Ponto encerrado com sucesso!");
+      await carregarSessoes();
+    } catch (err) {
+      console.error("Erro ao fechar ponto ao vivo:", err);
+      alert("❌ Ocorreu um erro ao encerrar o ponto.");
+    }
+  };
 
   useEffect(() => {
     carregarSessoes();
@@ -1177,7 +1299,7 @@ export default function PontoPage({
                   {(userIsAdmin || userIsRespPonto || isAdminOuDono(usuarioLogado?.role || "")) && (
                     <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
                       <button
-                        onClick={() => fecharPontoAdmin(p.id)}
+                        onClick={() => handleFecharPontoAoVivo(p)}
                         style={{ background: "#16a34a", color: "#fff", border: "none", padding: "5px 10px", borderRadius: "7px", cursor: "pointer", fontSize: "12px", fontWeight: "700" }}
                       >
                         ✅ Fechar
