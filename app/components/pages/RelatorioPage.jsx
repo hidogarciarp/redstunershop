@@ -644,6 +644,320 @@ export default function RelatorioPage({
   const [linksCompartilhados, setLinksCompartilhados] = useState([]);
   const [gerandoLinkShare, setGerandoLinkShare] = useState(false);
   const [filtroBuscaSemSaida, setFiltroBuscaSemSaida] = useState("");
+  const [analisandoAtividades, setAnalisandoAtividades] = useState(false);
+  const [mapaAnaliseAtividades, setMapaAnaliseAtividades] = useState({});
+  const [salvandoFechamento, setSalvandoFechamento] = useState(false);
+
+  const executarAnaliseAtividadesSemSaida = async () => {
+    if (pontosSemSaidaPeriodo.length === 0) {
+      alert("Não há pontos sem saída no período selecionado.");
+      return;
+    }
+    setAnalisandoAtividades(true);
+    try {
+      const { inicio, fim } = calcularDatasPeriodo(filtroPeriodo, semanaOffset, filtroDataInicio, filtroDataFim);
+      const dataQueryInicio = inicio || "2026-01-01";
+      const dataQueryFim = fim || "2026-12-31";
+      const iniISO = new Date(`${dataQueryInicio}T00:00:00-03:00`).toISOString();
+      const dtFimObj = new Date(`${dataQueryFim}T23:59:59-03:00`);
+      dtFimObj.setDate(dtFimObj.getDate() + 1);
+      const fimISO = dtFimObj.toISOString();
+
+      const [resAud, resTun, resBanc] = await Promise.all([
+        supabase
+          .from("sessoes_ponto_auditoria_reds")
+          .select("id_jogo, nome, entrada, saida, uuid_sessao, total_tunagens, total_bancada, total_bau, detalhes_json")
+          .gte("entrada", iniISO)
+          .lte("entrada", fimISO)
+          .limit(10000),
+        supabase
+          .from("logs_tunagem")
+          .select("tecnico_id, tecnico_nome, veiculo_nome, veiculo_modelo, placa, valor_pago, timestampz, data, hora")
+          .gte("data", dataQueryInicio)
+          .lte("data", dtFimObj.toLocaleDateString("en-CA"))
+          .limit(10000),
+        supabase
+          .from("log_bancada_reds")
+          .select("id, nome, item, quantidade, valor, timestampz, data, hora")
+          .gte("data", dataQueryInicio)
+          .lte("data", dtFimObj.toLocaleDateString("en-CA"))
+          .limit(10000)
+      ]);
+
+      const auds = resAud.data || [];
+      const tuns = resTun.data || [];
+      const banc = resBanc.data || [];
+
+      const pontosPorMecanico = {};
+      pontosSemSaidaPeriodo.forEach(p => {
+        const k = String(p.idJogoExibicao || p.usuario_id || p.id || "").trim();
+        if (!pontosPorMecanico[k]) pontosPorMecanico[k] = [];
+        pontosPorMecanico[k].push(p);
+      });
+
+      Object.values(pontosPorMecanico).forEach(arr => {
+        arr.sort((a, b) => new Date(a.entrada) - new Date(b.entrada));
+      });
+
+      const novoMapa = {};
+
+      pontosSemSaidaPeriodo.forEach(p => {
+        const chave = String(p.uuid_entrada || p.uuid_sessao || `${p.idJogoExibicao}_${p.entrada}`);
+        const pEntTs = new Date(p.entrada).getTime();
+        const idVal = String(p.idJogoExibicao || p.usuario_id || p.id || "").trim();
+        const nomeNorm = (p.nomeExibicao || p.nome || "").toLowerCase().trim();
+
+        let pLimTs = pEntTs + 12 * 3600000;
+        const listaMesmoMec = pontosPorMecanico[idVal] || [];
+        const idxAtual = listaMesmoMec.findIndex(item => item.entrada === p.entrada);
+        if (idxAtual !== -1 && idxAtual + 1 < listaMesmoMec.length) {
+          const proxEntTs = new Date(listaMesmoMec[idxAtual + 1].entrada).getTime();
+          if (proxEntTs > pEntTs && proxEntTs < pLimTs) {
+            pLimTs = proxEntTs;
+          }
+        }
+
+        const ativs = [];
+
+        const aud = auds.find(a => 
+          (p.uuid_entrada && (a.uuid_sessao === p.uuid_entrada || a.uuid_entrada === p.uuid_entrada)) ||
+          (String(a.id_jogo).trim() === idVal && Math.abs(new Date(a.entrada).getTime() - pEntTs) < 180000)
+        );
+        const det = aud?.detalhes_json || {};
+
+        (det.tunagens || []).forEach(t => {
+          const ts = new Date(t.timestampz || t.timestamp || t.created_at).getTime();
+          if (ts >= pEntTs - 60000 && ts <= pLimTs) {
+            ativs.push({
+              tipo: "tunagem",
+              desc: `🚗 Tunagem: ${t.veiculo_nome || t.veiculo || "Veículo"}${t.placa ? ` (${t.placa})` : ""}`,
+              ts,
+              valor: parseFloat(t.valor_pago || t.valor) || 0
+            });
+          }
+        });
+
+        (det.bancada || []).forEach(b => {
+          const ts = new Date(b.timestampz || b.timestamp || b.created_at).getTime();
+          if (ts >= pEntTs - 60000 && ts <= pLimTs) {
+            ativs.push({
+              tipo: "bancada",
+              desc: `🛠️ Bancada: ${b.item || b.nome_item || "Peças"}${b.quantidade ? ` x${b.quantidade}` : ""}`,
+              ts,
+              valor: parseFloat(b.valor) || 0
+            });
+          }
+        });
+
+        (det.bau || []).forEach(m => {
+          const ts = new Date(m.timestampz || m.timestamp || m.created_at).getTime();
+          if (ts >= pEntTs - 60000 && ts <= pLimTs) {
+            const isRetirou = String(m.acao).toUpperCase().includes("RETIR");
+            ativs.push({
+              tipo: "bau",
+              desc: `📦 Baú: ${isRetirou ? "Retirou" : "Guardou"} ${m.item || m.nome_item || "Item"}${m.quantidade ? ` x${m.quantidade}` : ""}`,
+              ts,
+              valor: 0
+            });
+          }
+        });
+
+        tuns.forEach(t => {
+          if (String(t.tecnico_id).trim() === idVal || (t.tecnico_nome && t.tecnico_nome.toLowerCase().trim() === nomeNorm)) {
+            const ts = t.timestampz ? new Date(t.timestampz).getTime() : (t.data && t.hora ? new Date(`${t.data}T${t.hora}-03:00`).getTime() : null);
+            if (ts && ts >= pEntTs - 60000 && ts <= pLimTs) {
+              ativs.push({
+                tipo: "tunagem",
+                desc: `🚗 Tunagem: ${t.veiculo_nome || t.veiculo_modelo || "Veículo"}${t.placa ? ` (${t.placa})` : ""}`,
+                ts,
+                valor: parseFloat(t.valor_pago) || 0
+              });
+            }
+          }
+        });
+
+        banc.forEach(b => {
+          if (String(b.id).trim() === idVal || (b.nome && b.nome.toLowerCase().trim() === nomeNorm)) {
+            const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
+            if (ts && ts >= pEntTs - 60000 && ts <= pLimTs) {
+              ativs.push({
+                tipo: "bancada",
+                desc: `🛠️ Bancada: ${b.item || "Compra de Peças"}${b.quantidade ? ` x${b.quantidade}` : ""}`,
+                ts,
+                valor: parseFloat(b.valor) || 0
+              });
+            }
+          }
+        });
+
+        const dedup = [];
+        ativs.sort((a, b) => a.ts - b.ts);
+        ativs.forEach(a => {
+          if (!dedup.some(d => d.tipo === a.tipo && Math.abs(d.ts - a.ts) < 5000)) {
+            dedup.push(a);
+          }
+        });
+
+        const totalTunagens = dedup.filter(a => a.tipo === "tunagem").length;
+        const totalBancada = dedup.filter(a => a.tipo === "bancada").length;
+        const totalBau = dedup.filter(a => a.tipo === "bau").length;
+
+        if (dedup.length > 0) {
+          const last = dedup[dedup.length - 1];
+          const durMin = Math.max(0, Math.round((last.ts - pEntTs) / 60000));
+          novoMapa[chave] = {
+            temAtividades: true,
+            totalAtividades: dedup.length,
+            totalTunagens,
+            totalBancada,
+            totalBau,
+            ultimaAtividade: last,
+            saidaSugerida: new Date(last.ts).toISOString(),
+            duracaoSugeridaMin: durMin,
+            motivoSugerido: `Fechado na última atividade (${last.desc})`,
+            atividadesLista: dedup
+          };
+        } else {
+          novoMapa[chave] = {
+            temAtividades: false,
+            totalAtividades: 0,
+            totalTunagens: 0,
+            totalBancada: 0,
+            totalBau: 0,
+            ultimaAtividade: null,
+            saidaSugerida: p.entrada,
+            duracaoSugeridaMin: 0,
+            motivoSugerido: "Miss-click / Sem atividades (fechado na entrada)",
+            atividadesLista: []
+          };
+        }
+      });
+
+      setMapaAnaliseAtividades(novoMapa);
+    } catch (err) {
+      console.error("Erro ao analisar atividades:", err);
+      alert("Erro ao analisar atividades: " + err.message);
+    } finally {
+      setAnalisandoAtividades(false);
+    }
+  };
+
+  const fecharPontoIndividual = async (item) => {
+    const chave = String(item.uuid_entrada || item.uuid_sessao || `${item.idJogoExibicao}_${item.entrada}`);
+    const analise = mapaAnaliseAtividades[chave];
+    if (!analise) {
+      alert("Por favor, execute a análise de atividades primeiro.");
+      return;
+    }
+
+    const confirmMsg = analise.temAtividades
+      ? `Deseja fechar o ponto de ${item.nomeExibicao} às ${new Date(analise.saidaSugerida).toLocaleTimeString("pt-BR")} (+${fmtMin(analise.duracaoSugeridaMin)}) baseado na última atividade (${analise.ultimaAtividade.desc})?`
+      : `Nenhuma atividade detectada para ${item.nomeExibicao}. Deseja fechar o ponto com duração 0 min (mesma hora da entrada)?`;
+
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      let q = supabase.from("pontos_reds").update({
+        saida: analise.saidaSugerida,
+        tempo: analise.duracaoSugeridaMin,
+        observacao: analise.motivoSugerido
+      });
+      if (item.uuid_entrada) {
+        q = q.eq("uuid_entrada", item.uuid_entrada);
+      } else {
+        q = q.eq("id", item.id || item.usuario_id).eq("entrada", item.entrada);
+      }
+      const { error: errP } = await q;
+      if (errP) throw errP;
+
+      if (item.uuid_entrada || item.uuid_sessao) {
+        await supabase.from("sessoes_ponto_auditoria_reds").update({
+          saida: analise.saidaSugerida,
+          duracao_min: analise.duracaoSugeridaMin,
+          motivo_crash: analise.motivoSugerido
+        }).eq("uuid_sessao", item.uuid_entrada || item.uuid_sessao);
+      }
+
+      alert(`✅ Ponto de ${item.nomeExibicao} fechado com sucesso!`);
+      aplicarFiltros();
+    } catch (err) {
+      console.error("Erro ao fechar ponto:", err);
+      alert("Erro ao fechar ponto: " + err.message);
+    }
+  };
+
+  const fecharTodosPontosAnalisados = async () => {
+    const chaves = Object.keys(mapaAnaliseAtividades);
+    if (chaves.length === 0) {
+      alert("Execute a análise de atividades primeiro!");
+      return;
+    }
+
+    const comAtiv = Object.values(mapaAnaliseAtividades).filter(a => a.temAtividades).length;
+    const semAtiv = chaves.length - comAtiv;
+
+    const confirmMsg = `⚠️ Deseja fechar todos os ${chaves.length} pontos sem saída analisados?\n\n` +
+      `• ${comAtiv} pontos serão fechados no horário exato da última atividade realizada.\n` +
+      `• ${semAtiv} pontos sem atividades serão finalizados com 0 min (miss-clicks).\n\n` +
+      `Esta ação atualizará o banco de dados e recalculará as horas no relatório.`;
+
+    if (!confirm(confirmMsg)) return;
+
+    setSalvandoFechamento(true);
+    try {
+      const lotePontos = [];
+      pontosSemSaidaPeriodo.forEach(p => {
+        const chave = String(p.uuid_entrada || p.uuid_sessao || `${p.idJogoExibicao}_${p.entrada}`);
+        const analise = mapaAnaliseAtividades[chave];
+        if (analise) {
+          lotePontos.push({
+            p,
+            saida: analise.saidaSugerida,
+            tempo: analise.duracaoSugeridaMin,
+            observacao: analise.motivoSugerido,
+            uuid: p.uuid_entrada || p.uuid_sessao,
+            id: p.id || p.usuario_id,
+            entrada: p.entrada
+          });
+        }
+      });
+
+      for (let i = 0; i < lotePontos.length; i += 25) {
+        const slice = lotePontos.slice(i, i + 25);
+        await Promise.all(
+          slice.map(async (item) => {
+            let q = supabase.from("pontos_reds").update({
+              saida: item.saida,
+              tempo: item.tempo,
+              observacao: item.observacao
+            });
+            if (item.uuid) {
+              q = q.eq("uuid_entrada", item.uuid);
+            } else {
+              q = q.eq("id", item.id).eq("entrada", item.entrada);
+            }
+            await q;
+
+            if (item.uuid) {
+              await supabase.from("sessoes_ponto_auditoria_reds").update({
+                saida: item.saida,
+                duracao_min: item.tempo,
+                motivo_crash: item.observacao
+              }).eq("uuid_sessao", item.uuid);
+            }
+          })
+        );
+      }
+
+      alert(`🎉 Sucesso! Todos os ${lotePontos.length} pontos foram fechados com sucesso no banco de dados!`);
+      aplicarFiltros();
+    } catch (err) {
+      console.error("Erro ao fechar todos os pontos:", err);
+      alert("Erro ao fechar pontos em lote: " + err.message);
+    } finally {
+      setSalvandoFechamento(false);
+    }
+  };
 
   const abrirAuditoriaSessao = async (sessao) => {
     setSessaoAuditModal(sessao);
@@ -3289,21 +3603,72 @@ export default function RelatorioPage({
               <div style={{ ...styles.whiteCard, padding: "14px 18px", borderLeft: "3px solid #22c55e", textAlign: "center" }}>
                 <div style={{ fontSize: "22px" }}>🛠️</div>
                 <div style={{ fontSize: "22px", fontWeight: "800", color: "#22c55e" }}>
-                  {pontosSemSaidaPeriodo.filter(p => {
-                    const totTun = p.totalTunagens || (p.detalhes?.tunagens ? p.detalhes.tunagens.length : 0);
-                    const totBanc = p.totalBancada || (p.detalhes?.bancada ? p.detalhes.bancada.length : 0);
-                    const totBau = p.totalBau || (p.detalhes?.bau ? p.detalhes.bau.length : 0);
-                    return totTun > 0 || totBanc > 0 || totBau > 0;
-                  }).length}
+                  {Object.keys(mapaAnaliseAtividades).length > 0
+                    ? Object.values(mapaAnaliseAtividades).filter(a => a.temAtividades).length
+                    : pontosSemSaidaPeriodo.filter(p => {
+                        const totTun = p.totalTunagens || (p.detalhes?.tunagens ? p.detalhes.tunagens.length : 0);
+                        const totBanc = p.totalBancada || (p.detalhes?.bancada ? p.detalhes.bancada.length : 0);
+                        const totBau = p.totalBau || (p.detalhes?.bau ? p.detalhes.bau.length : 0);
+                        return totTun > 0 || totBanc > 0 || totBau > 0;
+                      }).length}
                 </div>
                 <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>Com Atividades Registradas</div>
               </div>
             </div>
           )}
 
+          {/* BANNER DE RESULTADO DA ANÁLISE (QUANDO EXECUTADA) */}
+          {Object.keys(mapaAnaliseAtividades).length > 0 && (
+            <div style={{
+              padding: "16px 22px",
+              background: "linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(59, 130, 246, 0.08))",
+              border: "1.5px solid rgba(56, 189, 248, 0.35)",
+              borderRadius: "14px",
+              marginBottom: "20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "14px",
+              boxShadow: "0 10px 25px -5px rgba(14, 165, 233, 0.15)"
+            }}>
+              <div style={{ maxWidth: "650px" }}>
+                <div style={{ color: "#38bdf8", fontWeight: "800", fontSize: "14px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span>⚡ Análise de Atividades Concluída!</span>
+                </div>
+                <div style={{ color: theme.text, fontSize: "12px", marginTop: "4px", lineHeight: "1.5" }}>
+                  Identificamos <b>{Object.values(mapaAnaliseAtividades).filter(a => a.temAtividades).length} pontos com atividades</b> (com saída sugerida pelo horário da última tunagem/bancada/baú) e <b>{Object.values(mapaAnaliseAtividades).filter(a => !a.temAtividades).length} pontos sem atividades</b> (miss-clicks de 0 minutos).
+                </div>
+              </div>
+
+              <button
+                onClick={fecharTodosPontosAnalisados}
+                disabled={salvandoFechamento}
+                style={{
+                  background: "linear-gradient(135deg, #10b981, #059669)",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "10px",
+                  padding: "10px 20px",
+                  fontSize: "12px",
+                  fontWeight: "800",
+                  cursor: salvandoFechamento ? "not-allowed" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  boxShadow: "0 4px 14px rgba(16, 185, 129, 0.3)",
+                  opacity: salvandoFechamento ? 0.7 : 1,
+                  transition: "all 0.15s"
+                }}
+              >
+                {salvandoFechamento ? "⏳ Fechando Pontos no Banco..." : "💾 Fechar Todos os Pontos na Última Atividade"}
+              </button>
+            </div>
+          )}
+
           {/* TABELA DE PONTOS SEM SAÍDA */}
           <div style={{ ...styles.whiteCard, padding: "0", overflow: "hidden" }}>
-            {/* Header da Tabela com Barra de Pesquisa */}
+            {/* Header da Tabela com Barra de Pesquisa e Botão de Análise */}
             <div style={{ padding: "18px 22px", borderBottom: `1px solid ${theme.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", background: theme.card2 }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "800", color: theme.text, display: "flex", alignItems: "center", gap: "8px" }}>
@@ -3317,16 +3682,40 @@ export default function RelatorioPage({
                 </p>
               </div>
 
-              {/* Campo de Busca */}
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              {/* Ações e Campo de Busca */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                <button
+                  onClick={executarAnaliseAtividadesSemSaida}
+                  disabled={analisandoAtividades || pontosSemSaidaPeriodo.length === 0}
+                  style={{
+                    background: "linear-gradient(135deg, #0ea5e9, #2563eb)",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "8px",
+                    padding: "8px 16px",
+                    fontSize: "12px",
+                    fontWeight: "800",
+                    cursor: (analisandoAtividades || pontosSemSaidaPeriodo.length === 0) ? "not-allowed" : "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    boxShadow: "0 4px 12px rgba(14, 165, 233, 0.3)",
+                    opacity: (analisandoAtividades || pontosSemSaidaPeriodo.length === 0) ? 0.6 : 1,
+                    transition: "all 0.2s"
+                  }}
+                  title="Cruza registros de tunagem, compras de bancada e movimentações de baú para encontrar a última atividade deste expediente"
+                >
+                  {analisandoAtividades ? "⏳ Analisando Atividades..." : "⚡ Analisar Pontos & Identificar Última Atividade"}
+                </button>
+
                 <input
                   type="text"
-                  placeholder="🔎 Filtrar mecânico ou passaporte..."
+                  placeholder="🔎 Filtrar mecânico..."
                   value={filtroBuscaSemSaida}
                   onChange={(e) => setFiltroBuscaSemSaida(e.target.value)}
                   style={{
                     ...styles.input,
-                    width: "240px",
+                    width: "190px",
                     padding: "7px 12px",
                     fontSize: "12px",
                     height: "34px",
@@ -3391,15 +3780,18 @@ export default function RelatorioPage({
                       <tr style={{ background: theme.card2, borderBottom: `1px solid ${theme.border}`, textAlign: "left" }}>
                         <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase", width: "40px" }}>#</th>
                         <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Mecânico / Colaborador</th>
-                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Entrada Registrada</th>
-                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Saída Registrada</th>
-                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Diagnóstico / Motivo</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Entrada</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Saída Atual</th>
                         <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Atividades no Ponto</th>
+                        <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase" }}>Última Atividade / Saída Sugerida</th>
                         <th style={{ padding: "12px 14px", fontSize: "11px", color: theme.subtext, textTransform: "uppercase", textAlign: "right" }}>Ações</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filtrados.map((item, idx) => {
+                        const chave = String(item.uuid_entrada || item.uuid_sessao || `${item.idJogoExibicao}_${item.entrada}`);
+                        const analise = mapaAnaliseAtividades[chave];
+
                         const dEntrada = new Date(item.entrada);
                         const dSaida = item.saida ? new Date(item.saida) : null;
                         const dataEntradaStr = !isNaN(dEntrada.getTime()) 
@@ -3409,10 +3801,10 @@ export default function RelatorioPage({
                           ? dSaida.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", second: "2-digit" })
                           : null;
 
-                        const totTun = item.totalTunagens || (item.detalhes?.tunagens ? item.detalhes.tunagens.length : 0);
-                        const totBanc = item.totalBancada || (item.detalhes?.bancada ? item.detalhes.bancada.length : 0);
-                        const totBau = item.totalBau || (item.detalhes?.bau ? item.detalhes.bau.length : 0);
-                        const temAtividades = totTun > 0 || totBanc > 0 || totBau > 0;
+                        const totTun = analise ? analise.totalTunagens : (item.totalTunagens || (item.detalhes?.tunagens ? item.detalhes.tunagens.length : 0));
+                        const totBanc = analise ? analise.totalBancada : (item.totalBancada || (item.detalhes?.bancada ? item.detalhes.bancada.length : 0));
+                        const totBau = analise ? analise.totalBau : (item.totalBau || (item.detalhes?.bau ? item.detalhes.bau.length : 0));
+                        const temAtividades = analise ? analise.temAtividades : (totTun > 0 || totBanc > 0 || totBau > 0);
 
                         const cargoTag = getCargoTag(item.cargoExibicao);
 
@@ -3467,7 +3859,7 @@ export default function RelatorioPage({
                               </div>
                             </td>
 
-                            {/* SAÍDA */}
+                            {/* SAÍDA ATUAL */}
                             <td style={{ padding: "12px 14px", fontSize: "12px" }}>
                               {dataSaidaStr ? (
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -3493,21 +3885,6 @@ export default function RelatorioPage({
                               )}
                             </td>
 
-                            {/* DIAGNÓSTICO */}
-                            <td style={{ padding: "12px 14px", fontSize: "12px" }}>
-                              <div style={{
-                                background: "rgba(255, 255, 255, 0.03)",
-                                border: `1px solid ${theme.border}44`,
-                                padding: "4px 8px",
-                                borderRadius: "6px",
-                                fontSize: "11px",
-                                color: theme.subtext,
-                                maxWidth: "260px"
-                              }}>
-                                {item.motivoSemSaida || "Sem saída registrada"}
-                              </div>
-                            </td>
-
                             {/* ATIVIDADES NO PONTO */}
                             <td style={{ padding: "12px 14px" }}>
                               <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", alignItems: "center" }}>
@@ -3527,14 +3904,67 @@ export default function RelatorioPage({
                                   </span>
                                 )}
                                 {!temAtividades && (
-                                  <span style={{ color: theme.subtext, fontSize: "11px" }}>Nenhuma</span>
+                                  <span style={{ color: theme.subtext, fontSize: "11px" }}>— Nenhuma</span>
                                 )}
                               </div>
                             </td>
 
+                            {/* ÚLTIMA ATIVIDADE / SAÍDA SUGERIDA */}
+                            <td style={{ padding: "12px 14px", fontSize: "12px" }}>
+                              {analise ? (
+                                analise.temAtividades ? (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <span style={{ background: "rgba(34, 197, 94, 0.15)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.3)", padding: "1px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "800" }}>
+                                        🕒 {new Date(analise.saidaSugerida).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo" })}
+                                      </span>
+                                      <span style={{ background: "rgba(56, 189, 248, 0.15)", color: "#38bdf8", border: "1px solid rgba(56, 189, 248, 0.3)", padding: "1px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "800" }}>
+                                        +{fmtMin(analise.duracaoSugeridaMin)}
+                                      </span>
+                                    </div>
+                                    <div style={{ fontSize: "11px", color: theme.text, fontWeight: "600", maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={analise.ultimaAtividade.desc}>
+                                      {analise.ultimaAtividade.desc}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <span style={{ background: "rgba(255, 255, 255, 0.05)", color: theme.subtext, border: `1px solid ${theme.border}44`, padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: "700" }}>
+                                      ⚪ 0 min (Miss-click / Sem ativ.)
+                                    </span>
+                                  </div>
+                                )
+                              ) : (
+                                <span style={{ color: theme.subtext, fontSize: "11px", fontStyle: "italic", opacity: 0.7 }}>
+                                  Clique em "Analisar Pontos" acima
+                                </span>
+                              )}
+                            </td>
+
                             {/* AÇÕES */}
                             <td style={{ padding: "12px 14px", textAlign: "right" }}>
-                              <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px" }}>
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px", alignItems: "center" }}>
+                                {analise && (
+                                  <button
+                                    onClick={() => fecharPontoIndividual(item)}
+                                    style={{
+                                      background: analise.temAtividades ? "rgba(34, 197, 94, 0.15)" : "rgba(255, 255, 255, 0.05)",
+                                      border: `1px solid ${analise.temAtividades ? "#22c55e" : theme.border}`,
+                                      color: analise.temAtividades ? "#4ade80" : theme.subtext,
+                                      padding: "5px 10px",
+                                      borderRadius: "6px",
+                                      fontSize: "11px",
+                                      fontWeight: "800",
+                                      cursor: "pointer",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "4px",
+                                      transition: "all 0.15s"
+                                    }}
+                                    title="Fechar este ponto com a saída sugerida calculada"
+                                  >
+                                    💾 Fechar
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => abrirAuditoriaSessao(item)}
                                   style={{
