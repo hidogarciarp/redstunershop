@@ -6023,6 +6023,7 @@ export default function Home() {
             cliente={cliente}
             setCliente={setCliente}
             nomeMecanico={nomeMecanico}
+            setNomeMecanico={setNomeMecanico}
             autorizadoPor={autorizadoPor}
             setAutorizadoPor={setAutorizadoPor}
             camaleao1={camaleao1}
@@ -6087,6 +6088,7 @@ export default function Home() {
             setArquivoImagem={setArquivoImagem}
             setImagemPreview2={setImagemPreview2}
             setArquivoImagem2={setArquivoImagem2}
+            tunagemRealtimeGlobal={tunagemRealtimeGlobal}
           />
         )}
       </main>

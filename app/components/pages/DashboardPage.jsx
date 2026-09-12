@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { REGRAS_PRECOS, TABELA_PRECOS } from "../../utils/constants";
 import { supabase } from "../../utils/supabaseClient";
 import { analisarServicoTunagem, TABELA_CAMALEAO } from "../../utils/calculadoraTunagem";
+import { isAdminOuDono } from "../../utils/helpers";
 
 export default function DashboardPage({
   styles,
@@ -11,6 +12,7 @@ export default function DashboardPage({
   cliente,
   setCliente,
   nomeMecanico,
+  setNomeMecanico,
   autorizadoPor,
   setAutorizadoPor,
   camaleao1,
@@ -75,6 +77,7 @@ export default function DashboardPage({
   setArquivoImagem,
   setImagemPreview2,
   setArquivoImagem2,
+  tunagemRealtimeGlobal,
 }) {
   const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
   const isBanido = !!banInfo;
@@ -86,15 +89,35 @@ export default function DashboardPage({
   }, [avisoTopo?.id]);
 
   // ===== AUTO-PREENCHIMENTO VIA LOGS DE TUNAGEM =====
+  const isDonoAdmin = isAdminOuDono(usuarioLogado?.role) || usuarioLogado?.role?.includes("dono") || usuarioLogado?.role?.includes("admin");
+  const [verTodosMecanicos, setVerTodosMecanicos] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("reds_dashboard_ver_todos_mecanicos") === "true";
+    }
+    return false;
+  });
+
+  const toggleVerTodosMecanicos = () => {
+    setVerTodosMecanicos((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        localStorage.setItem("reds_dashboard_ver_todos_mecanicos", String(next));
+      }
+      return next;
+    });
+  };
+
   const [logsRecentes, setLogsRecentes] = useState([]);
   const [carregandoLogs, setCarregandoLogs] = useState(false);
   const [logSelecionadoUuid, setLogSelecionadoUuid] = useState("");
   const [logAplicadoInfo, setLogAplicadoInfo] = useState(null);
 
-  const carregarLogsRecentes = useCallback(async () => {
+  const carregarLogsRecentes = useCallback(async (mostrarTodos = verTodosMecanicos) => {
     const uId = String(usuarioLogado?.id || usuarioLogado?.id_jogo || "");
     const uNome = (usuarioLogado?.nome || nomeMecanico || "").trim();
-    if (!uId && !uNome) return;
+    const canSeeAll = isDonoAdmin && mostrarTodos;
+
+    if (!canSeeAll && !uId && !uNome) return;
 
     setCarregandoLogs(true);
     try {
@@ -103,14 +126,16 @@ export default function DashboardPage({
         .select("*")
         .order("data", { ascending: false })
         .order("hora", { ascending: false })
-        .limit(25);
+        .limit(30);
 
-      if (uId && uNome) {
-        query = query.or(`tecnico_id.eq.${uId},tecnico_nome.ilike.%${uNome}%`);
-      } else if (uId) {
-        query = query.eq("tecnico_id", uId);
-      } else if (uNome) {
-        query = query.ilike("tecnico_nome", `%${uNome}%`);
+      if (!canSeeAll) {
+        if (uId && uNome) {
+          query = query.or(`tecnico_id.eq.${uId},tecnico_nome.ilike.%${uNome}%`);
+        } else if (uId) {
+          query = query.eq("tecnico_id", uId);
+        } else if (uNome) {
+          query = query.ilike("tecnico_nome", `%${uNome}%`);
+        }
       }
 
       const { data, error } = await query;
@@ -122,10 +147,10 @@ export default function DashboardPage({
     } finally {
       setCarregandoLogs(false);
     }
-  }, [usuarioLogado, nomeMecanico]);
+  }, [usuarioLogado, nomeMecanico, isDonoAdmin, verTodosMecanicos]);
 
   useEffect(() => {
-    carregarLogsRecentes();
+    carregarLogsRecentes(verTodosMecanicos);
 
     const channel = supabase
       .channel("dashboard_logs_tunagem_live")
@@ -139,10 +164,12 @@ export default function DashboardPage({
             const logTecId = String(payload.new.tecnico_id || "");
             const logTecNome = (payload.new.tecnico_nome || "").toLowerCase().trim();
 
-            if ((uId && logTecId === uId) || (uNome && logTecNome.includes(uNome))) {
+            const isMeuLog = (uId && logTecId === uId) || (uNome && logTecNome.includes(uNome));
+
+            if (isMeuLog || (isDonoAdmin && verTodosMecanicos)) {
               setLogsRecentes((prev) => {
                 const filtered = prev.filter((l) => l.uuid !== payload.new.uuid);
-                return [payload.new, ...filtered].slice(0, 25);
+                return [payload.new, ...filtered].slice(0, 30);
               });
             }
           }
@@ -153,7 +180,22 @@ export default function DashboardPage({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [carregarLogsRecentes, usuarioLogado, nomeMecanico]);
+  }, [carregarLogsRecentes, usuarioLogado, nomeMecanico, isDonoAdmin, verTodosMecanicos]);
+
+  // Quando uma notificação global de novo serviço chega em tempo real
+  useEffect(() => {
+    if (tunagemRealtimeGlobal?.log) {
+      const novoLog = tunagemRealtimeGlobal.log;
+      const isMeu = tunagemRealtimeGlobal.isMeu;
+
+      if (isMeu || (isDonoAdmin && verTodosMecanicos)) {
+        setLogsRecentes((prev) => {
+          const filtered = prev.filter((l) => l.uuid !== novoLog.uuid);
+          return [novoLog, ...filtered].slice(0, 30);
+        });
+      }
+    }
+  }, [tunagemRealtimeGlobal, isDonoAdmin, verTodosMecanicos]);
 
   const aplicarLogNoFormulario = (uuidEscolhido) => {
     setLogSelecionadoUuid(uuidEscolhido);
@@ -335,12 +377,17 @@ export default function DashboardPage({
       return next;
     });
 
+    if (typeof setNomeMecanico === "function" && log.tecnico_nome) {
+      setNomeMecanico(log.tecnico_nome);
+    }
+
     setLogAplicadoInfo({
       veiculo: log.veiculo_nome || log.veiculo_modelo || "Veículo",
       placa: log.placa || "Sem Placa",
       hora: log.hora ? log.hora.slice(0, 5) : "",
       valorPago: log.valor_pago || 0,
       itensQtd: itens.length,
+      tecnicoNome: log.tecnico_nome || "",
     });
   };
 
@@ -349,6 +396,9 @@ export default function DashboardPage({
     setLogAplicadoInfo(null);
     setPassaporte("");
     setCliente("");
+    if (typeof setNomeMecanico === "function" && usuarioLogado?.nome) {
+      setNomeMecanico(usuarioLogado.nome);
+    }
     setValorDigitadoEstetica("");
     setCamaleao1(false);
     setCamaleao2(false);
@@ -390,7 +440,7 @@ export default function DashboardPage({
             transition: "all 0.25s ease",
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "12px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                 <span style={{ fontSize: "16px" }}>⚡</span>
                 <strong style={{ fontSize: "13.5px", fontWeight: "800", color: theme.text }}>
                   Pré-Preenchimento Automático via Log de Tunagem
@@ -407,27 +457,56 @@ export default function DashboardPage({
                 </span>
               </div>
 
-              <button
-                type="button"
-                onClick={carregarLogsRecentes}
-                disabled={carregandoLogs}
-                style={{
-                  background: "transparent",
-                  border: `1px solid ${theme.border}`,
-                  color: theme.subtext,
-                  padding: "5px 12px",
-                  borderRadius: "8px",
-                  fontSize: "12px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                }}
-                title="Buscar novos logs agora"
-              >
-                <span style={{ display: "inline-block", animation: carregandoLogs ? "spin 1s infinite linear" : "none" }}>🔄</span>
-                {carregandoLogs ? "Buscando..." : "Atualizar"}
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                {isDonoAdmin && (
+                  <button
+                    type="button"
+                    onClick={toggleVerTodosMecanicos}
+                    style={{
+                      background: verTodosMecanicos 
+                        ? (isDarkMode ? "rgba(139, 92, 246, 0.25)" : "rgba(139, 92, 246, 0.15)")
+                        : (isDarkMode ? "rgba(255, 255, 255, 0.05)" : "rgba(0, 0, 0, 0.04)"),
+                      border: `1px solid ${verTodosMecanicos ? "#8b5cf6" : theme.border}`,
+                      color: verTodosMecanicos ? (isDarkMode ? "#c084fc" : "#7c3aed") : theme.subtext,
+                      padding: "5px 12px",
+                      borderRadius: "8px",
+                      fontSize: "12px",
+                      fontWeight: "700",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      transition: "all 0.2s ease",
+                    }}
+                    title={verTodosMecanicos ? "Filtrando serviços de toda a oficina (Clique para ver apenas os seus)" : "Filtrando apenas seus serviços (Clique para ver de toda a oficina)"}
+                  >
+                    <span>{verTodosMecanicos ? "👥" : "👤"}</span>
+                    <span>{verTodosMecanicos ? "Todos os Mecânicos" : "Apenas Meus"}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => carregarLogsRecentes(verTodosMecanicos)}
+                  disabled={carregandoLogs}
+                  style={{
+                    background: "transparent",
+                    border: `1px solid ${theme.border}`,
+                    color: theme.subtext,
+                    padding: "5px 12px",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                  title="Buscar novos logs agora"
+                >
+                  <span style={{ display: "inline-block", animation: carregandoLogs ? "spin 1s infinite linear" : "none" }}>🔄</span>
+                  {carregandoLogs ? "Buscando..." : "Atualizar"}
+                </button>
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
@@ -452,14 +531,25 @@ export default function DashboardPage({
                   {carregandoLogs
                     ? "Carregando serviços recentes..."
                     : logsRecentes.length === 0
-                    ? "Nenhum log recente encontrado para o seu mecânico"
+                    ? (verTodosMecanicos
+                        ? "Nenhum log recente encontrado na oficina"
+                        : "Nenhum log recente encontrado para o seu mecânico")
                     : "⚡ Selecione um serviço recente para pré-preencher o formulário..."}
                 </option>
-                {logsRecentes.map((l) => (
-                  <option key={l.uuid} value={l.uuid}>
-                    [{l.hora ? l.hora.slice(0, 5) : ""}] Placa: {l.placa || "S/ Placa"} • {l.veiculo_nome || "Veículo"} • R$ {Number(l.valor_pago || 0).toLocaleString("pt-BR")} ({l.dono_nome || `ID #${l.dono_id}`})
-                  </option>
-                ))}
+                {logsRecentes.map((l) => {
+                  const hora = l.hora ? l.hora.slice(0, 5) : "";
+                  const placa = l.placa || "S/ Placa";
+                  const veiculo = l.veiculo_nome || l.veiculo_modelo || "Veículo";
+                  const valor = Number(l.valor_pago || 0).toLocaleString("pt-BR");
+                  const dono = l.dono_nome || (l.dono_id ? `ID #${l.dono_id}` : "Cliente");
+                  const mecanicoInfo = (isDonoAdmin && verTodosMecanicos && l.tecnico_nome) ? ` — 🧑‍🔧 ${l.tecnico_nome}` : "";
+
+                  return (
+                    <option key={l.uuid} value={l.uuid}>
+                      [{hora}] Placa: {placa} • {veiculo} • R$ {valor} ({dono}){mecanicoInfo}
+                    </option>
+                  );
+                })}
               </select>
 
               {logAplicadoInfo && (
@@ -506,6 +596,9 @@ export default function DashboardPage({
                   <span>
                     Pré-preenchido com sucesso: <b>{logAplicadoInfo.veiculo}</b> (Placa: <b>{logAplicadoInfo.placa}</b>)
                   </span>
+                  {logAplicadoInfo.tecnicoNome && (
+                    <span style={{ opacity: 0.9 }}>• 🧑‍🔧 <b>{logAplicadoInfo.tecnicoNome}</b></span>
+                  )}
                   <span style={{ opacity: 0.85 }}>• Custo Painel: R$ {logAplicadoInfo.valorPago.toLocaleString("pt-BR")}</span>
                   <span style={{ opacity: 0.85 }}>• {logAplicadoInfo.itensQtd} itens detectados</span>
                 </div>
