@@ -367,68 +367,43 @@ async function conciliarPontos(janela) {
   const novosPontos = [];
 
   for (const [id, logs] of Object.entries(eventosPorJogador)) {
-    const uuidsMissClickUsados = new Set();
+    // Ordenar cronologicamente garantindo que, em caso de mesmo timestamp exato, a 'saida' venha ANTES da 'entrada'
+    // para fechar a sessão anterior antes de processar um eventual duplo-clique acidental de entrada
+    logs.sort((a, b) => {
+      const diff = new Date(a.timestampz).getTime() - new Date(b.timestampz).getTime();
+      if (diff !== 0) return diff;
+      if (a.tipo === "saida" && b.tipo === "entrada") return -1;
+      if (a.tipo === "entrada" && b.tipo === "saida") return 1;
+      return 0;
+    });
 
-    // 1. Isolar Miss-Clicks (<= 10s)
-    for (let idxE = 0; idxE < logs.length; idxE++) {
-      const evE = logs[idxE];
-      if (evE.tipo !== "entrada") continue;
-
-      const tE = new Date(evE.timestampz).getTime();
-      let melhorSaida = null;
-      let menorDiff = Infinity;
-
-      for (let idxS = 0; idxS < logs.length; idxS++) {
-        const evS = logs[idxS];
-        if (evS.tipo !== "saida" || uuidsMissClickUsados.has(evS.uuid)) continue;
-
-        const tS = new Date(evS.timestampz).getTime();
-        const diff = tS - tE;
-
-        if (diff >= 0 && diff <= 10000 && diff < menorDiff) {
-          menorDiff = diff;
-          melhorSaida = evS;
-        }
-      }
-
-      if (melhorSaida) {
-        uuidsMissClickUsados.add(melhorSaida.uuid);
-        uuidsMissClickUsados.add(evE.uuid);
-
-        novosPontos.push({
-          uuid_entrada: evE.uuid,
-          uuid_saida: melhorSaida.uuid,
-          entrada: evE.timestampz,
-          saida: melhorSaida.timestampz,
-          tempo: 0,
-          id: evE.id,
-          nome: evE.nome,
-          observacao: "Miss-Click / Ponto instantâneo (≤ 10s)"
-        });
-      }
-    }
-
-    // 2. Pareamento do Fluxo Principal
-    const logsRestantes = logs.filter(ev => !uuidsMissClickUsados.has(ev.uuid));
-
+    let ultimaSaidaTs = null;
     let i = 0;
-    while (i < logsRestantes.length) {
-      const atual = logsRestantes[i];
+    while (i < logs.length) {
+      const atual = logs[i];
 
       if (atual.tipo === "entrada") {
+        const dataEntrada = new Date(atual.timestampz);
+        const tEntrada = dataEntrada.getTime();
+
+        // Se esta entrada aconteceu no mesmo timestamp exato (ou até 5s) de uma saída que acabou de fechar a sessão anterior,
+        // trata-se de um duplo clique acidental no botão de bater ponto na saída. Descartar entrada fantasma!
+        if (ultimaSaidaTs && Math.abs(tEntrada - ultimaSaidaTs) <= 5000) {
+          i++;
+          continue;
+        }
+
         let saidaLog = null;
         let j = i + 1;
-        while (j < logsRestantes.length) {
-          if (logsRestantes[j].tipo === "entrada") break;
-          if (logsRestantes[j].tipo === "saida") {
-            saidaLog = logsRestantes[j];
+        while (j < logs.length) {
+          if (logs[j].tipo === "entrada") break;
+          if (logs[j].tipo === "saida") {
+            saidaLog = logs[j];
             break;
           }
           j++;
         }
 
-        const dataEntrada = new Date(atual.timestampz);
-        const tEntrada = dataEntrada.getTime();
         const atividadesFunc = atividadesPorJogador[String(atual.id)] || [];
 
         if (saidaLog) {
@@ -436,13 +411,7 @@ async function conciliarPontos(janela) {
           const tSaida = dataSaida.getTime();
           const tempoMinutos = Math.max(0, Math.round((tSaida - tEntrada) / 60000));
 
-          // Auditoria para sessões longas (> 2 horas): exige comprovação em Bancada ou Tunagem
-          let temAtividadeValida = true;
-          if (tempoMinutos > 120) {
-            temAtividadeValida = atividadesFunc.some(a => a.timestamp >= tEntrada && a.timestamp <= tSaida);
-          }
-
-          if (tempoMinutos <= 720 && temAtividadeValida) {
+          if (tempoMinutos <= 720) {
             novosPontos.push({
               uuid_entrada: atual.uuid,
               uuid_saida: saidaLog.uuid,
@@ -451,8 +420,9 @@ async function conciliarPontos(janela) {
               tempo: tempoMinutos,
               id: atual.id,
               nome: atual.nome,
-              observacao: null
+              observacao: tempoMinutos <= 0 ? "Miss-Click / Ponto instantâneo (≤ 10s)" : null
             });
+            ultimaSaidaTs = tSaida;
             i = j + 1;
             continue;
           }
@@ -460,8 +430,8 @@ async function conciliarPontos(janela) {
 
         // Sem saída válida oficial:
         // Caso A: Próxima entrada em até 1 hora (reconexão rápida pós-crash)
-        if (j < logsRestantes.length && logsRestantes[j].tipo === "entrada") {
-          const proximaEntrada = logsRestantes[j];
+        if (j < logs.length && logs[j].tipo === "entrada") {
+          const proximaEntrada = logs[j];
           const dataProximaEntrada = new Date(proximaEntrada.timestampz);
           const diffMinutos = Math.max(0, Math.round((dataProximaEntrada - dataEntrada) / 60000));
           
@@ -482,8 +452,8 @@ async function conciliarPontos(janela) {
         }
 
         // Caso B: Fechar pela última atividade em Bancada ou Tunagem (até 12h após a entrada)
-        const tLimite = (j < logsRestantes.length && logsRestantes[j].tipo === "entrada")
-          ? Math.min(tEntrada + 12 * 3600000, new Date(logsRestantes[j].timestampz).getTime())
+        const tLimite = (j < logs.length && logs[j].tipo === "entrada")
+          ? Math.min(tEntrada + 12 * 3600000, new Date(logs[j].timestampz).getTime())
           : (tEntrada + 12 * 3600000);
         const ativsValidas = atividadesFunc.filter(a => a.timestamp >= tEntrada && a.timestamp <= tLimite);
 
@@ -508,7 +478,7 @@ async function conciliarPontos(janela) {
         // Caso C: Ponto sem saída e sem atividade comprovada
         // Se a entrada foi há menos de 60 minutos e não há próximo evento, pode ser ponto em andamento ao vivo
         const agoraMs = Date.now();
-        const isUltimoEvento = (i === logsRestantes.length - 1);
+        const isUltimoEvento = (i === logs.length - 1);
         const isRecente = (agoraMs - tEntrada) < 60 * 60 * 1000;
 
         if (isUltimoEvento && isRecente) {

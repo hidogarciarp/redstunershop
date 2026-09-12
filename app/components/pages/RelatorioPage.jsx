@@ -392,15 +392,20 @@ export default function RelatorioPage({
       // Unir as sessões de ponto_cidade_reds com as sessões auditadas sem perder nada
       const mapaLogs = new Map();
 
-      // 1. Insere as auditadas
+      // 1. Insere as auditadas (unificando por colaborador e entrada)
       formatadosAud.forEach((aud) => {
-        const key = String(aud.uuid_entrada || aud.uuid_sessao || `${aud.id_jogo}_${aud.entrada}`);
-        mapaLogs.set(key, aud);
+        const idColab = String(aud.id_jogo || aud.usuario_id || "");
+        const key = idColab && aud.entrada ? `${idColab}_${aud.entrada}` : String(aud.uuid_entrada || aud.uuid_sessao);
+        const existente = mapaLogs.get(key);
+        if (!existente || (aud.total_tunagens || aud.total_bancada || aud.total_bau)) {
+          mapaLogs.set(key, aud);
+        }
       });
 
       // 2. Mescla as do ponto_cidade_reds
       logsPontoCidade.forEach((reg) => {
-        const key = String(reg.uuid_entrada || `${reg.id_jogo || reg.id}_${reg.entrada}`);
+        const idColab = String(reg.id_jogo || reg.usuario_id || reg.id || "");
+        const key = idColab && reg.entrada ? `${idColab}_${reg.entrada}` : String(reg.uuid_entrada);
         const existente = mapaLogs.get(key);
         if (!existente) {
           mapaLogs.set(key, reg);
