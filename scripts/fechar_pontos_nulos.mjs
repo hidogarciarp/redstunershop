@@ -4,8 +4,8 @@ import path from "node:path";
 
 // ===== Carregar Variáveis de Ambiente =====
 const CONFIG = {
-  supabaseUrl: "https://prperurjtvayjrazdxvh.supabase.co",
-  supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY || ""
+  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL || "https://prperurjtvayjrazdxvh.supabase.co",
+  supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 };
 
 try {
@@ -17,8 +17,13 @@ try {
     if (urlMatch) CONFIG.supabaseUrl = urlMatch[1].trim();
     if (keyMatch) CONFIG.supabaseKey = keyMatch[1].trim();
   }
+  if (!CONFIG.supabaseKey && fs.existsSync(".env.local")) {
+    const content = fs.readFileSync(".env.local", "utf8");
+    const anonMatch = content.match(/NEXT_PUBLIC_SUPABASE_ANON_KEY\s*=\s*(.+)/);
+    if (anonMatch) CONFIG.supabaseKey = anonMatch[1].trim();
+  }
 } catch (e) {
-  console.log("Aviso ao carregar chaves do .env.local do bot, usando padrão.");
+  console.log("Aviso ao carregar chaves do .env.local, usando padrão.");
 }
 
 const supabase = createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey);

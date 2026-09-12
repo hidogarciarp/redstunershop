@@ -859,8 +859,7 @@ export default function RelatorioPage({
     try {
       let q = supabase.from("pontos_reds").update({
         saida: analise.saidaSugerida,
-        tempo: analise.duracaoSugeridaMin,
-        observacao: analise.motivoSugerido
+        tempo: analise.duracaoSugeridaMin
       });
       if (item.uuid_entrada) {
         q = q.eq("uuid_entrada", item.uuid_entrada);
@@ -928,15 +927,18 @@ export default function RelatorioPage({
           slice.map(async (item) => {
             let q = supabase.from("pontos_reds").update({
               saida: item.saida,
-              tempo: item.tempo,
-              observacao: item.observacao
+              tempo: item.tempo
             });
             if (item.uuid) {
               q = q.eq("uuid_entrada", item.uuid);
             } else {
               q = q.eq("id", item.id).eq("entrada", item.entrada);
             }
-            await q;
+            const { error: errP } = await q;
+            if (errP) {
+              console.error("Erro ao atualizar pontos_reds:", errP);
+              throw errP;
+            }
 
             if (item.uuid) {
               await supabase.from("sessoes_ponto_auditoria_reds").update({
@@ -949,6 +951,7 @@ export default function RelatorioPage({
         );
       }
 
+      setMapaAnaliseAtividades({});
       alert(`🎉 Sucesso! Todos os ${lotePontos.length} pontos foram fechados com sucesso no banco de dados!`);
       aplicarFiltros();
     } catch (err) {
