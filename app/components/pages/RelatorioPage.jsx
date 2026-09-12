@@ -749,18 +749,8 @@ export default function RelatorioPage({
           }
         });
 
-        (det.bau || []).forEach(m => {
-          const ts = new Date(m.timestampz || m.timestamp || m.created_at).getTime();
-          if (ts >= pEntTs - 60000 && ts <= pLimTs) {
-            const isRetirou = String(m.acao).toUpperCase().includes("RETIR");
-            ativs.push({
-              tipo: "bau",
-              desc: `📦 Baú: ${isRetirou ? "Retirou" : "Guardou"} ${m.item || m.nome_item || "Item"}${m.quantidade ? ` x${m.quantidade}` : ""}`,
-              ts,
-              valor: 0
-            });
-          }
-        });
+        // NOTA: Movimentações de baú NÃO são consideradas atividades de trabalho
+        // Apenas Tunagem e Bancada contam para registro de ponto
 
         tuns.forEach(t => {
           if (String(t.tecnico_id).trim() === idVal || (t.tecnico_nome && t.tecnico_nome.toLowerCase().trim() === nomeNorm)) {
@@ -800,7 +790,6 @@ export default function RelatorioPage({
 
         const totalTunagens = dedup.filter(a => a.tipo === "tunagem").length;
         const totalBancada = dedup.filter(a => a.tipo === "bancada").length;
-        const totalBau = dedup.filter(a => a.tipo === "bau").length;
 
         if (dedup.length > 0) {
           const last = dedup[dedup.length - 1];
@@ -810,7 +799,7 @@ export default function RelatorioPage({
             totalAtividades: dedup.length,
             totalTunagens,
             totalBancada,
-            totalBau,
+            totalBau: 0,
             ultimaAtividade: last,
             saidaSugerida: new Date(last.ts).toISOString(),
             duracaoSugeridaMin: durMin,
@@ -827,7 +816,7 @@ export default function RelatorioPage({
             ultimaAtividade: null,
             saidaSugerida: p.entrada,
             duracaoSugeridaMin: 0,
-            motivoSugerido: "Miss-click / Sem atividades (fechado na entrada)",
+            motivoSugerido: "Miss-click / Sem atividades de trabalho (fechado na entrada)",
             atividadesLista: []
           };
         }
@@ -896,8 +885,8 @@ export default function RelatorioPage({
     const semAtiv = chaves.length - comAtiv;
 
     const confirmMsg = `⚠️ Deseja fechar todos os ${chaves.length} pontos sem saída analisados?\n\n` +
-      `• ${comAtiv} pontos serão fechados no horário exato da última atividade realizada.\n` +
-      `• ${semAtiv} pontos sem atividades serão finalizados com 0 min (miss-clicks).\n\n` +
+      `• ${comAtiv} pontos serão fechados no horário exato da última atividade de tunagem ou bancada.\n` +
+      `• ${semAtiv} pontos sem atividades de serviço serão finalizados com 0 min (miss-clicks).\n\n` +
       `Esta ação atualizará o banco de dados e recalculará as horas no relatório.`;
 
     if (!confirm(confirmMsg)) return;
@@ -3611,11 +3600,10 @@ export default function RelatorioPage({
                     : pontosSemSaidaPeriodo.filter(p => {
                         const totTun = p.totalTunagens || (p.detalhes?.tunagens ? p.detalhes.tunagens.length : 0);
                         const totBanc = p.totalBancada || (p.detalhes?.bancada ? p.detalhes.bancada.length : 0);
-                        const totBau = p.totalBau || (p.detalhes?.bau ? p.detalhes.bau.length : 0);
-                        return totTun > 0 || totBanc > 0 || totBau > 0;
+                        return totTun > 0 || totBanc > 0;
                       }).length}
                 </div>
-                <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>Com Atividades Registradas</div>
+                <div style={{ fontSize: "11px", color: theme.subtext, fontWeight: "600" }}>Com Atividades (Tunagem / Bancada)</div>
               </div>
             </div>
           )}
@@ -3640,7 +3628,7 @@ export default function RelatorioPage({
                   <span>⚡ Análise de Atividades Concluída!</span>
                 </div>
                 <div style={{ color: theme.text, fontSize: "12px", marginTop: "4px", lineHeight: "1.5" }}>
-                  Identificamos <b>{Object.values(mapaAnaliseAtividades).filter(a => a.temAtividades).length} pontos com atividades</b> (com saída sugerida pelo horário da última tunagem/bancada/baú) e <b>{Object.values(mapaAnaliseAtividades).filter(a => !a.temAtividades).length} pontos sem atividades</b> (miss-clicks de 0 minutos).
+                  Identificamos <b>{Object.values(mapaAnaliseAtividades).filter(a => a.temAtividades).length} pontos com atividades</b> (com saída sugerida pelo horário da última tunagem ou bancada) e <b>{Object.values(mapaAnaliseAtividades).filter(a => !a.temAtividades).length} pontos sem atividades</b> (miss-clicks de 0 minutos).
                 </div>
               </div>
 
@@ -3806,8 +3794,7 @@ export default function RelatorioPage({
 
                         const totTun = analise ? analise.totalTunagens : (item.totalTunagens || (item.detalhes?.tunagens ? item.detalhes.tunagens.length : 0));
                         const totBanc = analise ? analise.totalBancada : (item.totalBancada || (item.detalhes?.bancada ? item.detalhes.bancada.length : 0));
-                        const totBau = analise ? analise.totalBau : (item.totalBau || (item.detalhes?.bau ? item.detalhes.bau.length : 0));
-                        const temAtividades = analise ? analise.temAtividades : (totTun > 0 || totBanc > 0 || totBau > 0);
+                        const temAtividades = analise ? analise.temAtividades : (totTun > 0 || totBanc > 0);
 
                         const cargoTag = getCargoTag(item.cargoExibicao);
 
@@ -3872,11 +3859,11 @@ export default function RelatorioPage({
                                 </div>
                               ) : (
                                 <span style={{
-                                  background: "rgba(239, 68, 68, 0.15)",
-                                  color: "#f87171",
-                                  border: "1px solid rgba(239, 68, 68, 0.3)",
                                   padding: "3px 8px",
                                   borderRadius: "6px",
+                                  background: "rgba(239, 68, 68, 0.15)",
+                                  color: "#ef4444",
+                                  border: "1px solid rgba(239, 68, 68, 0.3)",
                                   fontSize: "11px",
                                   fontWeight: "700",
                                   display: "inline-flex",
@@ -3888,7 +3875,7 @@ export default function RelatorioPage({
                               )}
                             </td>
 
-                            {/* ATIVIDADES NO PONTO */}
+                            {/* ATIVIDADES NO PONTO (APENAS TUNAGEM E BANCADA) */}
                             <td style={{ padding: "12px 14px" }}>
                               <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", alignItems: "center" }}>
                                 {totTun > 0 && (
@@ -3899,11 +3886,6 @@ export default function RelatorioPage({
                                 {totBanc > 0 && (
                                   <span style={{ background: "rgba(192, 132, 252, 0.15)", color: "#c084fc", border: "1px solid rgba(192, 132, 252, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
                                     🛠️ {totBanc}x
-                                  </span>
-                                )}
-                                {totBau > 0 && (
-                                  <span style={{ background: "rgba(251, 191, 36, 0.15)", color: "#fbbf24", border: "1px solid rgba(251, 191, 36, 0.3)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700" }}>
-                                    📦 {totBau}x
                                   </span>
                                 )}
                                 {!temAtividades && (
