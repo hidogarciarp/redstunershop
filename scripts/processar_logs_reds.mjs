@@ -328,6 +328,10 @@ async function conciliarPontos(janela) {
     return query;
   });
 
+  const atividadesTunagemReds = await buscarTodosOsRegistros("logs_tunagem_reds", "tecnico_id, timestampz, hora", (q) => {
+    return janela ? q.gte("timestampz", janela.inicioISO).lte("timestampz", janela.fimISO) : q;
+  });
+
   // Agrupar atividades por colaborador (Bancada e Tunagem)
   const atividadesPorJogador = {};
   const registrarAtividade = (playerID, tsStr, tipo, horaStr) => {
@@ -346,6 +350,7 @@ async function conciliarPontos(janela) {
 
   atividadesBancada.forEach(a => registrarAtividade(a.id, a.timestampz, "Bancada", a.hora));
   atividadesTunagem.forEach(a => registrarAtividade(a.tecnico_id, a.timestampz, "Tunagem", a.hora));
+  atividadesTunagemReds.forEach(a => registrarAtividade(a.tecnico_id, a.timestampz, "Tunagem", a.hora));
 
   for (const playerID of Object.keys(atividadesPorJogador)) {
     atividadesPorJogador[playerID].sort((a, b) => a.timestamp - b.timestamp);
@@ -476,8 +481,10 @@ async function conciliarPontos(janela) {
           }
         }
 
-        // Caso B: Fechar pela última atividade em Bancada ou Tunagem (até 6h após a entrada)
-        const tLimite = tEntrada + 6 * 3600000;
+        // Caso B: Fechar pela última atividade em Bancada ou Tunagem (até 12h após a entrada)
+        const tLimite = (j < logsRestantes.length && logsRestantes[j].tipo === "entrada")
+          ? Math.min(tEntrada + 12 * 3600000, new Date(logsRestantes[j].timestampz).getTime())
+          : (tEntrada + 12 * 3600000);
         const ativsValidas = atividadesFunc.filter(a => a.timestamp >= tEntrada && a.timestamp <= tLimite);
 
         if (ativsValidas.length > 0) {
@@ -499,16 +506,35 @@ async function conciliarPontos(janela) {
         }
 
         // Caso C: Ponto sem saída e sem atividade comprovada
-        novosPontos.push({
-          uuid_entrada: atual.uuid,
-          uuid_saida: null,
-          entrada: atual.timestampz,
-          saida: null,
-          tempo: 0,
-          id: atual.id,
-          nome: atual.nome,
-          observacao: "Ponto aberto sem saída registrada ou comprovada"
-        });
+        // Se a entrada foi há menos de 60 minutos e não há próximo evento, pode ser ponto em andamento ao vivo
+        const agoraMs = Date.now();
+        const isUltimoEvento = (i === logsRestantes.length - 1);
+        const isRecente = (agoraMs - tEntrada) < 60 * 60 * 1000;
+
+        if (isUltimoEvento && isRecente) {
+          novosPontos.push({
+            uuid_entrada: atual.uuid,
+            uuid_saida: null,
+            entrada: atual.timestampz,
+            saida: null,
+            tempo: 0,
+            id: atual.id,
+            nome: atual.nome,
+            observacao: "Ponto em andamento ao vivo"
+          });
+        } else {
+          // Ponto passado ou abandonado sem atividade comprovada: saída na mesma hora da entrada (0 min)
+          novosPontos.push({
+            uuid_entrada: atual.uuid,
+            uuid_saida: null,
+            entrada: atual.timestampz,
+            saida: atual.timestampz,
+            tempo: 0,
+            id: atual.id,
+            nome: atual.nome,
+            observacao: "Fechado automaticamente (sem atividades registradas)"
+          });
+        }
         i++;
       } else {
         // Saída isolada (sem entrada correspondente)
@@ -546,17 +572,21 @@ async function conciliarPontos(janela) {
 
     try {
       console.log(`Atualizando sessoes_ponto_auditoria_reds (${pontosFiltrados.length} sessões)...`);
-      const auditRecords = pontosFiltrados.map((p) => ({
-        uuid_sessao: p.uuid_entrada,
-        id_jogo: String(p.id),
-        nome: p.nome,
-        oficina: "Red's Tunershop",
-        oficina_id: "reds",
-        entrada: p.entrada,
-        saida: p.saida || null,
-        duracao_min: p.tempo || 0,
-        status_ponto: p.saida ? "normal" : "aberto"
-      }));
+      const auditRecords = pontosFiltrados.map((p) => {
+        const isAoVivo = !p.saida && p.observacao === "Ponto em andamento ao vivo";
+        return {
+          uuid_sessao: p.uuid_entrada,
+          id_jogo: String(p.id),
+          nome: p.nome,
+          oficina: "Red's Tunershop",
+          oficina_id: "reds",
+          entrada: p.entrada,
+          saida: p.saida || (isAoVivo ? null : p.entrada),
+          duracao_min: p.tempo || 0,
+          status_ponto: isAoVivo ? "aberto" : "normal",
+          motivo_crash: p.observacao || null
+        };
+      });
       for (let i = 0; i < auditRecords.length; i += 100) {
         const lote = auditRecords.slice(i, i + 100);
         await supabase.from("sessoes_ponto_auditoria_reds").upsert(lote, { onConflict: "uuid_sessao" });

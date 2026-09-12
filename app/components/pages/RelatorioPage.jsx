@@ -104,7 +104,7 @@ function obterSaidaValida(reg) {
     return new Date(agora);
   }
 
-  return null;
+  return dEntrada;
 }
 
 function calcularMetricasMecanica(registros, diasPeriodo) {
@@ -772,7 +772,10 @@ export default function RelatorioPage({
         const diff = (new Date(reg.saida) - new Date(reg.entrada)) / 60000;
         if (diff > 0) { totalMin += diff; sessoes++; }
       } else if (reg.entrada && !reg.saida) {
-        abertas++;
+        const diffEntrada = (Date.now() - new Date(reg.entrada).getTime()) / 60000;
+        if (diffEntrada >= 0 && diffEntrada <= 60) {
+          abertas++;
+        }
       }
     });
     return { ...func, totalMin, sessoes, abertas, idJogo };

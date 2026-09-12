@@ -616,9 +616,9 @@ export default function PontoPage({
               pontoAtual.observacao = `Encerrado por inatividade (> 60 min sem movimentação).`;
               sessoesFechadasRealtime.push(pontoAtual);
             } else {
-              pontoAtual.saida = new Date(entMs + 60000).toISOString();
-              pontoAtual.duracaoMin = 1;
-              pontoAtual.observacao = `Duplo clique / Inativo (> 60 min sem ações).`;
+              pontoAtual.saida = pontoAtual.entrada;
+              pontoAtual.duracaoMin = 0;
+              pontoAtual.observacao = `Fechado automaticamente (sem atividades registradas).`;
               sessoesFechadasRealtime.push(pontoAtual);
             }
           } else {
