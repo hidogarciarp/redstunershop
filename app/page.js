@@ -736,8 +736,9 @@ export default function Home() {
 
   const buscarUsuarioNoBanco = async (idDigitado) => {
     try {
-      if (!idDigitado) return null;
+      if (!idDigitado || typeof idDigitado === "object") return null;
       const idStr = String(idDigitado).trim();
+      if (!idStr) return null;
       const idNum = parseInt(idStr, 10);
       
       let user = null;
@@ -745,15 +746,10 @@ export default function Home() {
         const { data, error } = await supabase.from("usuarios").select("*").eq("id", idNum).maybeSingle();
         if (!error && data) user = data;
       }
-      
-      if (!user) {
-        const { data: dataJogo } = await supabase.from("usuarios").select("*").eq("id_jogo", idStr).maybeSingle();
-        if (dataJogo) user = dataJogo;
-      }
 
       if (!user && Array.isArray(listaFuncionarios) && listaFuncionarios.length > 0) {
         user = listaFuncionarios.find(
-          (f) => String(f.id) === idStr || String(f.id_jogo) === idStr
+          (f) => String(f.id) === idStr || String(f.id_jogo) === idStr || String(f.idJogo) === idStr
         ) || null;
       }
 
@@ -762,7 +758,7 @@ export default function Home() {
       console.error("Erro ao buscar usuário no banco:", err);
       if (Array.isArray(listaFuncionarios) && listaFuncionarios.length > 0) {
         return listaFuncionarios.find(
-          (f) => String(f.id) === String(idDigitado).trim() || String(f.id_jogo) === String(idDigitado).trim()
+          (f) => String(f.id) === String(idDigitado).trim() || String(f.id_jogo) === String(idDigitado).trim() || String(f.idJogo) === String(idDigitado).trim()
         ) || null;
       }
       return null;
@@ -1692,18 +1688,19 @@ export default function Home() {
   };
 
   const enviarNotificacao = async (idParam, msgParam, anonimoParam) => {
-    const targetId = idParam || notifIdFuncionario;
-    const targetMsg = msgParam || notifMensagem;
-    const isAnonimo = anonimoParam !== undefined ? anonimoParam : notifAnonimo;
+    const isExplicitCall = (typeof idParam === "string" || typeof idParam === "number") && String(idParam).trim() !== "";
+    const targetId = isExplicitCall ? idParam : notifIdFuncionario;
+    const targetMsg = (typeof msgParam === "string" ? msgParam : notifMensagem);
+    const isAnonimo = typeof anonimoParam === "boolean" ? anonimoParam : notifAnonimo;
 
-    if ((targetId === undefined || targetId === null || targetId === "") || !targetMsg?.trim()) {
+    if (!targetId || !targetMsg?.trim()) {
       alert("⚠️ Informe o ID do funcionário e escreva a mensagem!");
       return false;
     }
     
     let funcionario = null;
-    if (idParam) {
-      funcionario = await buscarUsuarioNoBanco(idParam);
+    if (isExplicitCall) {
+      funcionario = await buscarUsuarioNoBanco(targetId);
     } else {
       funcionario = notifFuncionarioInfo || await buscarUsuarioNoBanco(notifIdFuncionario);
     }
@@ -1734,7 +1731,7 @@ export default function Home() {
       return false; 
     }
 
-    if (!idParam) {
+    if (!isExplicitCall) {
       alert(`✅ Notificação enviada para ${funcionario.nome}!`);
       setNotifIdFuncionario("");
       setNotifMensagem("");

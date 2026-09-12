@@ -189,7 +189,7 @@ export default function NotificacoesPage({
                 </div>
               </label>
 
-              <button onClick={enviarNotificacao} style={{ ...styles.btnPrimary, marginTop: 0, background: "linear-gradient(135deg, #92400e, #f97316)" }}>
+              <button onClick={() => enviarNotificacao()} style={{ ...styles.btnPrimary, marginTop: 0, background: "linear-gradient(135deg, #92400e, #f97316)" }}>
                 🔔 ENVIAR NOTIFICAÇÃO
               </button>
             </div>
