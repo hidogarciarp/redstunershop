@@ -59,6 +59,7 @@ export default function MinhaContaPage({
   setReportLinkSemanal,
   reportarPagamentoSemanal,
   buscarDadosUsuario,
+  atualizarSenhaNoBanco,
   meusTopClientes,
   minhasNotificacoes,
   meusPagamentos,
@@ -84,8 +85,15 @@ export default function MinhaContaPage({
   const [fotoPerfilUrl, setFotoPerfilUrl] = useState(
     usuarioLogado?.avatar_url?.startsWith("http") ? usuarioLogado.avatar_url : ""
   );
+  const [editandoFotoPerfil, setEditandoFotoPerfil] = useState(false);
   const [salvandoFotoPerfil, setSalvandoFotoPerfil] = useState(false);
   const [erroFotoPerfil, setErroFotoPerfil] = useState("");
+  const [senhaAtualConta, setSenhaAtualConta] = useState("");
+  const [novaSenhaConta, setNovaSenhaConta] = useState("");
+  const [confirmarSenhaConta, setConfirmarSenhaConta] = useState("");
+  const [editandoSenhaConta, setEditandoSenhaConta] = useState(false);
+  const [alterandoSenhaConta, setAlterandoSenhaConta] = useState(false);
+  const [erroSenhaConta, setErroSenhaConta] = useState("");
   
   const [periodoSelecionado, setPeriodoSelecionado] = useState("semana_atual");
   const [dataInicioCustom, setDataInicioCustom] = useState("");
@@ -117,6 +125,7 @@ export default function MinhaContaPage({
         .eq("id", usuarioLogado.id);
       if (error) throw error;
       await buscarDadosUsuario();
+      setEditandoFotoPerfil(false);
     } catch (error) {
       setErroFotoPerfil(error.message || "Não foi possível salvar a foto.");
     } finally {
@@ -135,11 +144,45 @@ export default function MinhaContaPage({
         .eq("id", usuarioLogado.id);
       if (error) throw error;
       setFotoPerfilPreview("");
+      setFotoPerfilUrl("");
+      setEditandoFotoPerfil(false);
       await buscarDadosUsuario();
     } catch (error) {
       setErroFotoPerfil(error.message || "Não foi possível remover a foto.");
     } finally {
       setSalvandoFotoPerfil(false);
+    }
+  };
+
+  const alterarSenhaConta = async (event) => {
+    event.preventDefault();
+    setErroSenhaConta("");
+
+    if (senhaAtualConta !== String(usuarioLogado?.senha ?? usuarioLogado?.id ?? "")) {
+      setErroSenhaConta("A senha atual está incorreta.");
+      return;
+    }
+    if (!/^\d{3,}$/.test(novaSenhaConta)) {
+      setErroSenhaConta("A nova senha deve conter apenas números e ter pelo menos 3 dígitos.");
+      return;
+    }
+    if (novaSenhaConta !== confirmarSenhaConta) {
+      setErroSenhaConta("A confirmação não corresponde à nova senha.");
+      return;
+    }
+    if (novaSenhaConta === senhaAtualConta) {
+      setErroSenhaConta("A nova senha deve ser diferente da senha atual.");
+      return;
+    }
+
+    setAlterandoSenhaConta(true);
+    try {
+      const alterada = await atualizarSenhaNoBanco(usuarioLogado.id, novaSenhaConta);
+      if (alterada) {
+        alert("Senha alterada com sucesso. Entre novamente com a nova senha.");
+      }
+    } finally {
+      setAlterandoSenhaConta(false);
     }
   };
 
@@ -435,34 +478,54 @@ export default function MinhaContaPage({
               Foto de perfil
             </div>
             <div style={{ color: theme.subtext, fontSize: "12px", lineHeight: 1.5, marginBottom: "14px" }}>
-              Informe o link público de uma imagem JPG, PNG ou WebP.
+              {usuarioLogado?.avatar_url
+                ? "Sua foto está configurada e aparece no cabeçalho do sistema."
+                : "Adicione uma foto usando o link público de uma imagem JPG, PNG ou WebP."}
             </div>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "11px", flexWrap: "wrap" }}>
-              <input
-                type="url"
-                value={fotoPerfilUrl}
-                onChange={(event) => setFotoPerfilUrl(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    aplicarUrlFotoPerfil();
-                  }
-                }}
-                placeholder="https://exemplo.com/minha-foto.jpg"
-                aria-label="URL pública da foto de perfil"
-                style={{ ...styles.input, flex: "1 1 280px", margin: 0 }}
-              />
+            {!usuarioLogado?.avatar_url && !editandoFotoPerfil && (
               <button
                 type="button"
-                onClick={aplicarUrlFotoPerfil}
-                disabled={!fotoPerfilUrl.trim() || salvandoFotoPerfil}
-                style={{ border: `1px solid ${theme.border}`, background: theme.card2, color: theme.text, borderRadius: "8px", padding: "9px 15px", cursor: "pointer", fontSize: "12px", fontWeight: "800" }}
+                onClick={() => {
+                  setErroFotoPerfil("");
+                  setFotoPerfilUrl("");
+                  setEditandoFotoPerfil(true);
+                }}
+                style={{ ...styles.btnPrimary, width: "auto", marginTop: 0, padding: "9px 16px", fontSize: "12px" }}
               >
-                Usar URL
+                Adicionar foto
               </button>
-            </div>
+            )}
+            {!usuarioLogado?.avatar_url && editandoFotoPerfil && (
+              <>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "11px", flexWrap: "wrap" }}>
+                  <input
+                    type="url"
+                    value={fotoPerfilUrl}
+                    onChange={(event) => setFotoPerfilUrl(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        aplicarUrlFotoPerfil();
+                      }
+                    }}
+                    placeholder="https://exemplo.com/minha-foto.jpg"
+                    aria-label="URL pública da foto de perfil"
+                    autoFocus
+                    style={{ ...styles.input, flex: "1 1 280px", margin: 0 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={aplicarUrlFotoPerfil}
+                    disabled={!fotoPerfilUrl.trim() || salvandoFotoPerfil}
+                    style={{ border: `1px solid ${theme.border}`, background: theme.card2, color: theme.text, borderRadius: "8px", padding: "9px 15px", cursor: "pointer", fontSize: "12px", fontWeight: "800" }}
+                  >
+                    Visualizar
+                  </button>
+                </div>
+              </>
+            )}
             <div style={{ display: "flex", gap: "9px", flexWrap: "wrap" }}>
-              {fotoPerfilPreview && fotoPerfilPreview !== (usuarioLogado?.avatar_url || "") && (
+              {!usuarioLogado?.avatar_url && editandoFotoPerfil && fotoPerfilPreview && (
                 <button
                   type="button"
                   onClick={salvarFotoPerfil}
@@ -470,6 +533,21 @@ export default function MinhaContaPage({
                   style={{ ...styles.btnPrimary, width: "auto", marginTop: 0, padding: "9px 16px", fontSize: "12px", background: "#16a34a" }}
                 >
                   {salvandoFotoPerfil ? "Salvando..." : "Salvar foto"}
+                </button>
+              )}
+              {!usuarioLogado?.avatar_url && editandoFotoPerfil && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFotoPerfilPreview("");
+                    setFotoPerfilUrl("");
+                    setErroFotoPerfil("");
+                    setEditandoFotoPerfil(false);
+                  }}
+                  disabled={salvandoFotoPerfil}
+                  style={{ border: `1px solid ${theme.border}`, background: "transparent", color: theme.subtext, borderRadius: "8px", padding: "9px 16px", cursor: "pointer", fontSize: "12px", fontWeight: "800" }}
+                >
+                  Cancelar
                 </button>
               )}
               {usuarioLogado?.avatar_url && (
@@ -490,6 +568,71 @@ export default function MinhaContaPage({
             )}
           </div>
         </div>
+
+        <form
+          onSubmit={alterarSenhaConta}
+          style={{
+            ...styles.whiteCard,
+            padding: "22px",
+            marginBottom: "24px",
+          }}
+        >
+          {!editandoSenhaConta ? (
+            <button
+              type="button"
+              onClick={() => {
+                setErroSenhaConta("");
+                setEditandoSenhaConta(true);
+              }}
+              style={{ ...styles.btnPrimary, width: "auto", marginTop: 0, padding: "9px 16px", fontSize: "12px" }}
+            >
+              Alterar senha
+            </button>
+          ) : (
+            <>
+              <div style={{ color: theme.text, fontSize: "17px", fontWeight: "800", marginBottom: "5px" }}>
+                Alterar senha
+              </div>
+              <div style={{ color: theme.subtext, fontSize: "12px", lineHeight: 1.5, marginBottom: "16px" }}>
+                A senha deve conter somente números. Após a alteração, você precisará entrar novamente.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "12px" }}>
+                <div>
+                  <label style={styles.miniLabel}>Senha atual</label>
+                  <input type="password" inputMode="numeric" autoComplete="current-password" autoFocus value={senhaAtualConta} onChange={(event) => setSenhaAtualConta(event.target.value.replace(/\D/g, ""))} placeholder="Digite sua senha atual" style={styles.input} />
+                </div>
+                <div>
+                  <label style={styles.miniLabel}>Nova senha</label>
+                  <input type="password" inputMode="numeric" autoComplete="new-password" value={novaSenhaConta} onChange={(event) => setNovaSenhaConta(event.target.value.replace(/\D/g, ""))} placeholder="Mínimo de 3 dígitos" style={styles.input} />
+                </div>
+                <div>
+                  <label style={styles.miniLabel}>Confirmar nova senha</label>
+                  <input type="password" inputMode="numeric" autoComplete="new-password" value={confirmarSenhaConta} onChange={(event) => setConfirmarSenhaConta(event.target.value.replace(/\D/g, ""))} placeholder="Repita a nova senha" style={styles.input} />
+                </div>
+              </div>
+              {erroSenhaConta && <div role="alert" style={{ color: "#ef4444", fontSize: "12px", marginTop: "10px", fontWeight: "700" }}>{erroSenhaConta}</div>}
+              <div style={{ display: "flex", gap: "9px", marginTop: "16px", flexWrap: "wrap" }}>
+                <button type="submit" disabled={alterandoSenhaConta || !senhaAtualConta || !novaSenhaConta || !confirmarSenhaConta} style={{ ...styles.btnPrimary, width: "auto", marginTop: 0, padding: "10px 18px", fontSize: "12px", opacity: alterandoSenhaConta ? 0.65 : 1 }}>
+                  {alterandoSenhaConta ? "Alterando senha..." : "Salvar nova senha"}
+                </button>
+                <button
+                  type="button"
+                  disabled={alterandoSenhaConta}
+                  onClick={() => {
+                    setSenhaAtualConta("");
+                    setNovaSenhaConta("");
+                    setConfirmarSenhaConta("");
+                    setErroSenhaConta("");
+                    setEditandoSenhaConta(false);
+                  }}
+                  style={{ border: `1px solid ${theme.border}`, background: "transparent", color: theme.subtext, borderRadius: "8px", padding: "9px 16px", cursor: "pointer", fontSize: "12px", fontWeight: "800" }}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </>
+          )}
+        </form>
 
         <div style={{
           ...styles.whiteCard,

@@ -5570,6 +5570,7 @@ export default function Home() {
         buscarMeusTopClientes={buscarMeusTopClientes}
         buscarHistoricoPonto={buscarHistoricoPonto}
         buscarDadosUsuario={buscarDadosUsuario}
+        atualizarSenhaNoBanco={atualizarSenhaNoBanco}
         reportValorSemanal={reportValorSemanal}
         setReportValorSemanal={setReportValorSemanal}
         reportObsSemanal={reportObsSemanal}
