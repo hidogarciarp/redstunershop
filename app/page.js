@@ -1666,9 +1666,23 @@ export default function Home() {
   // ===== FUNÇÕES DE NOTIFICAÇÃO =====
 
   const buscarNotificacaoPendente = async () => {
-    if (!usuarioLogado) return;
-    const { data } = await supabase.from("notificacoes").select("*").eq("funcionario_id", usuarioLogado.id).is("lido_em", null).order("criado_em", { ascending: true }).limit(1).maybeSingle();
-    setNotificacaoPendente(data || null);
+    if (!usuarioLogado?.id) return;
+    try {
+      const uid = usuarioLogado.id;
+      const { data, error } = await supabase
+        .from("notificacoes")
+        .select("*")
+        .eq("funcionario_id", uid)
+        .is("lido_em", null)
+        .order("criado_em", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (!error) {
+        setNotificacaoPendente(data || null);
+      }
+    } catch (err) {
+      console.error("Erro ao buscar notificacao pendente:", err);
+    }
   };
 
   const confirmarLeituraNotificacao = async () => {
@@ -3708,20 +3722,75 @@ export default function Home() {
     return () => supabase.removeChannel(canal);
   }, []);
 
+  // Listener Realtime + Polling Contínuo de Notificações (Garante recebimento instantâneo em qualquer janela ou aba)
   useEffect(() => {
-    if (!usuarioLogado) return;
-    const canal = supabase.channel("notificacoes-realtime")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "notificacoes", filter: `funcionario_id=eq.${usuarioLogado.id}` },
+    if (!usuarioLogado?.id) return;
+    const uidStr = String(usuarioLogado.id).trim();
+
+    // 1. Busca imediata
+    buscarNotificacaoPendente();
+
+    // 2. Canal Realtime individual para o usuário
+    const canalNome = `canal-notif-usuario-${uidStr}-${Date.now()}`;
+    const canal = supabase
+      .channel(canalNome)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "notificacoes" },
         (payload) => {
-          setNotificacaoPendente((prev) => {
-            if (prev) return prev;
-            return payload.new;
-          });
+          const nova = payload.new;
+          if (!nova) return;
+          if (String(nova.funcionario_id).trim() === uidStr && !nova.lido_em) {
+            setNotificacaoPendente(nova);
+            try {
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              if (AudioCtx) {
+                const ctx = new AudioCtx();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+                gain.gain.setValueAtTime(0.25, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.35);
+              }
+            } catch (_) {}
+          }
         }
       )
-      .subscribe();
-    return () => supabase.removeChannel(canal);
-  }, [usuarioLogado]);
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          buscarNotificacaoPendente();
+        }
+      });
+
+    // 3. Polling ativo a cada 4 segundos como garantia (caso websockets caiam ou aba fique ociosa)
+    const intervalNotif = setInterval(() => {
+      buscarNotificacaoPendente();
+    }, 4000);
+
+    // 4. Checar instantaneamente ao focar na janela ou mudar de aba
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        buscarNotificacaoPendente();
+      }
+    };
+    const handleFocus = () => {
+      buscarNotificacaoPendente();
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      supabase.removeChannel(canal);
+      clearInterval(intervalNotif);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [usuarioLogado?.id]);
 
   // Listener Realtime Global de Tunagens (Funciona em QUALQUER página do site!)
   useEffect(() => {
@@ -5156,9 +5225,22 @@ export default function Home() {
     );
   };
 
+  // Modal de Notificação Global
+  const AppModalNotificacao = () => (
+    <ModalNotificacao
+      notificacaoPendente={notificacaoPendente}
+      isDarkMode={isDarkMode}
+      theme={theme}
+      formatarDataHora={formatarDataHora}
+      renderMensagemComLinks={renderMensagemComLinks}
+      confirmarLeituraNotificacao={confirmarLeituraNotificacao}
+    />
+  );
+
   // Header reutilizável
   const AppHeaderBar = () => (
     <>
+      <AppModalNotificacao />
       {layoutPreferido === "topo" ? (
         <TopHeaderBar
           paginaAtual={paginaAtual}
@@ -5234,17 +5316,6 @@ export default function Home() {
         usuarioLogado={usuarioParaInterface}
       />
     </>
-  );
-
-  const AppModalNotificacao = () => (
-    <ModalNotificacao
-      notificacaoPendente={notificacaoPendente}
-      isDarkMode={isDarkMode}
-      theme={theme}
-      formatarDataHora={formatarDataHora}
-      renderMensagemComLinks={renderMensagemComLinks}
-      confirmarLeituraNotificacao={confirmarLeituraNotificacao}
-    />
   );
 
   // ===== PÁGINA: RECRUTAMENTO =====
