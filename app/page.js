@@ -6163,7 +6163,7 @@ export default function Home() {
             isDarkMode={isDarkMode}
             blacklist={blacklist}
             layoutPreferido={layoutPreferido}
-            usuarioLogado={usuarioLogado}
+            usuarioLogado={usuarioParaInterface}
             setImagemPreview={setImagemPreview}
             setArquivoImagem={setArquivoImagem}
             setImagemPreview2={setImagemPreview2}

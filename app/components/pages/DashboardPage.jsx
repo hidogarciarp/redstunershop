@@ -91,15 +91,19 @@ export default function DashboardPage({
   }, [avisoTopo?.id]);
 
   // ===== AUTO-PREENCHIMENTO VIA LOGS DE TUNAGEM =====
-  const isDonoAdmin = isAdminOuDono(usuarioLogado?.role) || usuarioLogado?.role?.includes("dono") || usuarioLogado?.role?.includes("admin");
-  const [verTodosMecanicos, setVerTodosMecanicos] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("reds_dashboard_ver_todos_mecanicos") === "true";
+  const isDonoAdmin = Boolean(isAdminOuDono(usuarioLogado?.role));
+  const [verTodosMecanicos, setVerTodosMecanicos] = useState(false);
+
+  useEffect(() => {
+    if (isDonoAdmin && typeof window !== "undefined") {
+      setVerTodosMecanicos(localStorage.getItem("reds_dashboard_ver_todos_mecanicos") === "true");
+    } else {
+      setVerTodosMecanicos(false);
     }
-    return false;
-  });
+  }, [isDonoAdmin]);
 
   const toggleVerTodosMecanicos = () => {
+    if (!isDonoAdmin) return;
     setVerTodosMecanicos((prev) => {
       const next = !prev;
       if (typeof window !== "undefined") {
