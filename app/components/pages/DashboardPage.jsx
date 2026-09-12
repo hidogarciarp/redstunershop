@@ -78,6 +78,8 @@ export default function DashboardPage({
   setImagemPreview2,
   setArquivoImagem2,
   tunagemRealtimeGlobal,
+  logSelecionadoUuid: propLogSelecionadoUuid,
+  setLogSelecionadoUuid: propSetLogSelecionadoUuid,
 }) {
   const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
   const isBanido = !!banInfo;
@@ -109,7 +111,9 @@ export default function DashboardPage({
 
   const [logsRecentes, setLogsRecentes] = useState([]);
   const [carregandoLogs, setCarregandoLogs] = useState(false);
-  const [logSelecionadoUuid, setLogSelecionadoUuid] = useState("");
+  const [localLogSelecionadoUuid, setLocalLogSelecionadoUuid] = useState("");
+  const logSelecionadoUuid = propLogSelecionadoUuid !== undefined ? propLogSelecionadoUuid : localLogSelecionadoUuid;
+  const setLogSelecionadoUuid = propSetLogSelecionadoUuid || setLocalLogSelecionadoUuid;
   const [logAplicadoInfo, setLogAplicadoInfo] = useState(null);
 
   const carregarLogsRecentes = useCallback(async (mostrarTodos = verTodosMecanicos) => {
@@ -156,9 +160,9 @@ export default function DashboardPage({
       .channel("dashboard_logs_tunagem_live")
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "logs_tunagem_reds" },
+        { event: "*", schema: "public", table: "logs_tunagem_reds" },
         (payload) => {
-          if (payload.new) {
+          if (payload.eventType === "INSERT" && payload.new) {
             const uId = String(usuarioLogado?.id || usuarioLogado?.id_jogo || "");
             const uNome = (usuarioLogado?.nome || nomeMecanico || "").toLowerCase().trim();
             const logTecId = String(payload.new.tecnico_id || "");
@@ -172,6 +176,10 @@ export default function DashboardPage({
                 return [payload.new, ...filtered].slice(0, 30);
               });
             }
+          } else if (payload.eventType === "UPDATE" && payload.new) {
+            setLogsRecentes((prev) =>
+              prev.map((l) => (l.uuid === payload.new.uuid ? { ...l, ...payload.new } : l))
+            );
           }
         }
       )

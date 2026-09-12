@@ -269,6 +269,7 @@ export default function Home() {
   const [logTunagemParaAbrir, setLogTunagemParaAbrir] = useState(null);
   const [notificarTodasTunagens, setNotificarTodasTunagens] = useState(true);
   const [historicoNotificacoes, setHistoricoNotificacoes] = useState([]);
+  const [logSelecionadoUuid, setLogSelecionadoUuid] = useState("");
 
   const adicionarNotificacaoServico = (log, analise, isMeu) => {
     const id = String(log.uuid || log.id || log.discord_message_id || `${log.placa || "veiculo"}-${log.created_at || Date.now()}`);
@@ -706,6 +707,7 @@ export default function Home() {
     setQtdReparos(0);
     setQtdPneus(0);
     setReboque(false);
+    setLogSelecionadoUuid("");
   };
 
   const getPeriodoFiltro = (periodo) => {
@@ -3367,12 +3369,22 @@ export default function Home() {
             const chanId = data.channel_id || (webhookDestino.includes("/webhooks/") ? webhookDestino.split("/webhooks/")[1]?.split("/")[0] : null);
             const gldId = data.guild_id || "1486119705814106307";
 
+            const urlImagemDireta = data.embeds?.[0]?.image?.url || data.attachments?.[0]?.url || (imagemPreview && String(imagemPreview).startsWith("http") ? imagemPreview : null);
+
             if (msgId && chanId) {
               linkDiscord = `https://discord.com/channels/${gldId}/${chanId}/${msgId}`;
-            } else if (data.embeds?.[0]?.image?.url) {
-              linkDiscord = data.embeds[0].image.url;
-            } else if (data.attachments?.[0]?.url) {
-              linkDiscord = data.attachments[0].url;
+            } else if (urlImagemDireta) {
+              linkDiscord = urlImagemDireta;
+            }
+
+            // Atualiza foto_url no log de tunagem caso este serviço tenha sido pré-preenchido
+            if (logSelecionadoUuid && urlImagemDireta) {
+              try {
+                await supabase.from("logs_tunagem_reds").update({ foto_url: urlImagemDireta, cobrado: true }).eq("uuid", logSelecionadoUuid);
+                await supabase.from("logs_tunagem").update({ foto_url: urlImagemDireta, cobrado: true }).eq("uuid", logSelecionadoUuid);
+              } catch (errFoto) {
+                console.warn("Aviso ao vincular foto_url ao log de tunagem:", errFoto);
+              }
             }
           } catch (e) { console.log("Erro ao ler JSON do Discord", e); }
         } else {
@@ -6089,6 +6101,8 @@ export default function Home() {
             setImagemPreview2={setImagemPreview2}
             setArquivoImagem2={setArquivoImagem2}
             tunagemRealtimeGlobal={tunagemRealtimeGlobal}
+            logSelecionadoUuid={logSelecionadoUuid}
+            setLogSelecionadoUuid={setLogSelecionadoUuid}
           />
         )}
       </main>
