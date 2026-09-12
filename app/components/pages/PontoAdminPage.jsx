@@ -241,10 +241,6 @@ export default function PontoAdminPage({
   const [resultadoImportacao, setResultadoImportacao] = useState(null);
   const histRef = useRef(null);
   
-  const [modoImportacao, setModoImportacao] = useState("texto"); // 'texto' | 'banco'
-  const [pointSessionsInicio, setPointSessionsInicio] = useState("");
-  const [pointSessionsFim, setPointSessionsFim] = useState("");
-  
   const [registrosExtraDoBanco, setRegistrosExtraDoBanco] = useState([]);
   const todosRegistrosBanco = [...registrosCidade, ...registrosExtraDoBanco];
 
@@ -1264,191 +1260,7 @@ export default function PontoAdminPage({
     return { inseridos, duplicados, erros };
   };
 
-  const buscarEProcessarPointSessions = async () => {
-    if (!pointSessionsInicio || !pointSessionsFim) {
-      alert("⚠️ Selecione a data/hora de início e fim.");
-      return;
-    }
-    setProcessandoLog(true);
-    try {
-      const inicioISO = new Date(pointSessionsInicio).toISOString();
-      const fimISO = new Date(pointSessionsFim).toISOString();
 
-      const { data, error } = await supabase
-        .from("point_sessions")
-        .select("*")
-        .or(`and(entrada.gte.${inicioISO},entrada.lte.${fimISO}),and(saida.gte.${inicioISO},saida.lte.${fimISO})`)
-        .eq("hidden", false);
-
-      if (error) {
-        alert("❌ Erro ao buscar registros de point_sessions: " + error.message);
-        setProcessandoLog(false);
-        return;
-      }
-
-      if (!data || data.length === 0) {
-        alert("ℹ️ Nenhum registro encontrado no período selecionado.");
-        setProcessandoLog(false);
-        return;
-      }
-
-      const registrosPlanos = [];
-      data.forEach((row) => {
-        if (row.entrada) {
-          registrosPlanos.push({
-            idJogo: row.id_jogo,
-            nomePersonagem: row.employee_name,
-            acao: "entrada",
-            dataISO: row.entrada,
-            uuid: row.uuid_entrada || row.id,
-            mechanic_id: row.mechanic_id
-          });
-        }
-        if (row.saida) {
-          registrosPlanos.push({
-            idJogo: row.id_jogo,
-            nomePersonagem: row.employee_name,
-            acao: "saida",
-            dataISO: row.saida,
-            uuid: row.uuid_saida || `${row.uuid_entrada || row.id}-saida`,
-            mechanic_id: row.mechanic_id
-          });
-        }
-      });
-
-      const mapa = separarEventosPorFuncionario(registrosPlanos);
-      const idsJogos = Object.keys(mapa);
-      let registrosExtra = [];
-
-      if (idsJogos.length > 0) {
-        const dataLimite = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
-        const dataLimiteStr = dataLimite.split("T")[0];
-
-        const [r1, r2, r3] = await Promise.all([
-          supabase.from("ponto_cidade").select("*").in("id_jogo", idsJogos).gte("data", dataLimiteStr),
-          supabase.from("ponto_cidade_mecanica_2").select("*").in("id_jogo", idsJogos).gte("data", dataLimiteStr),
-          supabase.from("ponto_cidade_mecanica_3").select("*").in("id_jogo", idsJogos).gte("data", dataLimiteStr)
-        ]);
-
-        if (r1.data) registrosExtra = [...registrosExtra, ...r1.data];
-        if (r2.data) registrosExtra = [...registrosExtra, ...r2.data];
-        if (r3.data) registrosExtra = [...registrosExtra, ...r3.data];
-      }
-
-      setRegistrosExtraDoBanco(registrosExtra);
-      const combinedRecords = [...registrosCidade, ...registrosExtra];
-
-      Object.keys(mapa).forEach((idJogo) => {
-        const funcData = mapa[idJogo];
-        const uuidSaidasParaRemover = new Set();
-
-        funcData.entradas = funcData.entradas.filter((entrada) => {
-          const registroExistente = combinedRecords.find((r) => r.uuid_entrada === entrada.uuid);
-          if (registroExistente && registroExistente.saida) {
-            if (registroExistente.uuid_saida) {
-              uuidSaidasParaRemover.add(registroExistente.uuid_saida);
-            }
-            return false;
-          }
-          return true;
-        });
-
-        funcData.saidas = funcData.saidas.filter((saida) => {
-          if (uuidSaidasParaRemover.has(saida.uuid)) return false;
-          const registroExistente = combinedRecords.find((r) => r.uuid_saida === saida.uuid);
-          if (registroExistente && registroExistente.entrada) return false;
-          return true;
-        });
-      });
-
-      const mapaFiltrado = {};
-      Object.entries(mapa).forEach(([idJogo, f]) => {
-        if (f.entradas.length > 0 || f.saidas.length > 0) {
-          mapaFiltrado[idJogo] = f;
-        }
-      });
-
-      setEventos(mapaFiltrado);
-      
-      const inicialConfig = {};
-      Object.entries(mapaFiltrado).forEach(([idJogo, { entradas, saidas }]) => {
-        inicialConfig[idJogo] = {};
-        const indicesUsados = new Set();
-
-        entradas.forEach((entrada, idx) => {
-          let autoSaidaIdx = null;
-          const dEntrada = new Date(entrada.dataISO);
-          const dEntradaMin = new Date(dEntrada).setSeconds(0, 0);
-          const proximaEntrada = entradas[idx + 1];
-
-          // Achar primeira saída do log que encaixe
-          for (let sIdx = 0; sIdx < saidas.length; sIdx++) {
-            if (indicesUsados.has(sIdx)) continue;
-
-            const dSaida = new Date(saidas[sIdx].dataISO);
-            const dSaidaMin = new Date(dSaida).setSeconds(0, 0);
-
-            // Deve ser no mesmo minuto ou posterior
-            if (dSaidaMin < dEntradaMin) continue;
-
-            // Não pode ultrapassar a próxima entrada
-            if (proximaEntrada && dSaida > new Date(proximaEntrada.dataISO)) break;
-
-            // Limite rígido de 6 horas
-            const diff = dSaida - dEntrada;
-            if (diff > 21600000) continue;
-
-            // Encontrou o par perfeito
-            autoSaidaIdx = sIdx;
-            indicesUsados.add(sIdx);
-            break;
-          }
-
-          if (autoSaidaIdx !== null) {
-            inicialConfig[idJogo][idx] = {
-              modo: "existente",
-              saidaIdx: autoSaidaIdx,
-              saidaData: "",
-              saidaHora: "",
-              ignorar: false
-            };
-          } else {
-            // Se excedeu 6 horas ou não tem saída, sugere criar saída padrão de 1h ou aberto
-            let saidaSugestao = new Date(dEntrada);
-            if (proximaEntrada) {
-              const dProx = new Date(proximaEntrada.dataISO);
-              const sugestaoPadrao = new Date(dEntrada);
-              sugestaoPadrao.setHours(sugestaoPadrao.getHours() + 1);
-
-              if (dProx <= sugestaoPadrao) {
-                saidaSugestao = new Date(dProx);
-                saidaSugestao.setMinutes(saidaSugestao.getMinutes() - 1);
-              } else {
-                saidaSugestao = sugestaoPadrao;
-              }
-            } else {
-              saidaSugestao.setHours(saidaSugestao.getHours() + 1);
-            }
-
-            inicialConfig[idJogo][idx] = {
-              modo: "manual",
-              saidaIdx: null,
-              saidaData: saidaSugestao.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }),
-              saidaHora: saidaSugestao.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" }),
-              ignorar: false
-            };
-          }
-        });
-      });
-      setConfig(inicialConfig);
-
-    } catch (err) {
-      console.error("Erro ao processar logs:", err);
-      alert("❌ Ocorreu um erro no processamento.");
-    } finally {
-      setProcessandoLog(false);
-    }
-  };
 
   // ===== IMPORTAÇÃO =====
   const handleImportar = async () => {
@@ -1605,147 +1417,43 @@ export default function PontoAdminPage({
         </p>
       </div>
 
-      {/* TABS DE SELEÇÃO DE MODO DE IMPORTAÇÃO */}
-      <div style={{ display: "flex", gap: "10px", marginBottom: "16px" }}>
-        <button
-          onClick={() => {
-            setModoImportacao("texto");
-            setEventos(null);
-            setConfig({});
-            setResultadoImportacao(null);
-          }}
-          style={{
-            flex: 1, padding: "12px", borderRadius: "10px", fontWeight: "700", fontSize: "14px",
-            background: modoImportacao === "texto" ? "linear-gradient(135deg, #b40d0d, #ef4444)" : theme.card2,
-            color: "#fff", border: `1px solid ${modoImportacao === "texto" ? "transparent" : theme.border}`,
-            cursor: "pointer", transition: "all 0.2s ease"
-          }}
-        >
-          📝 Cole o Log (Discord)
-        </button>
-        <button
-          onClick={() => {
-            setModoImportacao("banco");
-            setEventos(null);
-            setConfig({});
-            setResultadoImportacao(null);
-          }}
-          style={{
-            flex: 1, padding: "12px", borderRadius: "10px", fontWeight: "700", fontSize: "14px",
-            background: modoImportacao === "banco" ? "linear-gradient(135deg, #b40d0d, #ef4444)" : theme.card2,
-            color: "#fff", border: `1px solid ${modoImportacao === "banco" ? "transparent" : theme.border}`,
-            cursor: "pointer", transition: "all 0.2s ease"
-          }}
-        >
-          🗄️ Importar do Banco (point_sessions)
-        </button>
-      </div>
-
       {/* INPUT */}
       <div style={cardStyle}>
-        {modoImportacao === "texto" ? (
-          <>
-            <div style={{ ...styles.cardHeader, marginBottom: "14px" }}>
-              <span style={styles.dot} /> Cole o Log da Cidade
-            </div>
-            <textarea
-              value={textoLog}
-              onChange={(e) => setTextoLog(e.target.value)}
-              placeholder={`Cole aqui o conteúdo do arquivo .txt...\n\nExemplo:\n — 20/04/2026 00:54\n[ID]: 3503 Lucas Piccinato ( ENTROU EM SERVIÇO - Reds Tunnershop )\n\n[DATA]: 20/04/2026, 00:54:17\n[UUID]: 0af11e05-6cba-43f1-b104-ebbd85033824`}
-              style={{
-                width: "100%", minHeight: "180px", padding: "14px", borderRadius: "10px",
-                background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`,
-                fontSize: "12px", fontFamily: "monospace", resize: "vertical", outline: "none", lineHeight: "1.6",
-              }}
-            />
-            <div style={{ display: "flex", gap: "10px", marginTop: "12px", alignItems: "center" }}>
-              <button
-                onClick={processarLog}
-                disabled={!textoLog.trim() || processandoLog}
-                style={{
-                  background: (textoLog.trim() && !processandoLog) ? "linear-gradient(135deg, #b40d0d, #ef4444)" : "#333",
-                  color: "#fff", border: "none", padding: "10px 24px", borderRadius: "10px",
-                  fontWeight: "700", fontSize: "14px",
-                  cursor: (textoLog.trim() && !processandoLog) ? "pointer" : "not-allowed", opacity: (textoLog.trim() && !processandoLog) ? 1 : 0.5,
-                }}
-              >
-                {processandoLog ? "⏳ Processando..." : "🔍 Processar Log"}
-              </button>
-              {eventos && (
-                <button
-                  onClick={() => { setEventos(null); setConfig({}); setResultadoImportacao(null); setTextoLog(""); }}
-                  style={{ background: "transparent", border: `1px solid ${theme.border}`, color: theme.subtext, padding: "10px 18px", borderRadius: "10px", cursor: "pointer", fontSize: "13px" }}
-                >
-                  🔄 Limpar
-                </button>
-              )}
-            </div>
-          </>
-        ) : (
-          <>
-            <div style={{ ...styles.cardHeader, marginBottom: "14px" }}>
-              <span style={styles.dot} /> Importar Logs de point_sessions
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", marginBottom: "16px" }}>
-              <div style={{ flex: "1 1 200px" }}>
-                <label style={{ display: "block", fontSize: "12px", color: theme.subtext, fontWeight: "700", marginBottom: "6px" }}>Data/Hora de Início</label>
-                <input
-                  type="datetime-local"
-                  value={pointSessionsInicio}
-                  onChange={(e) => setPointSessionsInicio(e.target.value)}
-                  style={{
-                    ...styles.input,
-                    width: "100%",
-                    background: theme.card2,
-                    color: theme.text,
-                    border: `1px solid ${theme.border}`,
-                    padding: "8px 12px",
-                    borderRadius: "8px",
-                  }}
-                />
-              </div>
-              <div style={{ flex: "1 1 200px" }}>
-                <label style={{ display: "block", fontSize: "12px", color: theme.subtext, fontWeight: "700", marginBottom: "6px" }}>Data/Hora de Fim</label>
-                <input
-                  type="datetime-local"
-                  value={pointSessionsFim}
-                  onChange={(e) => setPointSessionsFim(e.target.value)}
-                  style={{
-                    ...styles.input,
-                    width: "100%",
-                    background: theme.card2,
-                    color: theme.text,
-                    border: `1px solid ${theme.border}`,
-                    padding: "8px 12px",
-                    borderRadius: "8px",
-                  }}
-                />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <button
-                onClick={buscarEProcessarPointSessions}
-                disabled={!pointSessionsInicio || !pointSessionsFim || processandoLog}
-                style={{
-                  background: (pointSessionsInicio && pointSessionsFim && !processandoLog) ? "linear-gradient(135deg, #b40d0d, #ef4444)" : "#333",
-                  color: "#fff", border: "none", padding: "10px 24px", borderRadius: "10px",
-                  fontWeight: "700", fontSize: "14px",
-                  cursor: (pointSessionsInicio && pointSessionsFim && !processandoLog) ? "pointer" : "not-allowed", opacity: (pointSessionsInicio && pointSessionsFim && !processandoLog) ? 1 : 0.5,
-                }}
-              >
-                {processandoLog ? "⏳ Processando..." : "🔍 Processar Logs do Banco"}
-              </button>
-              {eventos && (
-                <button
-                  onClick={() => { setEventos(null); setConfig({}); setResultadoImportacao(null); }}
-                  style={{ background: "transparent", border: `1px solid ${theme.border}`, color: theme.subtext, padding: "10px 18px", borderRadius: "10px", cursor: "pointer", fontSize: "13px" }}
-                >
-                  🔄 Limpar
-                </button>
-              )}
-            </div>
-          </>
-        )}
+        <div style={{ ...styles.cardHeader, marginBottom: "14px" }}>
+          <span style={styles.dot} /> Cole o Log da Cidade
+        </div>
+        <textarea
+          value={textoLog}
+          onChange={(e) => setTextoLog(e.target.value)}
+          placeholder={`Cole aqui o conteúdo do arquivo .txt...\n\nExemplo:\n — 20/04/2026 00:54\n[ID]: 3503 Lucas Piccinato ( ENTROU EM SERVIÇO - Reds Tunnershop )\n\n[DATA]: 20/04/2026, 00:54:17\n[UUID]: 0af11e05-6cba-43f1-b104-ebbd85033824`}
+          style={{
+            width: "100%", minHeight: "180px", padding: "14px", borderRadius: "10px",
+            background: theme.card2, color: theme.text, border: `1px solid ${theme.border}`,
+            fontSize: "12px", fontFamily: "monospace", resize: "vertical", outline: "none", lineHeight: "1.6",
+          }}
+        />
+        <div style={{ display: "flex", gap: "10px", marginTop: "12px", alignItems: "center" }}>
+          <button
+            onClick={processarLog}
+            disabled={!textoLog.trim() || processandoLog}
+            style={{
+              background: (textoLog.trim() && !processandoLog) ? "linear-gradient(135deg, #b40d0d, #ef4444)" : "#333",
+              color: "#fff", border: "none", padding: "10px 24px", borderRadius: "10px",
+              fontWeight: "700", fontSize: "14px",
+              cursor: (textoLog.trim() && !processandoLog) ? "pointer" : "not-allowed", opacity: (textoLog.trim() && !processandoLog) ? 1 : 0.5,
+            }}
+          >
+            {processandoLog ? "⏳ Processando..." : "🔍 Processar Log"}
+          </button>
+          {eventos && (
+            <button
+              onClick={() => { setEventos(null); setConfig({}); setResultadoImportacao(null); setTextoLog(""); }}
+              style={{ background: "transparent", border: `1px solid ${theme.border}`, color: theme.subtext, padding: "10px 18px", borderRadius: "10px", cursor: "pointer", fontSize: "13px" }}
+            >
+              🔄 Limpar
+            </button>
+          )}
+        </div>
       </div>
 
       {/* RESULTADO DA IMPORTAÇÃO FICA DE FORA PARA CONTINUAR VISÍVEL DEPOIS DE LIMPAR A TELA */}
