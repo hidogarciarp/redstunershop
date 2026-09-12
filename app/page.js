@@ -1338,16 +1338,30 @@ export default function Home() {
         .select("id, content, created_at")
         .eq("log_type", "ponto")
         .ilike("content", `%[ID]: ${usuarioLogado.id}%`)
-        .order("id", { ascending: false })
-        .limit(10);
+        .order("created_at", { ascending: false })
+        .limit(20);
 
       if (error) throw error;
 
-      const userLog = (logs || []).find((l) => {
+      const getLogTimestamp = (l) => {
+        const c = l.content || "";
+        const dataMatch = c.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}):(\d{2}):(\d{2})/i);
+        if (dataMatch) {
+          const [_, dia, mes, ano, hora, min, seg] = dataMatch;
+          return new Date(`${ano}-${mes}-${dia}T${hora}:${min}:${seg}-03:00`).getTime();
+        }
+        return new Date(l.created_at).getTime();
+      };
+
+      const userLogs = (logs || []).filter((l) => {
         const c = l.content || "";
         const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
         return idMatch && String(idMatch[1]).trim() === String(usuarioLogado.id).trim();
       });
+
+      userLogs.sort((a, b) => getLogTimestamp(b) - getLogTimestamp(a));
+
+      const userLog = userLogs[0];
 
       if (userLog) {
         const c = userLog.content || "";
@@ -1355,14 +1369,8 @@ export default function Home() {
         const isSaiu = c.includes("SAIU DE SERVIÇO");
 
         if (isEntrou && !isSaiu) {
-          const dataMatch = c.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
-          let timestamp = userLog.created_at;
-          if (dataMatch) {
-            const [_, dataStr, horaStr] = dataMatch;
-            const [dia, mes, ano] = dataStr.split("/");
-            timestamp = `${ano}-${mes}-${dia}T${horaStr}-03:00`;
-          }
-          const dtEntrada = new Date(timestamp);
+          const ts = getLogTimestamp(userLog);
+          const dtEntrada = new Date(ts);
           if (Date.now() - dtEntrada.getTime() < 18 * 60 * 60 * 1000) {
             setPontoAtivo({
               entrada: dtEntrada.toISOString(),
