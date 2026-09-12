@@ -924,9 +924,44 @@ export default function Home() {
     }
   };
 
+  const COLUNAS_PUBLICAS_USUARIOS = [
+    "id",
+    "nome",
+    "role",
+    "telefone",
+    "oculto_hierarquia",
+    "bloqueado_financeiro",
+    "valor_semanal",
+    "data_vencimento",
+    "renovacao_auto",
+    "credito_24h_disponivel",
+    "credito_24h_usado_em",
+    "discord_id",
+    "status",
+    "data_admissao",
+    "ids_antigos",
+    "nomes_antigos",
+    "avatar_url",
+    "staff_por",
+    "data_demissao",
+    "layout_preferido",
+    "curso_estagiario_concluido",
+    "curso_estagiario_concluido_em",
+    "curso_estagiario_removido_em",
+    "curso_estagiario_removido_por",
+    "curso_tunagem_concluido",
+    "curso_tunagem_concluido_em",
+    "curso_tunagem_removido_em",
+    "curso_tunagem_removido_por",
+    "cursos_concluidos"
+  ].join(",");
+
   const buscarListaFuncionarios = async () => {
     try {
-      const { data, error } = await supabase.from("usuarios").select("*").order("nome", { ascending: true });
+      const { data, error } = await supabase
+        .from("usuarios")
+        .select(COLUNAS_PUBLICAS_USUARIOS)
+        .order("nome", { ascending: true });
       if (error) {
         console.error("Erro ao buscar lista de funcionários:", error.message, error);
       } else {
