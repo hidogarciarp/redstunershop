@@ -1823,20 +1823,10 @@ export default function Home() {
     }
   };
 
-  const ficarOnline = async () => {
-    if (!usuarioLogado) return;
-    await supabase.from("usuarios_online").upsert({ usuario_id: usuarioLogado.id, nome: usuarioLogado.nome, ultimo_ping: new Date().toISOString() });
-  };
-
-  const buscarOnline = async () => {
-    const { data } = await supabase.from("usuarios_online").select("*");
-    if (data) setUsuariosOnline(data);
-  };
-
-  const limparOffline = async () => {
-    const limite = new Date(Date.now() - 20000).toISOString();
-    await supabase.from("usuarios_online").delete().lt("ultimo_ping", limite);
-  };
+  // Gerenciamento de status online migrado para Supabase Realtime Presence (0 gravações/leituras de disco)
+  const ficarOnline = async () => {};
+  const buscarOnline = async () => {};
+  const limparOffline = async () => {};
 
   const buscarEmServico = async () => {
     const { data } = await supabase.from("ponto_horas").select("*").is("saida", null);
@@ -3557,7 +3547,9 @@ export default function Home() {
     const validarVisibilidade = () => {
       if (document.visibilityState === "visible") validarSessao();
     };
-    const intervalo = window.setInterval(validarSessao, 15000);
+    const intervalo = window.setInterval(() => {
+      if (document.visibilityState === "visible") validarSessao();
+    }, 120000);
     window.addEventListener("focus", validarSessao);
     document.addEventListener("visibilitychange", validarVisibilidade);
 
@@ -3680,8 +3672,17 @@ export default function Home() {
 
     verificarPontoAtivo();
     const intervalPonto = setInterval(() => {
-      verificarPontoAtivo();
-    }, 20000);
+      if (document.visibilityState === "visible") {
+        verificarPontoAtivo();
+      }
+    }, 120000);
+
+    const handleVisibilidadePonto = () => {
+      if (document.visibilityState === "visible") {
+        verificarPontoAtivo();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilidadePonto);
 
     const canalPontoRealtime = supabase
       .channel("global-ponto-realtime")
@@ -3695,32 +3696,59 @@ export default function Home() {
 
     return () => {
       clearInterval(intervalPonto);
+      document.removeEventListener("visibilitychange", handleVisibilidadePonto);
       supabase.removeChannel(canalPontoRealtime);
     };
   }, [usuarioLogado]);
 
+  // Usuários Online em tempo real via Presence (100% em memória, zero gravação/leitura de disco)
   useEffect(() => {
-    if (!usuarioLogado) return;
-    ficarOnline();
-    const interval = setInterval(() => ficarOnline(), 10000);
-    return () => clearInterval(interval);
-  }, [usuarioLogado]);
+    if (!usuarioLogado?.id) return;
 
-  useEffect(() => {
-    const handleClose = async () => {
-      if (!usuarioLogado) return;
-      await supabase.from("usuarios_online").delete().eq("usuario_id", usuarioLogado.id);
+    const canalPresence = supabase.channel("online-users", {
+      config: {
+        presence: {
+          key: String(usuarioLogado.id),
+        },
+      },
+    });
+
+    const atualizarListaOnline = () => {
+      const state = canalPresence.presenceState();
+      const onlineMap = new Map();
+      for (const key in state) {
+        const presences = state[key];
+        if (Array.isArray(presences) && presences.length > 0) {
+          const user = presences[0];
+          if (user && user.usuario_id) {
+            onlineMap.set(String(user.usuario_id), user);
+          }
+        }
+      }
+      setUsuariosOnline(Array.from(onlineMap.values()));
     };
-    window.addEventListener("beforeunload", handleClose);
-    return () => window.removeEventListener("beforeunload", handleClose);
-  }, [usuarioLogado]);
 
-  useEffect(() => {
-    const canal = supabase.channel("online-users")
-      .on("postgres_changes", { event: "*", schema: "public", table: "usuarios_online" }, () => buscarOnline())
-      .subscribe();
-    return () => supabase.removeChannel(canal);
-  }, []);
+    canalPresence
+      .on("presence", { event: "sync" }, atualizarListaOnline)
+      .on("presence", { event: "join" }, atualizarListaOnline)
+      .on("presence", { event: "leave" }, atualizarListaOnline)
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await canalPresence.track({
+            usuario_id: usuarioLogado.id,
+            nome: usuarioLogado.nome,
+            role: usuarioLogado.role || "",
+          });
+        }
+      });
+
+    return () => {
+      try {
+        canalPresence.untrack();
+      } catch (_) {}
+      supabase.removeChannel(canalPresence);
+    };
+  }, [usuarioLogado?.id, usuarioLogado?.nome, usuarioLogado?.role]);
 
   // Listener Realtime + Polling Contínuo de Notificações (Garante recebimento instantâneo em qualquer janela ou aba)
   useEffect(() => {
@@ -3767,10 +3795,12 @@ export default function Home() {
         }
       });
 
-    // 3. Polling ativo a cada 4 segundos como garantia (caso websockets caiam ou aba fique ociosa)
+    // 3. Polling de contingência a cada 60s se a aba estiver ativa (Realtime já entrega instantâneo)
     const intervalNotif = setInterval(() => {
-      buscarNotificacaoPendente();
-    }, 4000);
+      if (document.visibilityState === "visible") {
+        buscarNotificacaoPendente();
+      }
+    }, 60000);
 
     // 4. Checar instantaneamente ao focar na janela ou mudar de aba
     const handleVisibility = () => {
@@ -3925,12 +3955,6 @@ export default function Home() {
       supabase.removeChannel(canalDiscordServicos);
     };
   }, [usuarioLogado, notificarTodasTunagens]);
-
-  useEffect(() => {
-    if (!usuarioLogado) return;
-    const interval = setInterval(() => { ficarOnline(); limparOffline(); }, 10000);
-    return () => clearInterval(interval);
-  }, [usuarioLogado]);
 
   const [vagasAtivas, setVagasAtivas] = useState({});
 

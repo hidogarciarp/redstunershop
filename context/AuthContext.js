@@ -32,34 +32,7 @@ export function AuthProvider({ children }) {
     }
   }, [usuarioLogado]);
 
-  // Keep user "online" if logged in (Moved from page.js line ~1724)
-  useEffect(() => {
-    if (!usuarioLogado) return;
-    
-    const ficarOnline = async () => {
-      await supabase.from("usuarios_online").upsert({
-        usuario_id: usuarioLogado.id,
-        nome: usuarioLogado.nome,
-        role: usuarioLogado.role,
-        ultima_atividade: new Date().toISOString()
-      }, { onConflict: "usuario_id" });
-    };
-
-    ficarOnline();
-    const interval = setInterval(() => ficarOnline(), 10000);
-    
-    return () => clearInterval(interval);
-  }, [usuarioLogado]);
-
-  // Clear online status on close
-  useEffect(() => {
-    const handleClose = async () => {
-      if (!usuarioLogado) return;
-      await supabase.from("usuarios_online").delete().eq("usuario_id", usuarioLogado.id);
-    };
-    window.addEventListener("beforeunload", handleClose);
-    return () => window.removeEventListener("beforeunload", handleClose);
-  }, [usuarioLogado]);
+  // Status de online gerenciado via Supabase Realtime Presence (0 gravações em disco)
 
   return (
     <AuthContext.Provider value={{ usuarioLogado, setUsuarioLogado, authLoading }}>
