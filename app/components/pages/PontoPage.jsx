@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { supabase } from "../../utils/supabaseClient";
+import ModalDetalheTunagem from "../ModalDetalheTunagem";
 
 function usePontoElapsed(pontoAtivo) {
   const [segundos, setSegundos] = useState(0);
@@ -139,6 +140,165 @@ export default function PontoPage({
   const [sessoesPonto, setSessoesPonto] = useState([]);
   const [carregandoSessoes, setCarregandoSessoes] = useState(false);
   const [pontosAbertosAoVivo, setPontosAbertosAoVivo] = useState([]);
+  const [pontoSelecionadoAuditoria, setPontoSelecionadoAuditoria] = useState(null);
+  const [carregandoAtividadesPonto, setCarregandoAtividadesPonto] = useState(false);
+  const [atividadesPontoSelecionado, setAtividadesPontoSelecionado] = useState(null);
+  const [modalLogTunagemDetalhe, setModalLogTunagemDetalhe] = useState(null);
+  const [abaAtividadeModal, setAbaAtividadeModal] = useState("todas");
+
+  const abrirHistoricoPeriodo = async (ponto) => {
+    if (!ponto) return;
+    setPontoSelecionadoAuditoria(ponto);
+    setCarregandoAtividadesPonto(true);
+    setAtividadesPontoSelecionado(null);
+    setAbaAtividadeModal("todas");
+
+    const entTs = ponto.entrada ? new Date(ponto.entrada).getTime() : 0;
+    const saiTs = ponto.saida ? new Date(ponto.saida).getTime() : Date.now();
+    const dataDiaStr = ponto.data || (ponto.entrada ? ponto.entrada.substring(0, 10) : "");
+
+    try {
+      // 1. Logs de tunagem
+      let logsTunagem = [];
+      try {
+        let queryTunReds = supabase
+          .from("logs_tunagem_reds")
+          .select("*")
+          .gte("data", dataDiaStr)
+          .lte("data", ponto.saida ? new Date(saiTs).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) : dataDiaStr);
+
+        if (ponto.id_jogo) {
+          queryTunReds = queryTunReds.or(`tecnico_id.eq.${ponto.id_jogo},tecnico_nome.ilike.%${ponto.nome || ""}%`);
+        } else if (ponto.nome) {
+          queryTunReds = queryTunReds.ilike("tecnico_nome", `%${ponto.nome}%`);
+        }
+
+        const { data: dataTunReds } = await queryTunReds;
+        if (dataTunReds && dataTunReds.length > 0) {
+          logsTunagem = dataTunReds;
+        } else {
+          let queryTunGeral = supabase
+            .from("logs_tunagem")
+            .select("*")
+            .gte("data", dataDiaStr)
+            .lte("data", ponto.saida ? new Date(saiTs).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) : dataDiaStr);
+
+          if (ponto.id_jogo) {
+            queryTunGeral = queryTunGeral.or(`tecnico_id.eq.${ponto.id_jogo},tecnico_nome.ilike.%${ponto.nome || ""}%`);
+          } else if (ponto.nome) {
+            queryTunGeral = queryTunGeral.ilike("tecnico_nome", `%${ponto.nome}%`);
+          }
+          const { data: dataTunGeral } = await queryTunGeral;
+          logsTunagem = dataTunGeral || [];
+        }
+      } catch (e) {
+        logsTunagem = [];
+      }
+
+      const tunagensNoPeriodo = (logsTunagem || [])
+        .filter((t) => {
+          if (!t.data || !t.hora) return false;
+          try {
+            const dtStr = `${t.data}T${t.hora}-03:00`;
+            const dt = new Date(dtStr).getTime();
+            return dt >= entTs - 60000 && dt <= saiTs + 60000;
+          } catch (e) {
+            return false;
+          }
+        })
+        .map((t) => ({
+          ...t,
+          tipo: "tunagem",
+          hora: t.hora || ""
+        }));
+
+      // 2. Logs de Bancada (discord_log_messages)
+      const lookbackMargemIni = new Date(entTs - 2 * 60000).toISOString();
+      const lookbackMargemFim = new Date(saiTs + 2 * 60000).toISOString();
+
+      const { data: logsBancada } = await supabase
+        .from("discord_log_messages")
+        .select("*")
+        .eq("log_type", "bancada")
+        .gte("created_at", lookbackMargemIni)
+        .lte("created_at", lookbackMargemFim)
+        .order("id", { ascending: true });
+
+      const bancadaItens = [];
+      (logsBancada || []).forEach((msg) => {
+        const c = msg.content || "";
+        const idStr = String(ponto.id_jogo || "");
+        const matchId = idStr && (c.includes(`[ID]: ${idStr}`) || c.includes(`ID]: ${idStr}`) || c.match(new RegExp(`\\[ID\\]:\\s*${idStr}\\b`, "i")));
+        const matchNome = ponto.nome && c.toLowerCase().includes(ponto.nome.toLowerCase());
+
+        if (matchId || matchNome) {
+          const itemMatch = c.match(/\[(?:ITEMNAME|ITEM|ITEMKEY)\]:\s*([^\n\r]+)/i);
+          const qtdMatch = c.match(/\[(?:QUANTIDADE|QTD)\]:\s*(\d+)/i);
+          const precoMatch = c.match(/\[(?:PRICE|VALOR|PRE[ÇC]O)\]:\s*([^\n\r]+)/i);
+          const acaoMatch = c.match(/\[A[ÇC][ÃA]O\]:\s*([^\n\r]+)/i);
+          const horaMatch = c.match(/\[DATA\]:\s*\d{2}\/\d{2}\/\d{4},\s*(\d{2}:\d{2}:\d{2})/i);
+          const horaStr = horaMatch ? horaMatch[1] : new Date(msg.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+          let precoFormatado = precoMatch ? precoMatch[1].trim() : "0";
+          if (!precoFormatado.startsWith("$") && !precoFormatado.startsWith("R$")) {
+            precoFormatado = `$${precoFormatado}`;
+          }
+
+          bancadaItens.push({
+            tipo: "bancada",
+            item: itemMatch ? itemMatch[1].trim() : "Item de Bancada",
+            qtd: qtdMatch ? qtdMatch[1].trim() : "1",
+            preco: precoFormatado,
+            acao: acaoMatch ? acaoMatch[1].trim() : "compra",
+            hora: horaStr,
+            rawLog: c
+          });
+        }
+      });
+
+      // 3. Logs de Baú (discord_log_messages)
+      const { data: logsBau } = await supabase
+        .from("discord_log_messages")
+        .select("*")
+        .eq("log_type", "bau")
+        .gte("created_at", lookbackMargemIni)
+        .lte("created_at", lookbackMargemFim)
+        .order("id", { ascending: true });
+
+      const bauItens = [];
+      (logsBau || []).forEach((msg) => {
+        const c = msg.content || "";
+        const idStr = String(ponto.id_jogo || "");
+        const matchId = idStr && (c.includes(`[ID]: ${idStr}`) || c.includes(`ID]: ${idStr}`) || c.match(new RegExp(`\\[ID\\]:\\s*${idStr}\\b`, "i")));
+        const matchNome = ponto.nome && c.toLowerCase().includes(ponto.nome.toLowerCase());
+
+        if (matchId || matchNome) {
+          const retMatch = c.match(/\[RETIROU\]:\s*([^\n\r]+)/i);
+          const colMatch = c.match(/\[COLOCOU\]:\s*([^\n\r]+)/i);
+          const horaMatch = c.match(/\[DATA\]:\s*\d{2}\/\d{2}\/\d{4},\s*(\d{2}:\d{2}:\d{2})/i);
+          const horaStr = horaMatch ? horaMatch[1] : new Date(msg.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+          if (retMatch) {
+            bauItens.push({ tipo: "bau", acao: "Retirou", item: retMatch[1].trim(), hora: horaStr, rawLog: c });
+          }
+          if (colMatch) {
+            bauItens.push({ tipo: "bau", acao: "Colocou", item: colMatch[1].trim(), hora: horaStr, rawLog: c });
+          }
+        }
+      });
+
+      setAtividadesPontoSelecionado({
+        tunagens: tunagensNoPeriodo,
+        bancada: bancadaItens,
+        bau: bauItens
+      });
+    } catch (err) {
+      console.error("Erro ao carregar atividades do período:", err);
+      setAtividadesPontoSelecionado({ tunagens: [], bancada: [], bau: [] });
+    } finally {
+      setCarregandoAtividadesPonto(false);
+    }
+  };
 
   const carregarSessoes = useCallback(async (filtrosCustom = {}) => {
     if (!usuarioLogado) return;
@@ -777,8 +937,29 @@ export default function PontoPage({
               const dataRegStr = reg.data || (reg.entrada ? new Date(reg.entrada).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) : "");
 
               return (
-                <div key={reg.id || reg.uuid_sessao} style={{ padding: "12px 0", borderBottom: `1px solid ${theme.border}` }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div
+                  key={reg.id || reg.uuid_sessao}
+                  onClick={() => abrirHistoricoPeriodo(reg)}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: "10px",
+                    marginBottom: "10px",
+                    border: `1px solid ${theme.border}`,
+                    background: "rgba(255, 255, 255, 0.02)",
+                    cursor: "pointer",
+                    transition: "all 0.15s ease"
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+                    e.currentTarget.style.borderColor = "rgba(56, 189, 248, 0.4)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "rgba(255, 255, 255, 0.02)";
+                    e.currentTarget.style.borderColor = theme.border;
+                  }}
+                  title="Clique para ver o histórico e atividades deste período"
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px" }}>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                         <b style={{ fontSize: "14px", color: theme.text }}>{reg.nome || "Não informado"}</b>
@@ -826,7 +1007,7 @@ export default function PontoPage({
                       )}
                     </div>
 
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "nowrap" }}>
                       <span style={{
                         color: isAberta ? "#22c55e" : durMin >= 30 ? "#22c55e" : theme.accent,
                         fontWeight: "700",
@@ -834,15 +1015,39 @@ export default function PontoPage({
                       }}>
                         {duracaoStr}
                       </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          abrirHistoricoPeriodo(reg);
+                        }}
+                        style={{
+                          background: "rgba(56, 189, 248, 0.12)",
+                          color: "#38bdf8",
+                          border: "1px solid rgba(56, 189, 248, 0.3)",
+                          padding: "4px 8px",
+                          borderRadius: "6px",
+                          cursor: "pointer",
+                          fontSize: "11px",
+                          fontWeight: "700",
+                          whiteSpace: "nowrap",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "4px"
+                        }}
+                        title="Ver atividades realizadas durante este período"
+                      >
+                        🔍 Ver Histórico
+                      </button>
                       {editandoPontoId !== reg.id && (pertenceAoUsuario(reg) || userIsRespPonto) && (
                         <button
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             setEditandoPontoId(reg.id);
                             setNovaSaidaDataInput(dataRegStr);
                             setNovaSaidaInput(reg.saida ? new Date(reg.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" }) : "");
                             setNovaSaidaJustificativa("");
                           }}
-                          style={{ background: "#1e40af20", color: "#60a5fa", border: "1px solid #1e40af", padding: "3px 9px", borderRadius: "6px", cursor: "pointer", fontSize: "11px", fontWeight: "700" }}
+                          style={{ background: "#1e40af20", color: "#60a5fa", border: "1px solid #1e40af", padding: "4px 9px", borderRadius: "6px", cursor: "pointer", fontSize: "11px", fontWeight: "700", whiteSpace: "nowrap" }}
                         >
                           ✏️ Editar Saída
                         </button>
@@ -851,7 +1056,10 @@ export default function PontoPage({
                   </div>
 
                   {editandoPontoId === reg.id && (
-                    <div style={{ marginTop: "10px", background: theme.card2, borderRadius: "10px", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ marginTop: "10px", background: theme.card2, borderRadius: "10px", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}
+                    >
                       <span style={{ fontSize: "12px", color: theme.subtext, fontWeight: "600" }}>
                         ✏️ Editar saída — <span style={{ color: "#60a5fa" }}>Entrada: {formatarData(dataRegStr || reg.entrada)} às {formatarHorario(reg.entrada)}</span>
                       </span>
@@ -1009,6 +1217,412 @@ export default function PontoPage({
           )}
         </div>
       </div>
+
+      {/* Modal de Histórico e Atividades do Período */}
+      {pontoSelecionadoAuditoria && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 9999,
+            background: "rgba(0, 0, 0, 0.82)",
+            backdropFilter: "blur(8px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px"
+          }}
+          onClick={() => setPontoSelecionadoAuditoria(null)}
+        >
+          <div
+            style={{
+              background: "#0f172a",
+              border: "1.5px solid rgba(56, 189, 248, 0.4)",
+              borderRadius: "16px",
+              width: "100%",
+              maxWidth: "740px",
+              maxHeight: "88vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 30px rgba(56, 189, 248, 0.2)",
+              overflow: "hidden",
+              color: "#fff"
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "16px 20px",
+                background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center"
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "18px" }}>🔍</span>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "900", color: "#f8fafc" }}>
+                    Histórico do Período: {pontoSelecionadoAuditoria.nome}
+                  </h3>
+                  {pontoSelecionadoAuditoria.id_jogo && (
+                    <span
+                      style={{
+                        background: "rgba(56, 189, 248, 0.2)",
+                        border: "1px solid #38bdf8",
+                        color: "#38bdf8",
+                        fontSize: "11px",
+                        fontFamily: "monospace",
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        fontWeight: "700"
+                      }}
+                    >
+                      ID: {pontoSelecionadoAuditoria.id_jogo}
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: "800",
+                      padding: "2px 8px",
+                      borderRadius: "6px",
+                      background: (pontoSelecionadoAuditoria.duracao_min || 0) >= 30 ? "rgba(34, 197, 94, 0.2)" : "rgba(239, 68, 68, 0.2)",
+                      color: (pontoSelecionadoAuditoria.duracao_min || 0) >= 30 ? "#4ade80" : "#fca5a5",
+                      border: `1px solid ${(pontoSelecionadoAuditoria.duracao_min || 0) >= 30 ? "rgba(34, 197, 94, 0.4)" : "rgba(239, 68, 68, 0.4)"}`
+                    }}
+                  >
+                    ⏱️ {pontoSelecionadoAuditoria.duracao_min || 0} min
+                  </span>
+                </div>
+
+                <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "4px" }}>
+                  📅 {formatarData(pontoSelecionadoAuditoria.data || pontoSelecionadoAuditoria.entrada)} · 🕒 Entrada:{" "}
+                  <strong style={{ color: "#f1f5f9" }}>{formatarHorario(pontoSelecionadoAuditoria.entrada)}</strong> → Saída:{" "}
+                  <strong style={{ color: "#f1f5f9" }}>{pontoSelecionadoAuditoria.saida ? formatarHorario(pontoSelecionadoAuditoria.saida) : "Em andamento"}</strong>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setPontoSelecionadoAuditoria(null)}
+                style={{
+                  background: "rgba(255, 255, 255, 0.1)",
+                  border: "none",
+                  color: "#94a3b8",
+                  borderRadius: "8px",
+                  width: "32px",
+                  height: "32px",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Conteúdo */}
+            <div style={{ padding: "18px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "14px" }}>
+              {/* Alerta de Infração < 30min */}
+              {(pontoSelecionadoAuditoria.duracao_min !== undefined && pontoSelecionadoAuditoria.duracao_min < 30 && pontoSelecionadoAuditoria.saida) && (
+                <div
+                  style={{
+                    background: "rgba(239, 68, 68, 0.15)",
+                    border: "1.5px solid #ef4444",
+                    borderRadius: "10px",
+                    padding: "12px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px"
+                  }}
+                >
+                  <span style={{ fontSize: "20px" }}>🚨</span>
+                  <div>
+                    <div style={{ fontSize: "13px", fontWeight: "800", color: "#fca5a5" }}>
+                      Turno curto: Menos de 30 minutos ({pontoSelecionadoAuditoria.duracao_min} min)
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#fecaca" }}>
+                      Histórico detalhado de atividades registradas pelo funcionário neste intervalo:
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Observação / Justificativa / Crash se houver */}
+              {(pontoSelecionadoAuditoria.observacao || pontoSelecionadoAuditoria.justificativa || pontoSelecionadoAuditoria.motivo_crash) && (
+                <div
+                  style={{
+                    background: "rgba(234, 179, 8, 0.12)",
+                    border: "1px solid rgba(234, 179, 8, 0.4)",
+                    borderRadius: "10px",
+                    padding: "10px 14px",
+                    fontSize: "12px",
+                    color: "#fef08a"
+                  }}
+                >
+                  📝 <strong>Observação:</strong> {pontoSelecionadoAuditoria.observacao || pontoSelecionadoAuditoria.justificativa || pontoSelecionadoAuditoria.motivo_crash}
+                </div>
+              )}
+
+              {carregandoAtividadesPonto ? (
+                <div style={{ padding: "40px", textAlign: "center", color: "#94a3b8" }}>
+                  <div style={{ fontSize: "24px", marginBottom: "8px" }}>⏳</div>
+                  <div style={{ fontSize: "13px", fontWeight: "700" }}>Buscando atividades registradas no período...</div>
+                  <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                    Consultando logs de tunagem, bancada e movimentações de baú.
+                  </div>
+                </div>
+              ) : atividadesPontoSelecionado && (
+                <>
+                  {(() => {
+                    const totalTun = atividadesPontoSelecionado.tunagens.length;
+                    const totalBan = atividadesPontoSelecionado.bancada.length;
+                    const totalBau = atividadesPontoSelecionado.bau.length;
+                    const totalGeral = totalTun + totalBan + totalBau;
+
+                    return (
+                      <>
+                        <div style={{ display: "flex", gap: "8px", borderBottom: "1px solid rgba(255,255,255,0.1)", paddingBottom: "8px", flexWrap: "wrap" }}>
+                          <button
+                            onClick={() => setAbaAtividadeModal("todas")}
+                            style={{
+                              background: abaAtividadeModal === "todas" ? "rgba(56, 189, 248, 0.2)" : "rgba(255,255,255,0.05)",
+                              border: `1px solid ${abaAtividadeModal === "todas" ? "#38bdf8" : "rgba(255,255,255,0.1)"}`,
+                              color: abaAtividadeModal === "todas" ? "#38bdf8" : "#94a3b8",
+                              padding: "5px 12px",
+                              borderRadius: "7px",
+                              fontSize: "12px",
+                              fontWeight: "800",
+                              cursor: "pointer"
+                            }}
+                          >
+                            Todas ({totalGeral})
+                          </button>
+                          <button
+                            onClick={() => setAbaAtividadeModal("tunagens")}
+                            style={{
+                              background: abaAtividadeModal === "tunagens" ? "rgba(34, 197, 94, 0.2)" : "rgba(255,255,255,0.05)",
+                              border: `1px solid ${abaAtividadeModal === "tunagens" ? "#22c55e" : "rgba(255,255,255,0.1)"}`,
+                              color: abaAtividadeModal === "tunagens" ? "#4ade80" : "#94a3b8",
+                              padding: "5px 12px",
+                              borderRadius: "7px",
+                              fontSize: "12px",
+                              fontWeight: "800",
+                              cursor: "pointer"
+                            }}
+                          >
+                            🚗 Tunagens ({totalTun})
+                          </button>
+                          <button
+                            onClick={() => setAbaAtividadeModal("bancada")}
+                            style={{
+                              background: abaAtividadeModal === "bancada" ? "rgba(168, 85, 247, 0.2)" : "rgba(255,255,255,0.05)",
+                              border: `1px solid ${abaAtividadeModal === "bancada" ? "#a855f7" : "rgba(255,255,255,0.1)"}`,
+                              color: abaAtividadeModal === "bancada" ? "#c084fc" : "#94a3b8",
+                              padding: "5px 12px",
+                              borderRadius: "7px",
+                              fontSize: "12px",
+                              fontWeight: "800",
+                              cursor: "pointer"
+                            }}
+                          >
+                            🧰 Bancada ({totalBan})
+                          </button>
+                          <button
+                            onClick={() => setAbaAtividadeModal("bau")}
+                            style={{
+                              background: abaAtividadeModal === "bau" ? "rgba(245, 158, 11, 0.2)" : "rgba(255,255,255,0.05)",
+                              border: `1px solid ${abaAtividadeModal === "bau" ? "#f59e0b" : "rgba(255,255,255,0.1)"}`,
+                              color: abaAtividadeModal === "bau" ? "#fbbf24" : "#94a3b8",
+                              padding: "5px 12px",
+                              borderRadius: "7px",
+                              fontSize: "12px",
+                              fontWeight: "800",
+                              cursor: "pointer"
+                            }}
+                          >
+                            📦 Baú ({totalBau})
+                          </button>
+                        </div>
+
+                        {totalGeral === 0 && (
+                          <div style={{ padding: "30px", textAlign: "center", background: "rgba(255,255,255,0.02)", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                            <div style={{ fontSize: "26px", marginBottom: "6px" }}>⚪</div>
+                            <div style={{ fontSize: "14px", fontWeight: "700", color: "#cbd5e1" }}>
+                              Nenhuma atividade registrada neste período
+                            </div>
+                            <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
+                              O mecânico não realizou tunagens, compras/produções na bancada nem movimentações de baú durante este ponto.
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Tunagens */}
+                        {(abaAtividadeModal === "todas" || abaAtividadeModal === "tunagens") && totalTun > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            <div style={{ fontSize: "12px", fontWeight: "800", color: "#4ade80", textTransform: "uppercase" }}>
+                              🚗 Tunagens Realizadas ({totalTun})
+                            </div>
+                            {atividadesPontoSelecionado.tunagens.map((t, idx) => (
+                              <div
+                                key={t.uuid || idx}
+                                style={{
+                                  background: "rgba(255,255,255,0.03)",
+                                  border: "1px solid rgba(255,255,255,0.08)",
+                                  borderRadius: "8px",
+                                  padding: "10px 14px",
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center"
+                                }}
+                              >
+                                <div>
+                                  <div style={{ fontSize: "13px", fontWeight: "800", color: "#f8fafc" }}>
+                                    {t.veiculo_nome || "Veículo"}{" "}
+                                    {t.placa && (
+                                      <span style={{ color: "#38bdf8", fontFamily: "monospace", fontSize: "11px" }}>
+                                        ({t.placa})
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                                    👤 Cliente: <strong>{t.dono_nome || "Cliente"}</strong> • 🕒 Horário: <strong>{t.hora || "—"}</strong>
+                                  </div>
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                  <span style={{ fontSize: "13px", fontWeight: "900", color: "#4ade80" }}>
+                                    R$ {Number(t.valor_pago || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                                  </span>
+                                  <button
+                                    onClick={() => setModalLogTunagemDetalhe(t)}
+                                    style={{
+                                      background: "rgba(56, 189, 248, 0.15)",
+                                      border: "1px solid rgba(56, 189, 248, 0.4)",
+                                      color: "#38bdf8",
+                                      padding: "4px 8px",
+                                      borderRadius: "6px",
+                                      fontSize: "11px",
+                                      fontWeight: "800",
+                                      cursor: "pointer"
+                                    }}
+                                  >
+                                    📋 Ver Ficha
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Bancada */}
+                        {(abaAtividadeModal === "todas" || abaAtividadeModal === "bancada") && totalBan > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            <div style={{ fontSize: "12px", fontWeight: "800", color: "#c084fc", textTransform: "uppercase" }}>
+                              🧰 Itens de Bancada ({totalBan})
+                            </div>
+                            {atividadesPontoSelecionado.bancada.map((b, idx) => (
+                              <div
+                                key={idx}
+                                style={{
+                                  background: "rgba(255,255,255,0.03)",
+                                  border: "1px solid rgba(255,255,255,0.08)",
+                                  borderRadius: "8px",
+                                  padding: "8px 12px",
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center"
+                                }}
+                              >
+                                <div>
+                                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#f8fafc" }}>
+                                    {b.item}
+                                  </span>{" "}
+                                  <span style={{ fontSize: "11px", color: "#a855f7", fontWeight: "800" }}>
+                                    x{b.qtd}
+                                  </span>
+                                  <div style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                    🕒 {b.hora} · Ação: {b.acao}
+                                  </div>
+                                </div>
+                                <span style={{ fontSize: "12px", fontWeight: "800", color: "#e2e8f0" }}>
+                                  {b.preco}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Baú */}
+                        {(abaAtividadeModal === "todas" || abaAtividadeModal === "bau") && totalBau > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            <div style={{ fontSize: "12px", fontWeight: "800", color: "#fbbf24", textTransform: "uppercase" }}>
+                              📦 Movimentações no Baú ({totalBau})
+                            </div>
+                            {atividadesPontoSelecionado.bau.map((b, idx) => (
+                              <div
+                                key={idx}
+                                style={{
+                                  background: "rgba(255,255,255,0.03)",
+                                  border: "1px solid rgba(255,255,255,0.08)",
+                                  borderRadius: "8px",
+                                  padding: "8px 12px",
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center"
+                                }}
+                              >
+                                <div>
+                                  <span
+                                    style={{
+                                      fontSize: "11px",
+                                      fontWeight: "800",
+                                      padding: "2px 6px",
+                                      borderRadius: "4px",
+                                      background: b.acao === "Retirou" ? "rgba(239, 68, 68, 0.2)" : "rgba(34, 197, 94, 0.2)",
+                                      color: b.acao === "Retirou" ? "#fca5a5" : "#86efac",
+                                      marginRight: "8px"
+                                    }}
+                                  >
+                                    {b.acao}
+                                  </span>
+                                  <span style={{ fontSize: "12px", color: "#f8fafc", fontWeight: "600" }}>
+                                    {b.item}
+                                  </span>
+                                </div>
+                                <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                                  🕒 {b.hora}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Detalhe da Tunagem */}
+      {modalLogTunagemDetalhe && (
+        <ModalDetalheTunagem
+          theme={theme}
+          modalLogDetalhe={modalLogTunagemDetalhe}
+          setModalLogDetalhe={setModalLogTunagemDetalhe}
+          usuarioLogado={usuarioLogado}
+          podeVerJsonBruto={false}
+        />
+      )}
     </div>
   );
 }
