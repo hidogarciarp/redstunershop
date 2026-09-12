@@ -80,10 +80,68 @@ export default function MinhaContaPage({
   const [linkDossieTemp, setLinkDossieTemp] = useState("");
   const [showModalPontos, setShowModalPontos] = useState(false);
   const [sessoesCidade, setSessoesCidade] = useState([]);
+  const [fotoPerfilPreview, setFotoPerfilPreview] = useState(usuarioLogado?.avatar_url || "");
+  const [fotoPerfilUrl, setFotoPerfilUrl] = useState(
+    usuarioLogado?.avatar_url?.startsWith("http") ? usuarioLogado.avatar_url : ""
+  );
+  const [salvandoFotoPerfil, setSalvandoFotoPerfil] = useState(false);
+  const [erroFotoPerfil, setErroFotoPerfil] = useState("");
   
   const [periodoSelecionado, setPeriodoSelecionado] = useState("semana_atual");
   const [dataInicioCustom, setDataInicioCustom] = useState("");
   const [dataFimCustom, setDataFimCustom] = useState("");
+
+  useEffect(() => {
+    setFotoPerfilPreview(usuarioLogado?.avatar_url || "");
+    setFotoPerfilUrl(usuarioLogado?.avatar_url?.startsWith("http") ? usuarioLogado.avatar_url : "");
+  }, [usuarioLogado?.avatar_url]);
+
+  const aplicarUrlFotoPerfil = () => {
+    const url = fotoPerfilUrl.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      setErroFotoPerfil("Informe uma URL pública válida começando com http:// ou https://.");
+      return;
+    }
+    setErroFotoPerfil("");
+    setFotoPerfilPreview(url);
+  };
+
+  const salvarFotoPerfil = async () => {
+    if (!usuarioLogado?.id || !fotoPerfilPreview) return;
+    setSalvandoFotoPerfil(true);
+    setErroFotoPerfil("");
+    try {
+      const { error } = await supabase
+        .from("usuarios")
+        .update({ avatar_url: fotoPerfilPreview })
+        .eq("id", usuarioLogado.id);
+      if (error) throw error;
+      await buscarDadosUsuario();
+    } catch (error) {
+      setErroFotoPerfil(error.message || "Não foi possível salvar a foto.");
+    } finally {
+      setSalvandoFotoPerfil(false);
+    }
+  };
+
+  const removerFotoPerfil = async () => {
+    if (!usuarioLogado?.id) return;
+    setSalvandoFotoPerfil(true);
+    setErroFotoPerfil("");
+    try {
+      const { error } = await supabase
+        .from("usuarios")
+        .update({ avatar_url: null })
+        .eq("id", usuarioLogado.id);
+      if (error) throw error;
+      setFotoPerfilPreview("");
+      await buscarDadosUsuario();
+    } catch (error) {
+      setErroFotoPerfil(error.message || "Não foi possível remover a foto.");
+    } finally {
+      setSalvandoFotoPerfil(false);
+    }
+  };
 
   const datasFiltro = React.useMemo(() => {
     const hoje = new Date();
@@ -335,6 +393,102 @@ export default function MinhaContaPage({
           >
             🔄 Atualizar
           </button>
+        </div>
+
+        <div style={{
+          ...styles.whiteCard,
+          padding: "22px",
+          marginBottom: "24px",
+          display: "flex",
+          alignItems: "center",
+          gap: "22px",
+          flexWrap: "wrap",
+        }}>
+          <div style={{
+            width: "112px",
+            height: "112px",
+            borderRadius: "50%",
+            overflow: "hidden",
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: fotoPerfilPreview ? theme.card2 : "linear-gradient(135deg, #8b181e 0%, #facc15 100%)",
+            border: `3px solid ${theme.border}`,
+            boxShadow: "0 12px 28px rgba(0,0,0,0.22)",
+          }}>
+            {fotoPerfilPreview ? (
+              <img
+                src={fotoPerfilPreview}
+                alt={`Foto de perfil de ${usuarioLogado?.nome || "usuário"}`}
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              <span style={{ color: "#fff", fontSize: "38px", fontWeight: "900" }}>
+                {(usuarioLogado?.nome || "U").trim().charAt(0).toUpperCase()}
+              </span>
+            )}
+          </div>
+
+          <div style={{ flex: "1 1 300px" }}>
+            <div style={{ color: theme.text, fontSize: "17px", fontWeight: "800", marginBottom: "5px" }}>
+              Foto de perfil
+            </div>
+            <div style={{ color: theme.subtext, fontSize: "12px", lineHeight: 1.5, marginBottom: "14px" }}>
+              Informe o link público de uma imagem JPG, PNG ou WebP.
+            </div>
+            <div style={{ display: "flex", gap: "8px", marginBottom: "11px", flexWrap: "wrap" }}>
+              <input
+                type="url"
+                value={fotoPerfilUrl}
+                onChange={(event) => setFotoPerfilUrl(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    aplicarUrlFotoPerfil();
+                  }
+                }}
+                placeholder="https://exemplo.com/minha-foto.jpg"
+                aria-label="URL pública da foto de perfil"
+                style={{ ...styles.input, flex: "1 1 280px", margin: 0 }}
+              />
+              <button
+                type="button"
+                onClick={aplicarUrlFotoPerfil}
+                disabled={!fotoPerfilUrl.trim() || salvandoFotoPerfil}
+                style={{ border: `1px solid ${theme.border}`, background: theme.card2, color: theme.text, borderRadius: "8px", padding: "9px 15px", cursor: "pointer", fontSize: "12px", fontWeight: "800" }}
+              >
+                Usar URL
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: "9px", flexWrap: "wrap" }}>
+              {fotoPerfilPreview && fotoPerfilPreview !== (usuarioLogado?.avatar_url || "") && (
+                <button
+                  type="button"
+                  onClick={salvarFotoPerfil}
+                  disabled={salvandoFotoPerfil}
+                  style={{ ...styles.btnPrimary, width: "auto", marginTop: 0, padding: "9px 16px", fontSize: "12px", background: "#16a34a" }}
+                >
+                  {salvandoFotoPerfil ? "Salvando..." : "Salvar foto"}
+                </button>
+              )}
+              {usuarioLogado?.avatar_url && (
+                <button
+                  type="button"
+                  onClick={removerFotoPerfil}
+                  disabled={salvandoFotoPerfil}
+                  style={{ border: "1px solid rgba(239,68,68,0.45)", background: "rgba(239,68,68,0.08)", color: "#ef4444", borderRadius: "8px", padding: "9px 16px", cursor: salvandoFotoPerfil ? "wait" : "pointer", fontSize: "12px", fontWeight: "800" }}
+                >
+                  Remover foto
+                </button>
+              )}
+            </div>
+            {erroFotoPerfil && (
+              <div role="alert" style={{ color: "#ef4444", fontSize: "12px", marginTop: "10px", fontWeight: "700" }}>
+                {erroFotoPerfil}
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{
