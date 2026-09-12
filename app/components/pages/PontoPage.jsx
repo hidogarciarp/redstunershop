@@ -828,7 +828,7 @@ export default function PontoPage({
 
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <span style={{
-                        color: isAberta ? "#22c55e" : durMin >= 60 ? "#22c55e" : theme.accent,
+                        color: isAberta ? "#22c55e" : durMin >= 30 ? "#22c55e" : theme.accent,
                         fontWeight: "700",
                         fontSize: "13px"
                       }}>
