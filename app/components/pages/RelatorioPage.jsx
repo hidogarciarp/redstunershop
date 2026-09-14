@@ -283,6 +283,7 @@ export default function RelatorioPage({
   registrosRelatorio = [],
   registrosRelatorioM2 = [],
   registrosRelatorioM3 = [],
+  registrosRelatorioM4 = [],
   relatorioCarregando = false,
   onVerDetalhesPonto,
 }) {
@@ -1577,23 +1578,29 @@ export default function RelatorioPage({
     return calcularMetricasMecanica(filtrarManuais(registrosRelatorioM3), diasPeriodo);
   }, [registrosRelatorioM3, diasPeriodo, ocultarManuais]);
 
+  const metricasM4 = React.useMemo(() => {
+    return calcularMetricasMecanica(filtrarManuais(registrosRelatorioM4), diasPeriodo);
+  }, [registrosRelatorioM4, diasPeriodo, ocultarManuais]);
+
   const rankingMecanicas = React.useMemo(() => {
     const arr = [
       { id: "m1", nome: "RED's Tunershop", cor: "#ef4444", ...metricasM1 },
       { id: "m2", nome: "Harmony", cor: "#eab308", ...metricasM2 },
       { id: "m3", nome: "Dudark", cor: "#38bdf8", ...metricasM3 },
+      { id: "m4", nome: "Vespucci", cor: "#a855f7", ...metricasM4 },
     ];
     return arr.sort((a, b) => b.taxaCobertura - a.taxaCobertura || b.totalMin - a.totalMin);
-  }, [metricasM1, metricasM2, metricasM3]);
+  }, [metricasM1, metricasM2, metricasM3, metricasM4]);
 
   const rankingMecanicasObrigatorias = React.useMemo(() => {
     const arr = [
       { id: "m1", nome: "RED's Tunershop", cor: "#ef4444", ...metricasM1 },
       { id: "m2", nome: "Harmony", cor: "#eab308", ...metricasM2 },
       { id: "m3", nome: "Dudark", cor: "#38bdf8", ...metricasM3 },
+      { id: "m4", nome: "Vespucci", cor: "#a855f7", ...metricasM4 },
     ];
     return arr.sort((a, b) => b.taxaCoberturaObrigatoria - a.taxaCoberturaObrigatoria || b.totalMin - a.totalMin);
-  }, [metricasM1, metricasM2, metricasM3]);
+  }, [metricasM1, metricasM2, metricasM3, metricasM4]);
 
   // Função auxiliar para calcular minutos ativos de funcionários apenas no horário obrigatório (19h às 22h)
   const calcularRankingFuncionariosObrigatorio = (registros, filtrarMecanicaId = null) => {
@@ -1649,10 +1656,11 @@ export default function RelatorioPage({
     const todosRegs = [
       ...filtrarManuais(registrosRelatorio).map(r => ({ ...r, origin: "reds" })),
       ...filtrarManuais(registrosRelatorioM2).map(r => ({ ...r, origin: "harmony" })),
-      ...filtrarManuais(registrosRelatorioM3).map(r => ({ ...r, origin: "dudark" }))
+      ...filtrarManuais(registrosRelatorioM3).map(r => ({ ...r, origin: "dudark" })),
+      ...filtrarManuais(registrosRelatorioM4).map(r => ({ ...r, origin: "vespucci" }))
     ];
     return calcularRankingFuncionariosObrigatorio(todosRegs);
-  }, [registrosRelatorio, registrosRelatorioM2, registrosRelatorioM3, diasPeriodo, listaFuncionarios, ocultarManuais]);
+  }, [registrosRelatorio, registrosRelatorioM2, registrosRelatorioM3, registrosRelatorioM4, diasPeriodo, listaFuncionarios, ocultarManuais]);
 
   const coberturaComparativa = React.useMemo(() => {
     const res = {};
@@ -1661,10 +1669,11 @@ export default function RelatorioPage({
         m1: calcularSlotsGenerico(filtrarManuais(registrosRelatorio), dia),
         m2: calcularSlotsGenerico(filtrarManuais(registrosRelatorioM2), dia),
         m3: calcularSlotsGenerico(filtrarManuais(registrosRelatorioM3), dia),
+        m4: calcularSlotsGenerico(filtrarManuais(registrosRelatorioM4), dia),
       };
     });
     return res;
-  }, [diasPeriodo, registrosRelatorio, registrosRelatorioM2, registrosRelatorioM3, ocultarManuais]);
+  }, [diasPeriodo, registrosRelatorio, registrosRelatorioM2, registrosRelatorioM3, registrosRelatorioM4, ocultarManuais]);
 
   React.useEffect(() => {
     if (diasPeriodo.length > 0) {
@@ -3686,6 +3695,7 @@ export default function RelatorioPage({
                       const slotsM1 = coberturaComparativa[dia]?.m1 || [];
                       const slotsM2 = coberturaComparativa[dia]?.m2 || [];
                       const slotsM3 = coberturaComparativa[dia]?.m3 || [];
+                      const slotsM4 = coberturaComparativa[dia]?.m4 || [];
 
                       const renderRow = (slots, colorActive, labelMecanica) => {
                         return (
@@ -3782,6 +3792,7 @@ export default function RelatorioPage({
                           {renderRow(slotsM1, "#ef4444", "RED's")}
                           {renderRow(slotsM2, "#eab308", "Harmony")}
                           {renderRow(slotsM3, "#38bdf8", "Dudark")}
+                          {renderRow(slotsM4, "#a855f7", "Vespucci")}
                         </div>
                       );
                     })}
@@ -4504,6 +4515,7 @@ export default function RelatorioPage({
                   const slotsM1 = coberturaComparativa[dia]?.m1 || [];
                   const slotsM2 = coberturaComparativa[dia]?.m2 || [];
                   const slotsM3 = coberturaComparativa[dia]?.m3 || [];
+                  const slotsM4 = coberturaComparativa[dia]?.m4 || [];
 
                   const renderRowModal = (slots, colorActive, labelMecanica) => {
                     return (
@@ -4542,11 +4554,12 @@ export default function RelatorioPage({
                             return (
                               <div
                                 key={idx}
-                                title={tooltipText}
                                 style={{
                                   height: "16px",
                                   borderRadius: "4px",
-                                  background: slot.coberto ? colorActive : emptyColor,
+                                  background: slot.coberto 
+                                    ? colorActive
+                                    : emptyColor,
                                   border: ehObrigatorio
                                     ? `2px solid ${slot.coberto ? "#facc15" : "#f87171"}`
                                     : `1px solid ${slot.coberto ? colorActive : emptyBorder}`,
@@ -4558,10 +4571,30 @@ export default function RelatorioPage({
                                 onMouseEnter={e => {
                                   e.currentTarget.style.transform = "scale(1.3)";
                                   e.currentTarget.style.zIndex = 10;
+                                  e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.4)";
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setTimelineTooltip({
+                                    visible: true,
+                                    x: rect.left + rect.width / 2,
+                                    y: rect.top - 8,
+                                    content: tooltipText
+                                  });
                                 }}
                                 onMouseLeave={e => {
                                   e.currentTarget.style.transform = "scale(1)";
                                   e.currentTarget.style.zIndex = 1;
+                                  e.currentTarget.style.boxShadow = "none";
+                                  setTimelineTooltip({ visible: false, x: 0, y: 0, content: "" });
+                                }}
+                                onClick={() => {
+                                  const cleanText = tooltipText.replace("\n\n📌 Clique para copiar", "");
+                                  navigator.clipboard.writeText(cleanText)
+                                    .then(() => {
+                                      alert("📋 Copiado para a área de transferência!");
+                                    })
+                                    .catch(err => {
+                                      console.error("Erro ao copiar:", err);
+                                    });
                                 }}
                               />
                             );
@@ -4579,6 +4612,7 @@ export default function RelatorioPage({
                       {renderRowModal(slotsM1, "#ef4444", "RED's")}
                       {renderRowModal(slotsM2, "#eab308", "Harmony")}
                       {renderRowModal(slotsM3, "#38bdf8", "Dudark")}
+                      {renderRowModal(slotsM4, "#a855f7", "Vespucci")}
                     </div>
                   );
                 })}

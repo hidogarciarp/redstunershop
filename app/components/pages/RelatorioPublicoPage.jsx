@@ -342,7 +342,7 @@ export default function RelatorioPublicoPage({ sharedId, onVoltar }) {
     { id: "m1", nome: "RED's Tunershop", cor: "#ef4444", ...metricasM1 },
     { id: "m2", nome: "Harmony", cor: "#eab308", ...metricasM2 },
     { id: "m3", nome: "Dudark", cor: "#38bdf8", ...metricasM3 },
-    { id: "m4", nome: "Vespucci Beach", cor: "#ec4899", ...metricasM4 },
+    { id: "m4", nome: "Vespucci", cor: "#a855f7", ...metricasM4 },
   ].sort((a, b) => b.taxaCobertura - a.taxaCobertura || b.totalMin - a.totalMin);
 
   const coberturaComparativa = {};
@@ -522,6 +522,7 @@ export default function RelatorioPublicoPage({ sharedId, onVoltar }) {
               const slotsM1 = coberturaComparativa[dia]?.m1 || [];
               const slotsM2 = coberturaComparativa[dia]?.m2 || [];
               const slotsM3 = coberturaComparativa[dia]?.m3 || [];
+              const slotsM4 = coberturaComparativa[dia]?.m4 || [];
 
               const renderRowModal = (slots, colorActive, labelMecanica) => {
                 return (
@@ -597,6 +598,7 @@ export default function RelatorioPublicoPage({ sharedId, onVoltar }) {
                   {renderRowModal(slotsM1, "#ef4444", "RED's")}
                   {renderRowModal(slotsM2, "#eab308", "Harmony")}
                   {renderRowModal(slotsM3, "#38bdf8", "Dudark")}
+                  {renderRowModal(slotsM4, "#a855f7", "Vespucci")}
                 </div>
               );
             })}

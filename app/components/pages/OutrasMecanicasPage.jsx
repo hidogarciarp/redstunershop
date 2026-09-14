@@ -9,7 +9,7 @@ function parseLogCidade(texto, mecanicaSelecionada) {
   const linhas = texto.split("\n");
   let i = 0;
 
-  const mecEsperada = mecanicaSelecionada === "mecanica_2" ? "harmony" : "dudark";
+  const mecEsperada = mecanicaSelecionada === "mecanica_2" ? "harmony" : (mecanicaSelecionada === "mecanica_4" ? "vespucci" : "dudark");
 
   while (i < linhas.length) {
     const linha = linhas[i].trim();
@@ -174,6 +174,7 @@ export default function OutrasMecanicasPage({ styles, theme, usuarioLogado }) {
   const getTabelaNome = () => {
     if (mecanicaSelecionada === "mecanica_2") return "ponto_cidade_mecanica_2";
     if (mecanicaSelecionada === "mecanica_3") return "ponto_cidade_mecanica_3";
+    if (mecanicaSelecionada === "mecanica_4") return "ponto_cidade_mecanica_4";
     return mecanicaSelecionada;
   };
 
@@ -637,7 +638,8 @@ export default function OutrasMecanicasPage({ styles, theme, usuarioLogado }) {
         <div style={{ display: "flex", gap: "8px" }}>
           {[
             { id: "mecanica_2", label: "Harmony", color: "#14b8a6" },
-            { id: "mecanica_3", label: "Dudark", color: "#38bdf8" }
+            { id: "mecanica_3", label: "Dudark", color: "#38bdf8" },
+            { id: "mecanica_4", label: "Vespucci", color: "#a855f7" }
           ].map(m => (
             <button
               key={m.id}
@@ -691,7 +693,7 @@ export default function OutrasMecanicasPage({ styles, theme, usuarioLogado }) {
         <div>
           <div style={cardStyle}>
             <div style={{ ...styles.cardHeader, marginBottom: "14px" }}>
-              <span style={styles.dot} /> Cole o Log da Cidade ({mecanicaSelecionada === "mecanica_2" ? "Harmony" : "Dudark"})
+              <span style={styles.dot} /> Cole o Log da Cidade ({mecanicaSelecionada === "mecanica_2" ? "Harmony" : (mecanicaSelecionada === "mecanica_4" ? "Vespucci" : "Dudark")})
             </div>
             <textarea
               value={textoLog}

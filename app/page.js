@@ -379,6 +379,7 @@ export default function Home() {
   const [registrosRelatorio,          setRegistrosRelatorio]          = useState([]);
   const [registrosRelatorioM2,        setRegistrosRelatorioM2]        = useState([]);
   const [registrosRelatorioM3,        setRegistrosRelatorioM3]        = useState([]);
+  const [registrosRelatorioM4,        setRegistrosRelatorioM4]        = useState([]);
   const [registrosRelatorioCarregando, setRegistrosRelatorioCarregando] = useState(false);
 
   // Estados para filtro ao navegar do relatório para o ponto
@@ -2294,14 +2295,16 @@ export default function Home() {
     };
 
     try {
-      const [dataM1, dataM2, dataM3] = await Promise.all([
+      const [dataM1, dataM2, dataM3, dataM4] = await Promise.all([
         fetchTableData("pontos_reds"),
         fetchTableData("ponto_cidade_mecanica_2"),
         fetchTableData("ponto_cidade_mecanica_3"),
+        fetchTableData("ponto_cidade_mecanica_4"),
       ]);
       setRegistrosRelatorio(dataM1);
       setRegistrosRelatorioM2(dataM2);
       setRegistrosRelatorioM3(dataM3);
+      setRegistrosRelatorioM4(dataM4);
     } catch (err) {
       console.error("Erro ao buscar relatórios em lotes:", err);
     } finally {
@@ -5920,6 +5923,7 @@ export default function Home() {
             registrosRelatorio={registrosRelatorio}
             registrosRelatorioM2={registrosRelatorioM2}
             registrosRelatorioM3={registrosRelatorioM3}
+            registrosRelatorioM4={registrosRelatorioM4}
             relatorioCarregando={registrosRelatorioCarregando}
             onVerDetalhesPonto={(nome, ini, fim, status = "todos") => {
               setFiltroPontoNome(nome);
