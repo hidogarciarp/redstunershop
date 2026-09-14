@@ -3268,7 +3268,7 @@ export default function RelatorioPage({
                   gap: "24px",
                   justifyContent: "center",
                   alignItems: "flex-end",
-                  maxWidth: "850px",
+                  maxWidth: "1050px",
                   margin: "0 auto 32px auto"
                 }}>
                   
@@ -3354,6 +3354,33 @@ export default function RelatorioPage({
                     </div>
                   )}
 
+                  {/* 4º LUGAR */}
+                  {rankingMecanicas[3] && (
+                    <div style={{
+                      background: "rgba(255,255,255,0.01)",
+                      borderRadius: "16px",
+                      border: "1px solid rgba(148, 163, 184, 0.2)",
+                      padding: "20px 16px",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      order: 4,
+                      minHeight: "180px",
+                      justifyContent: "center",
+                      position: "relative",
+                      boxShadow: "0 4px 30px rgba(0,0,0,0.15)",
+                      flex: "1 1 210px",
+                      maxWidth: "230px"
+                    }}>
+                      <div style={{ position: "absolute", top: "-15px", fontSize: "26px" }}>🏅</div>
+                      <span style={{ fontSize: "11px", fontWeight: "800", color: "rgba(148, 163, 184, 0.8)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>4º Lugar</span>
+                      <h4 style={{ color: rankingMecanicas[3].cor, fontSize: "16px", fontWeight: "800", marginBottom: "12px" }}>{rankingMecanicas[3].nome}</h4>
+                      <div style={{ fontSize: "24px", fontWeight: "900", color: theme.text }}>{rankingMecanicas[3].taxaCobertura.toFixed(1)}%</div>
+                      <span style={{ fontSize: "11px", color: theme.subtext, marginTop: "4px" }}>Cobertura total</span>
+                      <span style={{ fontSize: "11px", color: theme.text, fontWeight: "600", marginTop: "8px" }}>Funcionamento: {fmtMin(rankingMecanicas[3].minutosCobertos)}</span>
+                    </div>
+                  )}
+
                 </div>
               </div>
 
@@ -3373,7 +3400,7 @@ export default function RelatorioPage({
                   gap: "24px",
                   justifyContent: "center",
                   alignItems: "flex-end",
-                  maxWidth: "850px",
+                  maxWidth: "1050px",
                   margin: "0 auto 32px auto"
                 }}>
                   
@@ -3456,6 +3483,33 @@ export default function RelatorioPage({
                       <div style={{ fontSize: "24px", fontWeight: "900", color: theme.text }}>{rankingMecanicasObrigatorias[2].taxaCoberturaObrigatoria.toFixed(1)}%</div>
                       <span style={{ fontSize: "11px", color: theme.subtext, marginTop: "4px" }}>Cob. Obrigatória</span>
                       <span style={{ fontSize: "11px", color: "#f87171", fontWeight: "700", marginTop: "8px" }}>Não cumprido: {fmtMin(rankingMecanicasObrigatorias[2].minutosObrigatoriosNaoCumpridos)}</span>
+                    </div>
+                  )}
+
+                  {/* 4º LUGAR */}
+                  {rankingMecanicasObrigatorias[3] && (
+                    <div style={{
+                      background: "rgba(255,255,255,0.01)",
+                      borderRadius: "16px",
+                      border: "1px solid rgba(148, 163, 184, 0.2)",
+                      padding: "20px 16px",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      order: 4,
+                      minHeight: "180px",
+                      justifyContent: "center",
+                      position: "relative",
+                      boxShadow: "0 4px 30px rgba(0,0,0,0.15)",
+                      flex: "1 1 210px",
+                      maxWidth: "230px"
+                    }}>
+                      <div style={{ position: "absolute", top: "-15px", fontSize: "26px" }}>🏅</div>
+                      <span style={{ fontSize: "11px", fontWeight: "800", color: "rgba(148, 163, 184, 0.8)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>4º Lugar</span>
+                      <h4 style={{ color: rankingMecanicasObrigatorias[3].cor, fontSize: "16px", fontWeight: "800", marginBottom: "12px" }}>{rankingMecanicasObrigatorias[3].nome}</h4>
+                      <div style={{ fontSize: "24px", fontWeight: "900", color: theme.text }}>{rankingMecanicasObrigatorias[3].taxaCoberturaObrigatoria.toFixed(1)}%</div>
+                      <span style={{ fontSize: "11px", color: theme.subtext, marginTop: "4px" }}>Cob. Obrigatória</span>
+                      <span style={{ fontSize: "11px", color: "#f87171", fontWeight: "700", marginTop: "8px" }}>Não cumprido: {fmtMin(rankingMecanicasObrigatorias[3].minutosObrigatoriosNaoCumpridos)}</span>
                     </div>
                   )}
 
@@ -3545,10 +3599,10 @@ export default function RelatorioPage({
                                     fontSize: "9px",
                                     fontWeight: "800",
                                     textTransform: "uppercase",
-                                    background: (f.mecanica === "harmony" ? "rgba(168, 85, 247, 0.12)" : f.mecanica === "dudark" ? "rgba(249, 115, 22, 0.12)" : "rgba(239, 68, 68, 0.12)"),
-                                    color: f.mecanica === "harmony" ? "#a855f7" : f.mecanica === "dudark" ? "#f97316" : "#ef4444",
-                                    border: `1px solid ${f.mecanica === "harmony" ? "rgba(168, 85, 247, 0.3)" : f.mecanica === "dudark" ? "rgba(249, 115, 22, 0.3)" : "rgba(239, 68, 68, 0.3)"}`
-                                  }}>{f.mecanica === "harmony" ? "Harmony" : f.mecanica === "dudark" ? "Dudark" : "RED's"}</span>
+                                    background: (f.mecanica === "harmony" ? "rgba(234, 179, 8, 0.12)" : f.mecanica === "dudark" ? "rgba(56, 189, 248, 0.12)" : f.mecanica === "vespucci" ? "rgba(168, 85, 247, 0.12)" : "rgba(239, 68, 68, 0.12)"),
+                                    color: f.mecanica === "harmony" ? "#eab308" : f.mecanica === "dudark" ? "#38bdf8" : f.mecanica === "vespucci" ? "#a855f7" : "#ef4444",
+                                    border: `1px solid ${f.mecanica === "harmony" ? "rgba(234, 179, 8, 0.3)" : f.mecanica === "dudark" ? "rgba(56, 189, 248, 0.3)" : f.mecanica === "vespucci" ? "rgba(168, 85, 247, 0.3)" : "rgba(239, 68, 68, 0.3)"}`
+                                  }}>{f.mecanica === "harmony" ? "Harmony" : f.mecanica === "dudark" ? "Dudark" : f.mecanica === "vespucci" ? "Vespucci" : "RED's"}</span>
                                 </div>
                                 <div style={{ fontSize: "11px", color: theme.subtext }}>ID Jogo: #{f.idJogo}</div>
                               </div>
@@ -4353,7 +4407,7 @@ export default function RelatorioPage({
                 gap: "24px",
                 justifyContent: "center",
                 alignItems: "flex-end",
-                maxWidth: "850px",
+                maxWidth: "1050px",
                 margin: "0 auto 32px auto"
               }}>
                 {/* 2º LUGAR */}
@@ -4432,6 +4486,32 @@ export default function RelatorioPage({
                     <div style={{ fontSize: "24px", fontWeight: "900", color: "#f8fafc" }}>{rankingMecanicas[2].taxaCobertura.toFixed(1)}%</div>
                     <span style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>Cobertura total</span>
                     <span style={{ fontSize: "11px", color: "#f8fafc", fontWeight: "600", marginTop: "8px" }}>Funcionamento: {fmtMin(rankingMecanicas[2].minutosCobertos)}</span>
+                  </div>
+                )}
+
+                {/* 4º LUGAR */}
+                {rankingMecanicas[3] && (
+                  <div style={{
+                    background: "rgba(255,255,255,0.01)",
+                    borderRadius: "16px",
+                    border: "1px solid rgba(148, 163, 184, 0.2)",
+                    padding: "20px 16px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    order: 4,
+                    minHeight: "180px",
+                    justifyContent: "center",
+                    position: "relative",
+                    flex: "1 1 210px",
+                    maxWidth: "230px"
+                  }}>
+                    <div style={{ position: "absolute", top: "-15px", fontSize: "26px" }}>🏅</div>
+                    <span style={{ fontSize: "11px", fontWeight: "800", color: "rgba(148, 163, 184, 0.8)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>4º Lugar</span>
+                    <h4 style={{ color: rankingMecanicas[3].cor, fontSize: "16px", fontWeight: "800", marginBottom: "12px" }}>{rankingMecanicas[3].nome}</h4>
+                    <div style={{ fontSize: "24px", fontWeight: "900", color: "#f8fafc" }}>{rankingMecanicas[3].taxaCobertura.toFixed(1)}%</div>
+                    <span style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>Cobertura total</span>
+                    <span style={{ fontSize: "11px", color: "#f8fafc", fontWeight: "600", marginTop: "8px" }}>Funcionamento: {fmtMin(rankingMecanicas[3].minutosCobertos)}</span>
                   </div>
                 )}
               </div>

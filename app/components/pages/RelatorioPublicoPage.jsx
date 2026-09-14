@@ -411,7 +411,7 @@ export default function RelatorioPublicoPage({ sharedId, onVoltar }) {
             Baseado no percentual de tempo de cobertura em que a oficina teve pelo menos 1 funcionário trabalhando no período completo.
           </p>
 
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "24px", justifyContent: "center", alignItems: "flex-end", maxWidth: "850px", margin: "0 auto" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "24px", justifyContent: "center", alignItems: "flex-end", maxWidth: "1050px", margin: "0 auto" }}>
             {rankingMecanicas[1] && (
               <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: "16px", border: "1px solid rgba(192, 192, 192, 0.2)", padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", order: 2, minHeight: "220px", justifyContent: "center", position: "relative", flex: "1 1 220px", maxWidth: "240px" }}>
                 <div style={{ position: "absolute", top: "-15px", fontSize: "32px" }}>🥈</div>
@@ -439,6 +439,16 @@ export default function RelatorioPublicoPage({ sharedId, onVoltar }) {
                 <h4 style={{ color: rankingMecanicas[2].cor, fontSize: "15px", fontWeight: "800", marginBottom: "12px" }}>{rankingMecanicas[2].nome}</h4>
                 <div style={{ fontSize: "24px", fontWeight: "900", color: "#f8fafc" }}>{rankingMecanicas[2].taxaCobertura.toFixed(1)}%</div>
                 <span style={{ fontSize: "11px", color: "#f8fafc", fontWeight: "600", marginTop: "8px" }}>Funcionamento: {fmtMin(rankingMecanicas[2].minutosCobertos)}</span>
+              </div>
+            )}
+
+            {rankingMecanicas[3] && (
+              <div style={{ background: "rgba(255,255,255,0.01)", borderRadius: "16px", border: "1px solid rgba(148, 163, 184, 0.2)", padding: "20px 16px", display: "flex", flexDirection: "column", alignItems: "center", order: 4, minHeight: "180px", justifyContent: "center", position: "relative", flex: "1 1 210px", maxWidth: "230px" }}>
+                <div style={{ position: "absolute", top: "-15px", fontSize: "26px" }}>🏅</div>
+                <span style={{ fontSize: "11px", fontWeight: "800", color: "rgba(148, 163, 184, 0.8)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>4º Lugar</span>
+                <h4 style={{ color: rankingMecanicas[3].cor, fontSize: "15px", fontWeight: "800", marginBottom: "12px" }}>{rankingMecanicas[3].nome}</h4>
+                <div style={{ fontSize: "24px", fontWeight: "900", color: "#f8fafc" }}>{rankingMecanicas[3].taxaCobertura.toFixed(1)}%</div>
+                <span style={{ fontSize: "11px", color: "#f8fafc", fontWeight: "600", marginTop: "8px" }}>Funcionamento: {fmtMin(rankingMecanicas[3].minutosCobertos)}</span>
               </div>
             )}
           </div>
