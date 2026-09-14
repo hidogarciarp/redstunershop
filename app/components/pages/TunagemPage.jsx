@@ -556,6 +556,20 @@ export default function TunagemPage({
               <div style={{ fontSize: "28px", fontWeight: "900", color: "#4ade80", marginTop: "4px" }}>
                 R$ {totaisGerais.totalFaturado.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
               </div>
+              <div style={{
+                marginTop: "8px",
+                paddingTop: "8px",
+                borderTop: `1px solid ${theme.border}44`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                fontSize: "12px"
+              }}>
+                <span style={{ color: theme.subtext, fontWeight: "600" }}>80% do montante:</span>
+                <span style={{ color: "#38bdf8", fontWeight: "800", fontSize: "13px" }}>
+                  R$ {(totaisGerais.totalFaturado * 0.8).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                </span>
+              </div>
             </div>
 
             <div style={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: "16px", padding: "20px" }}>
