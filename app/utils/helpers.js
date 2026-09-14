@@ -125,7 +125,7 @@ export const getHorarioObrigatorioParaData = (dateStr) => {
   };
 };
 
-export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetroativos = 15) {
+export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetroativos = 7) {
   if (!supabaseClient) return;
   try {
     const dataLimite = new Date(Date.now() - diasRetroativos * 24 * 60 * 60 * 1000).toISOString();
@@ -138,7 +138,8 @@ export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetro
 
     if (error || !msgs || msgs.length === 0) return;
 
-    const mapa = {};
+    const mapasPorMec = { reds: {}, dudark: {}, vespucci: {}, harmony: {} };
+
     msgs.forEach((m) => {
       const c = m.content || "";
       const isEntrou = c.includes("ENTROU EM SERVIÇO");
@@ -149,7 +150,7 @@ export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetro
       let idJogo = "";
       let nome = "";
       let tipo = isEntrou ? "entrada" : "saida";
-      let oficina = "Red's Tunershop";
+      let oficina = "";
 
       if (match) {
         idJogo = match[1].trim();
@@ -164,8 +165,16 @@ export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetro
         if (ofcMatch) oficina = ofcMatch[1].trim();
       }
 
-      const ofcLower = (oficina || "").toLowerCase();
-      if (!ofcLower.includes("red")) return;
+      let mec = m.mechanic_id;
+      if (!mec) {
+        const ofcLower = (oficina || "").toLowerCase();
+        if (ofcLower.includes("red") || m.channel_id === "1388991065226346718") mec = "reds";
+        else if (ofcLower.includes("dudark") || m.channel_id === "1504297353824178226") mec = "dudark";
+        else if (ofcLower.includes("vespucci") || m.channel_id === "1535045942288326837") mec = "vespucci";
+        else if (ofcLower.includes("harmony") || m.channel_id === "1389735866515066900") mec = "harmony";
+      }
+
+      if (!mec || !mapasPorMec[mec] || !idJogo) return;
 
       const dataMatch = c.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
       let timestamp = m.created_at ? new Date(m.created_at).toISOString() : new Date().toISOString();
@@ -179,113 +188,133 @@ export async function sincronizarPontosDiscordParaReds(supabaseClient, diasRetro
       const uuidMatch = c.match(/\[UUID\]:\s*([a-f0-9-]+)/i);
       const uuid = uuidMatch ? uuidMatch[1].trim() : null;
 
-      if (!idJogo) return;
-      if (!mapa[idJogo]) mapa[idJogo] = { idJogo, nome, eventos: [] };
-      mapa[idJogo].eventos.push({ idJogo, nome, tipo, oficina, timestamp, uuid });
+      const mapaMec = mapasPorMec[mec];
+      if (!mapaMec[idJogo]) mapaMec[idJogo] = { idJogo, nome, eventos: [] };
+      mapaMec[idJogo].eventos.push({ idJogo, nome, tipo, oficina, timestamp, uuid });
     });
 
-    const sessoes = [];
-    Object.values(mapa).forEach((m) => {
-      m.eventos.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-      let pontoAtual = null;
+    const gerarSessoes = (mapa) => {
+      const sessoes = [];
+      const agora = Date.now();
+      Object.values(mapa).forEach((m) => {
+        m.eventos.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        let pontoAtual = null;
 
-      m.eventos.forEach((ev) => {
-        if (ev.tipo === "entrada") {
-          if (pontoAtual) sessoes.push(pontoAtual);
-          pontoAtual = {
-            id: m.idJogo,
-            nome: m.nome,
-            entrada: ev.timestamp,
-            saida: null,
-            uuid_entrada: ev.uuid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `auto-${Date.now()}-${Math.random()}`),
-            uuid_saida: null,
-            tempo: 0,
-          };
-        } else if (ev.tipo === "saida") {
-          if (pontoAtual) {
-            pontoAtual.saida = ev.timestamp;
-            pontoAtual.uuid_saida = ev.uuid;
-            const diffMin = Math.round((new Date(ev.timestamp) - new Date(pontoAtual.entrada)) / 60000);
-            pontoAtual.tempo = Math.max(0, diffMin);
+        m.eventos.forEach((ev) => {
+          if (ev.tipo === "entrada") {
+            if (pontoAtual) {
+              const diffMin = Math.max(0, Math.round((new Date(ev.timestamp) - new Date(pontoAtual.entrada)) / 60000));
+              pontoAtual.saida = ev.timestamp;
+              pontoAtual.tempo = Math.min(720, diffMin);
+              pontoAtual.observacao = "Possível crash / reconexão rápida";
+              sessoes.push(pontoAtual);
+            }
+            pontoAtual = {
+              id: m.idJogo,
+              nome: m.nome,
+              entrada: ev.timestamp,
+              saida: null,
+              uuid_entrada: ev.uuid || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `auto-${Date.now()}-${Math.random()}`),
+              uuid_saida: null,
+              tempo: 0,
+            };
+          } else if (ev.tipo === "saida") {
+            if (pontoAtual) {
+              pontoAtual.saida = ev.timestamp;
+              pontoAtual.uuid_saida = ev.uuid;
+              const diffMin = Math.round((new Date(ev.timestamp) - new Date(pontoAtual.entrada)) / 60000);
+              pontoAtual.tempo = Math.min(720, Math.max(0, diffMin));
+              sessoes.push(pontoAtual);
+              pontoAtual = null;
+            }
+          }
+        });
+
+        if (pontoAtual) {
+          const diffMin = Math.max(0, Math.round((agora - new Date(pontoAtual.entrada).getTime()) / 60000));
+          if (diffMin <= 120) {
+            pontoAtual.observacao = "Ponto em andamento ao vivo";
             sessoes.push(pontoAtual);
-            pontoAtual = null;
+          } else {
+            pontoAtual.saida = pontoAtual.entrada;
+            pontoAtual.tempo = 0;
+            pontoAtual.observacao = "Fechado automaticamente (sem saída registrada)";
+            sessoes.push(pontoAtual);
           }
         }
       });
+      return sessoes;
+    };
 
-      if (pontoAtual) sessoes.push(pontoAtual);
-    });
-
-    if (sessoes.length === 0) return;
-
-    const { data: existentes } = await supabaseClient
-      .from("pontos_reds")
-      .select("id, entrada, saida, uuid_entrada")
-      .gte("entrada", dataLimite);
-
-    const mapaExistentes = new Map();
-    (existentes || []).forEach((e) => {
-      mapaExistentes.set(`${e.id}_${e.entrada}`, e);
-    });
-
-    const paraInserir = [];
-    for (const s of sessoes) {
-      const key = `${s.id}_${s.entrada}`;
-      const ex = mapaExistentes.get(key);
-      if (!ex) {
-        paraInserir.push(s);
-      } else if (!ex.saida && s.saida) {
-        // Atualiza ponto que estava aberto e agora foi fechado
-        await supabaseClient
-          .from("pontos_reds")
-          .update({ saida: s.saida, uuid_saida: s.uuid_saida, tempo: s.tempo })
-          .eq("id", ex.id)
-          .eq("entrada", ex.entrada);
+    // 1. Reds -> pontos_reds
+    const sessoesReds = gerarSessoes(mapasPorMec.reds);
+    if (sessoesReds.length > 0) {
+      const loteReds = sessoesReds.map(({ observacao, ...rest }) => rest);
+      for (let i = 0; i < loteReds.length; i += 50) {
+        await supabaseClient.from("pontos_reds").upsert(loteReds.slice(i, i + 50), { onConflict: "uuid_entrada" });
       }
     }
 
-    if (paraInserir.length > 0) {
-      for (let i = 0; i < paraInserir.length; i += 50) {
-        const lote = paraInserir.slice(i, i + 50);
-        await supabaseClient
-          .from("pontos_reds")
-          .upsert(lote, { onConflict: "uuid_entrada" });
+    // 2. Dudark -> ponto_cidade_mecanica_3
+    const sessoesDudark = gerarSessoes(mapasPorMec.dudark);
+    if (sessoesDudark.length > 0) {
+      const loteDudark = sessoesDudark.map(s => ({
+        id_jogo: String(s.id),
+        nome: s.nome,
+        nome_personagem: s.nome,
+        entrada: s.entrada,
+        saida: s.saida,
+        data: s.entrada ? s.entrada.substring(0, 10) : new Date().toISOString().substring(0, 10),
+        uuid_entrada: s.uuid_entrada,
+        uuid_saida: s.uuid_saida,
+        observacao: s.observacao || null,
+        oculto: false
+      }));
+      for (let i = 0; i < loteDudark.length; i += 50) {
+        await supabaseClient.from("ponto_cidade_mecanica_3").upsert(loteDudark.slice(i, i + 50), { onConflict: "uuid_entrada" });
       }
     }
 
-    // Sincroniza também na tabela sessoes_ponto_auditoria_reds apenas novas sessões para não sobrescrever auditorias existentes
-    try {
-      const { data: existAud } = await supabaseClient
-        .from("sessoes_ponto_auditoria_reds")
-        .select("uuid_sessao")
-        .gte("entrada", dataLimite);
-      const setExistAud = new Set((existAud || []).map((a) => a.uuid_sessao));
-
-      const auditRecords = sessoes
-        .filter((s) => !setExistAud.has(s.uuid_entrada || `${s.id}_${s.entrada}`))
-        .map((s) => ({
-          uuid_sessao: s.uuid_entrada || `${s.id}_${s.entrada}`,
-          id_jogo: String(s.id),
-          nome: s.nome,
-          oficina: "Red's Tunershop",
-          oficina_id: "reds",
-          entrada: s.entrada,
-          saida: s.saida || null,
-          duracao_min: s.tempo || 0,
-          status_ponto: s.saida ? "normal" : "aberto"
-        }));
-      if (auditRecords.length > 0) {
-        for (let i = 0; i < auditRecords.length; i += 50) {
-          const lote = auditRecords.slice(i, i + 50);
-          await supabaseClient
-            .from("sessoes_ponto_auditoria_reds")
-            .insert(lote);
-        }
+    // 3. Vespucci -> ponto_cidade_mecanica_4
+    const sessoesVespucci = gerarSessoes(mapasPorMec.vespucci);
+    if (sessoesVespucci.length > 0) {
+      const loteVespucci = sessoesVespucci.map(s => ({
+        id_jogo: String(s.id),
+        nome: s.nome,
+        nome_personagem: s.nome,
+        entrada: s.entrada,
+        saida: s.saida,
+        data: s.entrada ? s.entrada.substring(0, 10) : new Date().toISOString().substring(0, 10),
+        uuid_entrada: s.uuid_entrada,
+        uuid_saida: s.uuid_saida,
+        observacao: s.observacao || null,
+        oculto: false
+      }));
+      for (let i = 0; i < loteVespucci.length; i += 50) {
+        await supabaseClient.from("ponto_cidade_mecanica_4").upsert(loteVespucci.slice(i, i + 50), { onConflict: "uuid_entrada" });
       }
-    } catch (eAudit) {
-      console.warn("Aviso ao atualizar sessoes_ponto_auditoria_reds:", eAudit?.message);
+    }
+
+    // 4. Harmony -> ponto_cidade_mecanica_2
+    const sessoesHarmony = gerarSessoes(mapasPorMec.harmony);
+    if (sessoesHarmony.length > 0) {
+      const loteHarmony = sessoesHarmony.map(s => ({
+        id_jogo: String(s.id),
+        nome: s.nome,
+        nome_personagem: s.nome,
+        entrada: s.entrada,
+        saida: s.saida,
+        data: s.entrada ? s.entrada.substring(0, 10) : new Date().toISOString().substring(0, 10),
+        uuid_entrada: s.uuid_entrada,
+        uuid_saida: s.uuid_saida,
+        observacao: s.observacao || null,
+        oculto: false
+      }));
+      for (let i = 0; i < loteHarmony.length; i += 50) {
+        await supabaseClient.from("ponto_cidade_mecanica_2").upsert(loteHarmony.slice(i, i + 50), { onConflict: "uuid_entrada" });
+      }
     }
   } catch (err) {
-    console.warn("Sincronização de pontos discord para pontos_reds:", err.message);
+    console.warn("Sincronização de pontos discord para mecânicas:", err?.message || err);
   }
 }
