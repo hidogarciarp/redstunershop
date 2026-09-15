@@ -395,7 +395,7 @@ export default function PontoPage({
       let queryAtividades = supabase
         .from("discord_log_messages")
         .select("id, log_type, content, created_at")
-        .in("log_type", ["bancada", "bau"])
+        .eq("log_type", "bancada")
         .gte("created_at", lookbackDiscord)
         .order("id", { ascending: true })
         .limit(2000);
@@ -546,8 +546,26 @@ export default function PontoPage({
           if (ev.tipo === "entrada") {
             if (pontoAtual) {
               const diffMs = new Date(ev.timestamp) - new Date(pontoAtual.entrada);
-              pontoAtual.saida = ev.timestamp;
-              pontoAtual.duracaoMin = Math.max(1, Math.round(diffMs / 60000));
+              const entMs = new Date(pontoAtual.entrada).getTime();
+              const proxEntMs = new Date(ev.timestamp).getTime();
+
+              if (diffMs > 60 * 60 * 1000) {
+                const ativs = (mapaAtividadesMecanico[mec.idJogo] || []).sort((a, b) => a - b);
+                let ultAtivMs = entMs;
+                for (const ts of ativs.filter(t => t >= entMs && t < proxEntMs)) {
+                  if (ts - ultAtivMs <= 60 * 60 * 1000) {
+                    ultAtivMs = ts;
+                  } else {
+                    break;
+                  }
+                }
+                pontoAtual.saida = new Date(ultAtivMs).toISOString();
+                pontoAtual.duracaoMin = Math.max(1, Math.round((ultAtivMs - entMs) / 60000));
+                pontoAtual.observacao = `Encerrado por inatividade (> 60 min sem saída).`;
+              } else {
+                pontoAtual.saida = ev.timestamp;
+                pontoAtual.duracaoMin = Math.max(1, Math.round(diffMs / 60000));
+              }
               sessoesFechadasRealtime.push(pontoAtual);
             }
             pontoAtual = {
@@ -599,10 +617,21 @@ export default function PontoPage({
 
         if (pontoAtual && !pontoAtual.saida) {
           const entMs = new Date(pontoAtual.entrada).getTime();
-          const ativs = mapaAtividadesMecanico[mec.idJogo] || [];
-          const ativsNaSessao = ativs.filter((ts) => ts >= entMs);
+          const ativs = (mapaAtividadesMecanico[mec.idJogo] || []).sort((a, b) => a - b);
+          let ultAtivMs = entMs;
+          let teveAtividade = false;
+          const GAP_MAXIMO_MS = 60 * 60 * 1000;
+
+          for (const ts of ativs.filter(t => t >= entMs)) {
+            if (ts - ultAtivMs <= GAP_MAXIMO_MS) {
+              ultAtivMs = ts;
+              teveAtividade = true;
+            } else {
+              break;
+            }
+          }
+
           const agoraMs = Date.now();
-          const ultAtivMs = ativsNaSessao.length > 0 ? ativsNaSessao[ativsNaSessao.length - 1] : entMs;
           const tempoSemAtividade = agoraMs - ultAtivMs;
 
           // Se está há mais de 60 minutos sem nenhuma atividade registrada:
@@ -610,7 +639,7 @@ export default function PontoPage({
           const isAbandonadoOuInativo = tempoSemAtividade >= 60 * 60 * 1000;
 
           if (isAbandonadoOuInativo) {
-            if (ativsNaSessao.length > 0) {
+            if (teveAtividade) {
               pontoAtual.saida = new Date(ultAtivMs).toISOString();
               pontoAtual.duracaoMin = Math.max(1, Math.round((ultAtivMs - entMs) / 60000));
               pontoAtual.observacao = `Encerrado por inatividade (> 60 min sem movimentação).`;

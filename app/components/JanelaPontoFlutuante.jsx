@@ -365,6 +365,29 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     };
   };
 
+  // Helper para calcular a última atividade válida contínua (sem saltar gaps > 60 minutos e sem considerar Baú)
+  const calcularUltimaAtividadeSessao = (entMs, ativsTrabalho, limiteMaxMs = null) => {
+    const ordenadas = (ativsTrabalho || [])
+      .filter((ts) => ts >= entMs && (limiteMaxMs === null || ts < limiteMaxMs))
+      .sort((a, b) => a - b);
+
+    let ultAtiv = entMs;
+    let teveAtividade = false;
+    const GAP_MAXIMO_MS = 60 * 60 * 1000; // 60 minutos sem movimentação encerra a sessão
+
+    for (const ts of ordenadas) {
+      if (ts - ultAtiv <= GAP_MAXIMO_MS) {
+        ultAtiv = ts;
+        teveAtividade = true;
+      } else {
+        // Gap maior que 60 minutos sem ações de trabalho: a sessão interrompeu no último ponto
+        break;
+      }
+    }
+
+    return { ultAtivMs: ultAtiv, teveAtividade };
+  };
+
   const carregarPontosRecentes = useCallback(async (silencioso = false) => {
     if (!silencioso && !cacheCarregado) setCarregando(true);
     try {
@@ -408,7 +431,11 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         inicioFiltroISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       }
 
-      const lookbackISO = new Date(Date.now() - Math.max(lookbackMs, 36 * 60 * 60 * 1000)).toISOString();
+      // Garante que o lookback cubra pelo menos desde o início do dia anterior (00:00 horário de Brasília)
+      // evitando assimetria entre a data da tunagem e os logs de ponto do Discord
+      const lookbackDateObj = new Date(Date.now() - Math.max(lookbackMs, 48 * 60 * 60 * 1000));
+      const lookbackStrSP = lookbackDateObj.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+      const lookbackISO = new Date(`${lookbackStrSP}T00:00:00-03:00`).toISOString();
 
       // 1. Logs de ponto
       const { data: logsDiscord, error } = await supabase
@@ -435,21 +462,21 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         const { data: dataTunReds } = await supabase
           .from("logs_tunagem_reds")
           .select("tecnico_id, tecnico_nome, data, hora")
-          .gte("data", lookbackISO.split("T")[0]);
+          .gte("data", lookbackStrSP);
         if (dataTunReds && dataTunReds.length > 0) {
           logsTunagem = dataTunReds;
         } else {
           const { data: dataTunGeral } = await supabase
             .from("logs_tunagem")
             .select("tecnico_id, tecnico_nome, data, hora")
-            .gte("data", lookbackISO.split("T")[0]);
+            .gte("data", lookbackStrSP);
           logsTunagem = dataTunGeral || [];
         }
       } catch (e) {
         logsTunagem = [];
       }
 
-      // 4. Logs de baú para detectar ações do mecânico
+      // 4. Logs de baú para detectar ações do mecânico (usados estritamente para auditoria de histórico)
       const { data: logsBau } = await supabase
         .from("discord_log_messages")
         .select("id, log_type, content, created_at")
@@ -457,8 +484,10 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         .gte("created_at", lookbackISO)
         .order("id", { ascending: true });
 
-      // Mapeia todas as atividades registradas por idJogo (bancada, tunagem e baú)
-      const mapaAtividadesMecanico = {};
+      // Mapeia atividades de trabalho (bancada e tunagem) - EXCLUSIVAS para cálculo de tempo e fechamento de ponto
+      const mapaAtividadesTrabalhoMecanico = {};
+      // Mapeia todas as atividades (bancada, tunagem e baú) - para auditoria de histórico detalhado
+      const mapaAtividadesAuditMecanico = {};
       const mapaTunagensMecanico = {};
       const atividadesObrigatoriasPonto = {}; // idJogo -> [{ tsMs, tsISO, nome, oficina, oficinaId, tipo }]
 
@@ -475,8 +504,10 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         if (idMatch) {
           const id = idMatch[1].trim();
           const tsMs = new Date(ts).getTime();
-          if (!mapaAtividadesMecanico[id]) mapaAtividadesMecanico[id] = [];
-          mapaAtividadesMecanico[id].push(tsMs);
+          if (!mapaAtividadesTrabalhoMecanico[id]) mapaAtividadesTrabalhoMecanico[id] = [];
+          mapaAtividadesTrabalhoMecanico[id].push(tsMs);
+          if (!mapaAtividadesAuditMecanico[id]) mapaAtividadesAuditMecanico[id] = [];
+          mapaAtividadesAuditMecanico[id].push(tsMs);
 
           const nomeMatch = c.match(/\[NOME COMPLETO\]:\s*([^\n\r]+)/i);
           const storeMatch = c.match(/\[STORENAME\]:\s*([^\n\r]+)/i);
@@ -510,8 +541,10 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         if (t.tecnico_id && t.data && t.hora) {
           const ts = new Date(`${t.data}T${t.hora}-03:00`).getTime();
           const id = String(t.tecnico_id).trim();
-          if (!mapaAtividadesMecanico[id]) mapaAtividadesMecanico[id] = [];
-          mapaAtividadesMecanico[id].push(ts);
+          if (!mapaAtividadesTrabalhoMecanico[id]) mapaAtividadesTrabalhoMecanico[id] = [];
+          mapaAtividadesTrabalhoMecanico[id].push(ts);
+          if (!mapaAtividadesAuditMecanico[id]) mapaAtividadesAuditMecanico[id] = [];
+          mapaAtividadesAuditMecanico[id].push(ts);
 
           if (!mapaTunagensMecanico[id]) mapaTunagensMecanico[id] = [];
           mapaTunagensMecanico[id].push(ts);
@@ -542,12 +575,14 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         }
         if (idMatch) {
           const id = idMatch[1].trim();
-          if (!mapaAtividadesMecanico[id]) mapaAtividadesMecanico[id] = [];
-          mapaAtividadesMecanico[id].push(new Date(ts).getTime());
+          // Baú entra APENAS no mapa de auditoria de histórico, NUNCA em atividades de trabalho de ponto
+          if (!mapaAtividadesAuditMecanico[id]) mapaAtividadesAuditMecanico[id] = [];
+          mapaAtividadesAuditMecanico[id].push(new Date(ts).getTime());
         }
       });
 
-      Object.values(mapaAtividadesMecanico).forEach((arr) => arr.sort((a, b) => a - b));
+      Object.values(mapaAtividadesTrabalhoMecanico).forEach((arr) => arr.sort((a, b) => a - b));
+      Object.values(mapaAtividadesAuditMecanico).forEach((arr) => arr.sort((a, b) => a - b));
 
       const mapaMecanicos = {};
 
@@ -597,7 +632,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             if (ev.tipo === "entrada") {
               pontoAbertoTs = evTs;
             } else if (ev.tipo === "saida") {
-              if (pontoAbertoTs !== null && ativ.tsMs >= pontoAbertoTs && ativ.tsMs <= evTs) {
+              if (pontoAbertoTs !== null && ativ.tsMs >= (pontoAbertoTs - 15 * 60 * 1000) && ativ.tsMs <= (evTs + 15 * 60 * 1000)) {
                 cobertaPorPonto = true;
                 break;
               }
@@ -633,7 +668,9 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
 
           sessoesRec.forEach((sess) => {
             const primeiraAtiv = sess.inicio;
+            const ultimaAtiv = sess.fim;
             const timestampEntrada = new Date(primeiraAtiv.tsMs - 15000).toISOString();
+            const timestampSaida = new Date(ultimaAtiv.tsMs + 15000).toISOString();
             const uuidAuto = `auto_rec_${id}_${primeiraAtiv.tsMs}`;
 
             const jaExiste = evs.some((ev) => ev.uuid === uuidAuto || Math.abs(new Date(ev.timestamp).getTime() - primeiraAtiv.tsMs) < 45 * 60 * 1000);
@@ -650,6 +687,21 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                 motivoRecuperacao: primeiraAtiv.tipo
               };
               evs.push(eventoRecuperado);
+
+              // Se a atividade ocorreu há mais de 1 hora, já fecha a sessão no momento final da atividade
+              if (Date.now() - ultimaAtiv.tsMs > UMA_HORA_MS_REC) {
+                evs.push({
+                  idJogo: id,
+                  nome: eventoRecuperado.nome,
+                  oficina: eventoRecuperado.oficina,
+                  oficinaId: eventoRecuperado.oficinaId,
+                  tipo: "saida",
+                  timestamp: timestampSaida,
+                  uuid: `${uuidAuto}_saida`,
+                  isAutoRecuperado: true,
+                  motivoRecuperacao: primeiraAtiv.tipo
+                });
+              }
 
               // Persiste em segundo plano no Supabase via API do site
               persistirPontoRecuperado({
@@ -681,7 +733,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         });
 
         const evs = mec.eventos;
-        const ativs = mapaAtividadesMecanico[mec.idJogo] || [];
+        const ativsTrabalho = mapaAtividadesTrabalhoMecanico[mec.idJogo] || [];
+        const ativsAudit = mapaAtividadesAuditMecanico[mec.idJogo] || [];
         let pontoAtual = null;
 
         for (let i = 0; i < evs.length; i++) {
@@ -694,18 +747,13 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
 
               if (diffMs > UMA_HORA_MS) {
                 // Mais de 1h sem saída antes da nova entrada: sessão anterior encerrou por inatividade/crash!
-                const ativsNaSessao = ativs.filter((ts) => ts >= entMs && ts <= (entMs + 24 * 60 * 60 * 1000) && ts < proxEntMs);
-                let ultAtivMs = entMs;
-                const teveAtividade = ativsNaSessao.length > 0;
-                if (teveAtividade) {
-                  ultAtivMs = ativsNaSessao[ativsNaSessao.length - 1];
-                }
+                const { ultAtivMs, teveAtividade } = calcularUltimaAtividadeSessao(entMs, ativsTrabalho, proxEntMs);
 
                 pontoAtual.saida = new Date(ultAtivMs).toISOString();
                 pontoAtual.isAutoFechadoInatividade = true;
                 pontoAtual.duracaoMin = Math.max(1, Math.round((ultAtivMs - entMs) / 60000));
                 pontoAtual.motivoAutoFechamento = teveAtividade
-                  ? `Encerrado automaticamente por inatividade (> 60 min sem saída). Última atividade às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
+                  ? `Encerrado automaticamente por inatividade (> 60 min sem saída). Última atividade de trabalho às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
                   : `Encerrado automaticamente por inatividade (> 60 min sem movimentação desde a abertura).`;
               } else {
                 pontoAtual.saida = ev.timestamp;
@@ -786,12 +834,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         // Se o ponto ficou sem saída: checa inatividade de 60 minutos (1 hora)
         if (pontoAtual && !pontoAtual.saida) {
           const entMs = new Date(pontoAtual.entrada).getTime();
-          const ativsNaSessao = ativs.filter((ts) => ts >= entMs);
-          let ultAtivMs = entMs;
-          const teveAtividade = ativsNaSessao.length > 0;
-          if (teveAtividade) {
-            ultAtivMs = ativsNaSessao[ativsNaSessao.length - 1];
-          }
+          const { ultAtivMs, teveAtividade } = calcularUltimaAtividadeSessao(entMs, ativsTrabalho);
 
           const agoraSP = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
           const hojeStr = agoraSP.toLocaleDateString("en-CA");
@@ -806,8 +849,9 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             ultTunagemMs = tunagensNaSessao[tunagensNaSessao.length - 1];
           }
 
+          const ativsNaSessaoAudit = ativsAudit.filter((ts) => ts >= entMs);
           pontoAtual.ultimaAtividadeMs = ultAtivMs;
-          pontoAtual.qtdAtividadesSessao = ativsNaSessao.length;
+          pontoAtual.qtdAtividadesSessao = ativsNaSessaoAudit.length;
           pontoAtual.ultimaTunagemMs = ultTunagemMs;
           pontoAtual.qtdTunagensSessao = tunagensNaSessao.length;
           pontoAtual.qtdTunagensHoje = tunagensHoje.length;
@@ -823,8 +867,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
               Math.round((ultAtivMs - entMs) / 60000)
             );
             pontoAtual.motivoAutoFechamento = teveAtividade
-              ? `Encerrado automaticamente por inatividade (> 60 min sem movimentação). Última atividade registrada às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
-              : `Encerrado automaticamente por inatividade (> 60 min sem nenhuma atividade desde a entrada).`;
+              ? `Encerrado automaticamente por inatividade (> 60 min sem movimentação). Última atividade de trabalho registrada às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
+              : `Encerrado automaticamente por inatividade (> 60 min sem nenhuma atividade de trabalho desde a entrada).`;
 
             const chaveAuto = `auto_${pontoAtual.idJogo}_${pontoAtual.entrada}_${pontoAtual.saida}`;
             if (!chavesFinalizados.has(chaveAuto)) {
@@ -2126,8 +2170,13 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                         </div>
                         <div style={{ fontSize: "10px", color: "#94a3b8" }}>
                           {new Date(p.entrada).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} ➔{" "}
-                          {new Date(p.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} •{" "}
-                          <span>{p.oficina}</span>
+                          {new Date(p.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                          {new Date(p.entrada).toLocaleDateString("pt-BR") !== new Date(p.saida).toLocaleDateString("pt-BR") && (
+                            <span style={{ fontSize: "9px", color: "#fbbf24", marginLeft: "4px" }}>
+                              ({new Date(p.saida).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })})
+                            </span>
+                          )}{" "}
+                          • <span>{p.oficina}</span>
                         </div>
                       </div>
 
@@ -2136,6 +2185,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           style={{
                             fontSize: "12px",
                             fontWeight: "900",
+                            whiteSpace: "nowrap",
                             color: isCrash
                               ? "#fca5a5"
                               : isAutoFechado
@@ -2367,7 +2417,12 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           ) : (
                             <>
                               {new Date(p.entrada).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}{" "}
-                              ➔ {new Date(p.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}{" "}
+                              ➔ {new Date(p.saida).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                              {new Date(p.entrada).toLocaleDateString("pt-BR") !== new Date(p.saida).toLocaleDateString("pt-BR") && (
+                                <span style={{ fontSize: "9px", color: "#fbbf24", marginLeft: "4px" }}>
+                                  ({new Date(p.saida).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })})
+                                </span>
+                              )}{" "}
                               • <span>{p.oficina}</span>
                             </>
                           )}
@@ -2379,6 +2434,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           style={{
                             fontSize: "12px",
                             fontWeight: "900",
+                            whiteSpace: "nowrap",
                             fontFamily: isAberto ? "monospace" : "inherit",
                             color: isCrash
                               ? "#fca5a5"

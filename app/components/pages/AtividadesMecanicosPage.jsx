@@ -415,6 +415,27 @@ export default function AtividadesMecanicosPage({
       const UMA_HORA_MS = 60 * 60 * 1000;
       const agora = Date.now();
 
+      const calcularUltimaAtividadeSessao = (entMs, ativsTrabalho, limiteMaxMs = null) => {
+        const ordenadas = (ativsTrabalho || [])
+          .filter((ts) => ts >= entMs && (limiteMaxMs === null || ts < limiteMaxMs))
+          .sort((a, b) => a - b);
+
+        let ultAtiv = entMs;
+        let teveAtividade = false;
+        const GAP_MAXIMO_MS = 60 * 60 * 1000;
+
+        for (const ts of ordenadas) {
+          if (ts - ultAtiv <= GAP_MAXIMO_MS) {
+            ultAtiv = ts;
+            teveAtividade = true;
+          } else {
+            break;
+          }
+        }
+
+        return { ultAtivMs: ultAtiv, teveAtividade };
+      };
+
       Object.values(mapaMecanicos).forEach((mec) => {
         mec.eventos.sort((a, b) => {
           const diff = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
@@ -437,20 +458,15 @@ export default function AtividadesMecanicosPage({
               const diffMs = proxEntMs - entMs;
 
               if (diffMs > UMA_HORA_MS) {
-                // Mais de 1 hora entre entradas: encerra a anterior por inatividade/crash
-                const ativsNaSessao = ativs.filter((ts) => ts >= entMs && ts <= (entMs + 24 * 60 * 60 * 1000) && ts < proxEntMs);
-                let ultAtivMs = entMs;
-                const teveAtividade = ativsNaSessao.length > 0;
-                if (teveAtividade) {
-                  ultAtivMs = ativsNaSessao[ativsNaSessao.length - 1];
-                }
+                // Mais de 1 hora entre entradas: encerra a anterior por inatividade/crash contínua
+                const { ultAtivMs, teveAtividade } = calcularUltimaAtividadeSessao(entMs, ativs, proxEntMs);
 
                 pontoAtual.saida = new Date(ultAtivMs).toISOString();
                 pontoAtual.isAutoFechadoInatividade = true;
                 pontoAtual.statusPonto = "auto_inatividade";
                 pontoAtual.duracaoMin = Math.max(1, Math.round((ultAtivMs - entMs) / 60000));
                 pontoAtual.justificativa = teveAtividade
-                  ? `Encerrado automaticamente por inatividade (> 60 min sem saída). Última atividade às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
+                  ? `Encerrado automaticamente por inatividade (> 60 min sem saída). Última atividade de trabalho às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
                   : `Encerrado automaticamente por inatividade (> 60 min sem movimentação desde a abertura).`;
               } else {
                 pontoAtual.saida = ev.timestamp;
@@ -537,12 +553,7 @@ export default function AtividadesMecanicosPage({
         // Ponto sem saída
         if (pontoAtual && !pontoAtual.saida) {
           const entMs = new Date(pontoAtual.entrada).getTime();
-          const ativsNaSessao = ativs.filter((ts) => ts >= entMs);
-          let ultAtivMs = entMs;
-          const teveAtividade = ativsNaSessao.length > 0;
-          if (teveAtividade) {
-            ultAtivMs = ativsNaSessao[ativsNaSessao.length - 1];
-          }
+          const { ultAtivMs, teveAtividade } = calcularUltimaAtividadeSessao(entMs, ativs);
           const tempoDesdeUltimaMov = agora - ultAtivMs;
 
           if (tempoDesdeUltimaMov >= UMA_HORA_MS) {
@@ -554,7 +565,7 @@ export default function AtividadesMecanicosPage({
               Math.round((ultAtivMs - entMs) / 60000)
             );
             pontoAtual.justificativa = teveAtividade
-              ? `Encerrado automaticamente por inatividade (> 60 min sem movimentação). Última atividade registrada às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
+              ? `Encerrado automaticamente por inatividade (> 60 min sem movimentação). Última atividade de trabalho registrada às ${new Date(ultAtivMs).toLocaleTimeString("pt-BR")}`
               : `Encerrado automaticamente por inatividade (> 60 min sem movimentação desde a abertura).`;
 
             const chaveAuto = `auto_${pontoAtual.idJogo}_${pontoAtual.entrada}_${pontoAtual.saida}`;
