@@ -126,6 +126,9 @@ export function MainSite({ isV2 = false } = {}) {
     return "lateral";
   });
 
+  const [v2BannerMinimizado, setV2BannerMinimizado] = useState(false);
+  const [v2BannerFechado, setV2BannerFechado] = useState(false);
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       window.__REDS_V2_MODE__ = isModoV2;
@@ -5041,7 +5044,7 @@ export function MainSite({ isV2 = false } = {}) {
     inputPrice: { width: "130px", padding: "10px 14px", borderRadius: "10px", border: `1px solid ${theme.border}`, background: theme.inputBg, color: theme.text, textAlign: "right", fontWeight: "700", fontSize: "14px" },
     uploadArea: { border: `2px dashed ${theme.border}`, borderRadius: "12px", padding: "18px", textAlign: "center", background: theme.inputBg },
     uploadBtnLabel: { background: isDarkMode ? "#2e2e2e" : "#efefef", border: `1px solid ${theme.border}`, padding: "9px 18px", borderRadius: "9px", cursor: "pointer", fontSize: "12px", color: theme.text, fontWeight: "600", display: "inline-block" },
-    footer: { position: "fixed", bottom: 0, left: "var(--reds-sidebar-width, 0px)", width: "calc(100% - var(--reds-sidebar-width, 0px))", background: isDarkMode ? "rgba(20,20,20,0.97)" : "rgba(255,255,255,0.97)", backdropFilter: "blur(12px)", padding: "14px clamp(20px, 4vw, 60px)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", borderTop: `1px solid ${theme.border}`, boxSizing: "border-box", zIndex: 100, transition: "left .22s ease, width .22s ease" },
+    footer: { position: "fixed", bottom: 0, left: "var(--reds-sidebar-width, 0px)", width: "calc(100% - var(--reds-sidebar-width, 0px))", background: isDarkMode ? "rgba(20,20,20,0.97)" : "rgba(255,255,255,0.97)", backdropFilter: "blur(12px)", padding: "14px clamp(20px, 4vw, 60px)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", borderTop: `1px solid ${theme.border}`, boxSizing: "border-box", zIndex: 500, transition: "left .22s ease, width .22s ease" },
     btnRegister: { background: "linear-gradient(135deg, #b40d0d, #b40d0d)", color: "white", border: "none", padding: "13px 32px", borderRadius: "12px", fontWeight: "700", cursor: "pointer", fontSize: "14px", letterSpacing: "0.5px", boxShadow: "0 4px 15px rgba(180,13,13,0.3)" },
     btnPrimary: { background: "linear-gradient(135deg, #b40d0d, #b40d0d)", color: "white", border: "none", padding: "12px", borderRadius: "10px", width: "100%", marginTop: "14px", fontWeight: "700", cursor: "pointer", fontSize: "14px" },
     loginCentral: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", padding: "20px", position: "relative", overflow: "hidden", backgroundColor: "#050505" },
@@ -5368,54 +5371,117 @@ export function MainSite({ isV2 = false } = {}) {
       <GlobalTunagemBanner />
       <PainelNotificacoesServicos />
       {podeVisualizarComo && cargoVisualizacao && (
-        <div style={{ position: "fixed", left: layoutPreferido === "lateral" ? "286px" : "18px", bottom: "18px", zIndex: 1000001, display: "flex", alignItems: "center", gap: "10px", padding: "9px 12px", borderRadius: "11px", background: "rgba(30,41,59,.97)", border: "1px solid rgba(56,189,248,.55)", boxShadow: "0 12px 35px rgba(0,0,0,.45)", color: "#e0f2fe", fontSize: "11px", fontWeight: 800 }}>
+        <div style={{ position: "fixed", left: layoutPreferido === "lateral" ? "286px" : "18px", bottom: paginaAtual === "dashboard" ? "85px" : "18px", zIndex: 1000001, display: "flex", alignItems: "center", gap: "10px", padding: "9px 12px", borderRadius: "11px", background: "rgba(30,41,59,.97)", border: "1px solid rgba(56,189,248,.55)", boxShadow: "0 12px 35px rgba(0,0,0,.45)", color: "#e0f2fe", fontSize: "11px", fontWeight: 800 }}>
           <span>Visualizando como: {getLabelCargo(cargoVisualizacao)}</span>
           <button type="button" onClick={() => { setCargoVisualizacao(""); setPaginaAtual("dashboard"); }} style={{ border: "1px solid rgba(125,211,252,.4)", background: "rgba(14,165,233,.16)", color: "#bae6fd", borderRadius: "7px", padding: "5px 8px", cursor: "pointer", fontSize: "10px", fontWeight: 900 }}>Voltar para Dono</button>
         </div>
       )}
-      {isModoV2 && (
-        <div style={{
-          position: "fixed",
-          bottom: "18px",
-          right: "18px",
-          zIndex: 1000002,
-          background: "linear-gradient(135deg, rgba(6,78,59,0.96) 0%, rgba(15,23,42,0.96) 100%)",
-          border: "1px solid rgba(52,211,153,0.7)",
-          color: "#ecfdf5",
-          padding: "10px 16px",
-          borderRadius: "12px",
-          boxShadow: "0 12px 35px rgba(0,0,0,0.65)",
-          display: "flex",
-          alignItems: "center",
-          gap: "12px",
-          fontSize: "12px",
-          fontWeight: 800,
-          backdropFilter: "blur(14px)",
-          fontFamily: "'Inter', sans-serif"
-        }}>
-          <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#10b981", boxShadow: "0 0 10px #10b981", flexShrink: 0 }} />
-          <div>
-            <div style={{ color: "#6ee7b7", fontSize: "12px", letterSpacing: "0.4px" }}>🚀 MODO V2 (NOVAS TABELAS)</div>
-            <div style={{ color: "#a7f3d0", fontSize: "10px", fontWeight: 500 }}>Base: log_ponto • log_tunagem • log_bancada • log_bau</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => { window.location.href = "/"; }}
+      {isModoV2 && !v2BannerFechado && (
+        v2BannerMinimizado ? (
+          <div
+            onClick={() => setV2BannerMinimizado(false)}
+            title="Modo V2 Ativo (Tabelas Centralizadas) - Clique para expandir opções"
             style={{
-              background: "rgba(255,255,255,0.14)",
-              border: "1px solid rgba(255,255,255,0.25)",
-              color: "#fff",
-              borderRadius: "8px",
-              padding: "6px 12px",
+              position: "fixed",
+              bottom: paginaAtual === "dashboard" ? "145px" : "85px",
+              right: "20px",
+              zIndex: 9998,
+              background: "linear-gradient(135deg, rgba(6,78,59,0.96) 0%, rgba(15,23,42,0.96) 100%)",
+              border: "1px solid rgba(52,211,153,0.7)",
+              color: "#6ee7b7",
+              padding: "6px 14px",
+              borderRadius: "20px",
               cursor: "pointer",
-              fontSize: "11px",
+              boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+              fontSize: "11.5px",
               fontWeight: 800,
-              marginLeft: "4px"
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              backdropFilter: "blur(12px)",
+              fontFamily: "'Inter', sans-serif",
+              transition: "transform 0.15s ease"
             }}
           >
-            Voltar para V1
-          </button>
-        </div>
+            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", boxShadow: "0 0 8px #10b981" }} />
+            <span>🚀 V2 Beta</span>
+          </div>
+        ) : (
+          <div style={{
+            position: "fixed",
+            bottom: paginaAtual === "dashboard" ? "145px" : "85px",
+            right: "20px",
+            zIndex: 9998,
+            background: "linear-gradient(135deg, rgba(6,78,59,0.96) 0%, rgba(15,23,42,0.96) 100%)",
+            border: "1px solid rgba(52,211,153,0.7)",
+            color: "#ecfdf5",
+            padding: "9px 14px",
+            borderRadius: "12px",
+            boxShadow: "0 12px 35px rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            fontSize: "12px",
+            fontWeight: 800,
+            backdropFilter: "blur(14px)",
+            fontFamily: "'Inter', sans-serif"
+          }}>
+            <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#10b981", boxShadow: "0 0 10px #10b981", flexShrink: 0 }} />
+            <div>
+              <div style={{ color: "#6ee7b7", fontSize: "12px", letterSpacing: "0.4px" }}>🚀 MODO V2 (NOVAS TABELAS)</div>
+              <div style={{ color: "#a7f3d0", fontSize: "10px", fontWeight: 500 }}>Base: log_ponto • log_tunagem • log_bancada • log_bau</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { window.location.href = "/"; }}
+              style={{
+                background: "rgba(255,255,255,0.14)",
+                border: "1px solid rgba(255,255,255,0.25)",
+                color: "#fff",
+                borderRadius: "8px",
+                padding: "5px 10px",
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: 800,
+                marginLeft: "2px"
+              }}
+            >
+              Voltar para V1
+            </button>
+            <button
+              type="button"
+              onClick={() => setV2BannerMinimizado(true)}
+              title="Minimizar aviso"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#a7f3d0",
+                cursor: "pointer",
+                fontSize: "15px",
+                padding: "2px 5px",
+                lineHeight: 1
+              }}
+            >
+              –
+            </button>
+            <button
+              type="button"
+              onClick={() => setV2BannerFechado(true)}
+              title="Fechar aviso nesta sessão"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#a7f3d0",
+                cursor: "pointer",
+                fontSize: "13px",
+                padding: "2px 5px",
+                lineHeight: 1
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )
       )}
       <JanelaPontoFlutuante
         usuarioLogado={usuarioParaInterface}
