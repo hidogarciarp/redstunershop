@@ -4,8 +4,12 @@ import { createClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic";
 
 function getSupabaseAdmin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://prperurjtvayjrazdxvh.supabase.co";
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  const url =
+    process.env.NEXT_PUBLIC_NEW_SUPABASE_URL ||
+    "https://sxrfkbjbyjdmyyxbzobb.supabase.co";
+  const key =
+    process.env.NEXT_PUBLIC_NEW_SUPABASE_KEY ||
+    "sb_publishable_et87L-NCrieyXmvteW84-w_v9cxAbjG";
   return createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });

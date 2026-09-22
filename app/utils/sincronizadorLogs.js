@@ -1,6 +1,19 @@
 import { createClient } from "@supabase/supabase-js";
 
-function getSupabaseAdmin() {
+function getProdClient() {
+  const url =
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    "https://prperurjtvayjrazdxvh.supabase.co";
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBycGVydXJqdHZheWpyYXpkeHZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwMjEwMzUsImV4cCI6MjA5MDU5NzAzNX0.MDk7Pm5fYQ_18GPUDv0R360y_M1eBaJ2-zKHPhmQOJ0";
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+function getTargetClient() {
   const url =
     process.env.NEXT_PUBLIC_NEW_SUPABASE_URL ||
     "https://sxrfkbjbyjdmyyxbzobb.supabase.co";
@@ -57,76 +70,41 @@ function parsePonto(rawText) {
   };
 }
 
-async function buscarAtividades(supabase, mecanicaId, usuarioId, inicio, fim) {
-  const inicioISO = inicio.toISOString();
-  const fimISO = fim.toISOString();
+function obterAtividadesEmMemoria(atividadesPorUsuario, mecanicaId, usuarioId, inicio, fim) {
+  const key = `${mecanicaId}_${String(usuarioId)}`;
+  const todas = atividadesPorUsuario.get(key) || [];
+  const inicioT = inicio.getTime();
+  const fimT = fim.getTime();
 
-  const { data: tunagens } = await supabase
-    .from("log_tunagem")
-    .select("uuid, tecnico_id, veiculo_nome, placa, valor_pago, timestampz")
-    .eq("mecanica_id", mecanicaId)
-    .eq("tecnico_id", String(usuarioId))
-    .gte("timestampz", inicioISO)
-    .lte("timestampz", fimISO)
-    .order("timestampz", { ascending: true });
+  let qtdTunagens = 0;
+  let qtdBancada = 0;
+  let qtdBau = 0;
+  let ultima = null;
 
-  const { data: bancadas } = await supabase
-    .from("log_bancada")
-    .select("uuid, usuario_id, usuario_nome, timestampz")
-    .eq("mecanica_id", mecanicaId)
-    .eq("usuario_id", String(usuarioId))
-    .gte("timestampz", inicioISO)
-    .lte("timestampz", fimISO)
-    .order("timestampz", { ascending: true });
-
-  const { data: baus } = await supabase
-    .from("log_bau")
-    .select("uuid, usuario_id, usuario_nome, timestampz")
-    .eq("mecanica_id", mecanicaId)
-    .eq("usuario_id", String(usuarioId))
-    .gte("timestampz", inicioISO)
-    .lte("timestampz", fimISO)
-    .order("timestampz", { ascending: true });
-
-  const lista = [];
-  for (const t of tunagens || []) {
-    lista.push({
-      uuid: t.uuid,
-      tipo: "TUNAGEM",
-      timestamp: new Date(t.timestampz),
-      detalhe: `Tunagem: ${t.veiculo_nome || "Veículo"} (${t.placa || "Sem Placa"})`
-    });
-  }
-  for (const b of bancadas || []) {
-    lista.push({
-      uuid: b.uuid,
-      tipo: "BANCADA",
-      timestamp: new Date(b.timestampz),
-      detalhe: `Craft de Bancada`
-    });
-  }
-  for (const bau of baus || []) {
-    lista.push({
-      uuid: bau.uuid,
-      tipo: "BAU",
-      timestamp: new Date(bau.timestampz),
-      detalhe: `Ação no Baú`
-    });
+  for (const ativ of todas) {
+    const t = ativ.timestamp.getTime();
+    if (t >= inicioT && t <= fimT) {
+      if (ativ.tipo === "TUNAGEM") qtdTunagens++;
+      else if (ativ.tipo === "BANCADA") qtdBancada++;
+      else if (ativ.tipo === "BAU") qtdBau++;
+      if (!ultima || t > ultima.timestamp.getTime()) {
+        ultima = ativ;
+      }
+    }
   }
 
-  lista.sort((a, b) => a.timestamp - b.timestamp);
-
-  const qtdTunagens = tunagens?.length || 0;
-  const qtdBancada = bancadas?.length || 0;
-  const qtdBau = baus?.length || 0;
-  const totalAtividades = qtdTunagens + qtdBancada + qtdBau;
-  const ultima = lista.length > 0 ? lista[lista.length - 1] : null;
-
-  return { qtdTunagens, qtdBancada, qtdBau, totalAtividades, ultimaAtividade: ultima };
+  return {
+    qtdTunagens,
+    qtdBancada,
+    qtdBau,
+    totalAtividades: qtdTunagens + qtdBancada + qtdBau,
+    ultimaAtividade: ultima
+  };
 }
 
 export async function sincronizarLogsUnificados(diasAtras = 2) {
-  const supabase = getSupabaseAdmin();
+  const rawClient = getProdClient();
+  const supabase = getTargetClient();
   const dataLimite = new Date(Date.now() - diasAtras * 24 * 3600 * 1000);
   const dataLimiteISO = dataLimite.toISOString();
 
@@ -138,11 +116,13 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
     ajustesPreservados: 0,
   };
 
+  const atividadesPorUsuario = new Map();
+
   // --------------------------------------------------------------------------
   // 1. SINCRONIZAR TUNAGEM
   // --------------------------------------------------------------------------
   try {
-    const { data: tunagensNovas, error: errTun } = await supabase
+    const { data: tunagensNovas, error: errTun } = await rawClient
       .from("discord_log_messages")
       .select("id, content, channel_id, mechanic_id, created_at")
       .eq("log_type", "tunagem")
@@ -176,7 +156,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
         try { if (matchAntes) antesJson = JSON.parse(matchAntes[1]); } catch {}
         try { if (matchDepois) depoisJson = JSON.parse(matchDepois[1]); } catch {}
 
-        formatados.push({
+        const item = {
           uuid: matchUuid ? matchUuid[1].trim() : `tun_${t.id}`,
           mecanica_id: t.mechanic_id || "reds",
           tecnico_id: matchTecnico ? matchTecnico[2].trim() : "0",
@@ -200,15 +180,26 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
           discord_channel_id: t.channel_id,
           raw_text: t.content,
           criado_em: t.created_at,
+        };
+
+        formatados.push(item);
+
+        const key = `${item.mecanica_id}_${item.tecnico_id}`;
+        if (!atividadesPorUsuario.has(key)) atividadesPorUsuario.set(key, []);
+        atividadesPorUsuario.get(key).push({
+          uuid: item.uuid,
+          tipo: "TUNAGEM",
+          timestamp: new Date(item.timestampz),
+          detalhe: `Tunagem: ${item.veiculo_nome || "Veículo"} (${item.placa || "Sem Placa"})`
         });
       }
 
       if (formatados.length > 0) {
-        const { error: insErr } = await supabase
-          .from("log_tunagem")
-          .upsert(formatados, { onConflict: "uuid" });
-
-        if (!insErr) relatorio.tunagens = formatados.length;
+        for (let i = 0; i < formatados.length; i += 200) {
+          const batch = formatados.slice(i, i + 200);
+          await supabase.from("log_tunagem").upsert(batch, { onConflict: "uuid" });
+        }
+        relatorio.tunagens = formatados.length;
       }
     }
   } catch (e) {
@@ -219,7 +210,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
   // 2. SINCRONIZAR BANCADA
   // --------------------------------------------------------------------------
   try {
-    const { data: bancadaNovas, error: errBanc } = await supabase
+    const { data: bancadaNovas, error: errBanc } = await rawClient
       .from("discord_log_messages")
       .select("id, content, channel_id, mechanic_id, created_at")
       .eq("log_type", "bancada")
@@ -243,7 +234,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
           dt = `${parts[2]}-${parts[1]}-${parts[0]}`;
         }
 
-        formatados.push({
+        const item = {
           uuid: matchUuid ? matchUuid[1].trim() : `disc_banc_${d.id}`,
           mecanica_id: d.mechanic_id || "reds",
           usuario_id: usuarioId,
@@ -257,15 +248,26 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
           discord_channel_id: d.channel_id,
           raw_text: d.content,
           criado_em: d.created_at,
+        };
+
+        formatados.push(item);
+
+        const key = `${item.mecanica_id}_${item.usuario_id}`;
+        if (!atividadesPorUsuario.has(key)) atividadesPorUsuario.set(key, []);
+        atividadesPorUsuario.get(key).push({
+          uuid: item.uuid,
+          tipo: "BANCADA",
+          timestamp: new Date(item.timestampz),
+          detalhe: `Craft de Bancada`
         });
       }
 
       if (formatados.length > 0) {
-        const { error: insErr } = await supabase
-          .from("log_bancada")
-          .upsert(formatados, { onConflict: "uuid" });
-
-        if (!insErr) relatorio.bancada = formatados.length;
+        for (let i = 0; i < formatados.length; i += 200) {
+          const batch = formatados.slice(i, i + 200);
+          await supabase.from("log_bancada").upsert(batch, { onConflict: "uuid" });
+        }
+        relatorio.bancada = formatados.length;
       }
     }
   } catch (e) {
@@ -276,7 +278,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
   // 3. SINCRONIZAR BAÚ
   // --------------------------------------------------------------------------
   try {
-    const { data: bauNovas, error: errBau } = await supabase
+    const { data: bauNovas, error: errBau } = await rawClient
       .from("discord_log_messages")
       .select("id, content, channel_id, mechanic_id, created_at")
       .eq("log_type", "bau")
@@ -297,7 +299,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
           dt = `${parts[2]}-${parts[1]}-${parts[0]}`;
         }
 
-        formatados.push({
+        const item = {
           uuid: matchUuid ? matchUuid[1].trim() : `bau_${b.id}`,
           mecanica_id: b.mechanic_id || "reds",
           usuario_id: matchId ? matchId[1].trim() : "0",
@@ -312,15 +314,26 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
           discord_channel_id: b.channel_id,
           raw_text: b.content,
           criado_em: b.created_at,
+        };
+
+        formatados.push(item);
+
+        const key = `${item.mecanica_id}_${item.usuario_id}`;
+        if (!atividadesPorUsuario.has(key)) atividadesPorUsuario.set(key, []);
+        atividadesPorUsuario.get(key).push({
+          uuid: item.uuid,
+          tipo: "BAU",
+          timestamp: new Date(item.timestampz),
+          detalhe: `Baú: ${item.acao} ${item.item}`
         });
       }
 
       if (formatados.length > 0) {
-        const { error: insErr } = await supabase
-          .from("log_bau")
-          .upsert(formatados, { onConflict: "uuid" });
-
-        if (!insErr) relatorio.bau = formatados.length;
+        for (let i = 0; i < formatados.length; i += 200) {
+          const batch = formatados.slice(i, i + 200);
+          await supabase.from("log_bau").upsert(batch, { onConflict: "uuid" });
+        }
+        relatorio.bau = formatados.length;
       }
     }
   } catch (e) {
@@ -341,8 +354,10 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
       mapaExistentes.set(s.uuid_entrada, s);
     });
 
+    const sessoesParaUpsert = [];
+
     for (const mec of CANAIS_MECANICAS) {
-      const { data: rawLogs } = await supabase
+      const { data: rawLogs } = await rawClient
         .from("discord_log_messages")
         .select("id, content, created_at, channel_id")
         .eq("log_type", "ponto")
@@ -383,17 +398,18 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
             let evEntrada = atual.tipo === "ENTRADA" ? atual : proximo;
 
             if (sessaoAberta) {
-              await salvarOuAtualizarSessao(
-                supabase,
+              adicionarSessao(
+                atividadesPorUsuario,
+                sessoesParaUpsert,
+                mapaExistentes,
+                relatorio,
                 mec.key,
                 usuarioId,
                 sessaoAberta,
                 evSaida.timestamp,
                 evSaida.uuid,
                 "NORMAL",
-                "Turno encerrado via Discord (renovado em duplo clique).",
-                mapaExistentes,
-                relatorio
+                "Turno encerrado via Discord (renovado em duplo clique)."
               );
             }
 
@@ -408,7 +424,13 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
 
           if (atual.tipo === "ENTRADA") {
             if (sessaoAberta) {
-              const atividades = await buscarAtividades(supabase, mec.key, usuarioId, sessaoAberta.entrada, atual.timestamp);
+              const atividades = obterAtividadesEmMemoria(
+                atividadesPorUsuario,
+                mec.key,
+                usuarioId,
+                sessaoAberta.entrada,
+                atual.timestamp
+              );
               let saidaFinal = atividades.ultimaAtividade
                 ? new Date(atividades.ultimaAtividade.timestamp.getTime() + 1000)
                 : new Date(sessaoAberta.entrada.getTime() + 60000);
@@ -420,17 +442,18 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
                 ? "Crash detectado na nova entrada. Fechado 1s após a última atividade comprovada."
                 : "Ponto esquecido sem atividade. Fechado com 1 minuto.";
 
-              await salvarOuAtualizarSessao(
-                supabase,
+              adicionarSessao(
+                atividadesPorUsuario,
+                sessoesParaUpsert,
+                mapaExistentes,
+                relatorio,
                 mec.key,
                 usuarioId,
                 sessaoAberta,
                 saidaFinal,
                 uuidSaida,
                 tipoFechamento,
-                obs,
-                mapaExistentes,
-                relatorio
+                obs
               );
             }
 
@@ -441,32 +464,34 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
             };
           } else if (atual.tipo === "SAIDA") {
             if (sessaoAberta) {
-              await salvarOuAtualizarSessao(
-                supabase,
+              adicionarSessao(
+                atividadesPorUsuario,
+                sessoesParaUpsert,
+                mapaExistentes,
+                relatorio,
                 mec.key,
                 usuarioId,
                 sessaoAberta,
                 atual.timestamp,
                 atual.uuid,
                 "NORMAL",
-                "Turno encerrado normalmente via Discord.",
-                mapaExistentes,
-                relatorio
+                "Turno encerrado normalmente via Discord."
               );
               sessaoAberta = null;
             } else {
               const entradaEstimada = new Date(atual.timestamp.getTime() - 60000);
-              await salvarOuAtualizarSessao(
-                supabase,
+              adicionarSessao(
+                atividadesPorUsuario,
+                sessoesParaUpsert,
+                mapaExistentes,
+                relatorio,
                 mec.key,
                 usuarioId,
                 { nome: atual.nome, entrada: entradaEstimada, uuid: `AUTO_ENTRADA_${atual.uuid}` },
                 atual.timestamp,
                 atual.uuid,
                 "NORMAL",
-                "Saída registrada via Discord. Entrada vinculada 1 min antes.",
-                mapaExistentes,
-                relatorio
+                "Saída registrada via Discord. Entrada vinculada 1 min antes."
               );
             }
           }
@@ -478,7 +503,13 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
         if (sessaoAberta) {
           const agora = new Date();
           const horasAberto = (agora.getTime() - sessaoAberta.entrada.getTime()) / (3600 * 1000);
-          const atividades = await buscarAtividades(supabase, mec.key, usuarioId, sessaoAberta.entrada, agora);
+          const atividades = obterAtividadesEmMemoria(
+            atividadesPorUsuario,
+            mec.key,
+            usuarioId,
+            sessaoAberta.entrada,
+            agora
+          );
 
           let saidaFinal;
           let tipoFechamento;
@@ -504,19 +535,45 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
           }
 
           if (saidaFinal) {
-            await salvarOuAtualizarSessao(
-              supabase,
+            adicionarSessao(
+              atividadesPorUsuario,
+              sessoesParaUpsert,
+              mapaExistentes,
+              relatorio,
               mec.key,
               usuarioId,
               sessaoAberta,
               saidaFinal,
               uuidSaida,
               tipoFechamento,
-              obs,
-              mapaExistentes,
-              relatorio
+              obs
             );
           }
+        }
+      }
+    }
+
+    const novos = sessoesParaUpsert.filter((s) => !s.id);
+    const updates = sessoesParaUpsert.filter((s) => s.id);
+
+    if (novos.length > 0) {
+      for (let i = 0; i < novos.length; i += 100) {
+        const batch = novos.slice(i, i + 100);
+        const { error: insErr } = await supabase.from("log_ponto").insert(batch);
+        if (insErr) {
+          console.error("Erro ao inserir novos log_ponto:", insErr.message);
+        }
+      }
+    }
+
+    if (updates.length > 0) {
+      for (let i = 0; i < updates.length; i += 100) {
+        const batch = updates.slice(i, i + 100);
+        const { error: upErr } = await supabase
+          .from("log_ponto")
+          .upsert(batch, { onConflict: "id" });
+        if (upErr) {
+          console.error("Erro ao atualizar existentes em log_ponto:", upErr.message);
         }
       }
     }
@@ -527,25 +584,39 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
   return relatorio;
 }
 
-async function salvarOuAtualizarSessao(
-  supabase,
+function adicionarSessao(
+  atividadesPorUsuario,
+  sessoesParaUpsert,
+  mapaExistentes,
+  relatorio,
   mecanicaId,
   usuarioId,
   sessaoAberta,
   saidaTimestamp,
   uuidSaida,
   tipoFechamento,
-  obs,
-  mapaExistentes,
-  relatorio
+  obs
 ) {
+  const existente = mapaExistentes.get(sessaoAberta.uuid);
+
+  if (existente && existente.tipo_fechamento === "AJUSTE_MANUAL") {
+    relatorio.ajustesPreservados++;
+    return;
+  }
+
   const dSaida = new Date(saidaTimestamp);
   const dEntrada = new Date(sessaoAberta.entrada);
 
   const diffSeg = Math.max(0, Math.round((dSaida.getTime() - dEntrada.getTime()) / 1000));
   const diffMin = Math.round(diffSeg / 60);
 
-  const atividades = await buscarAtividades(supabase, mecanicaId, usuarioId, dEntrada, dSaida);
+  const atividades = obterAtividadesEmMemoria(
+    atividadesPorUsuario,
+    mecanicaId,
+    usuarioId,
+    dEntrada,
+    dSaida
+  );
 
   const payload = {
     mecanica_id: mecanicaId,
@@ -568,27 +639,10 @@ async function salvarOuAtualizarSessao(
     observacao: obs,
   };
 
-  const existente = mapaExistentes.get(sessaoAberta.uuid);
-
-  if (existente) {
-    // PROTEÇÃO TOTAL: SE FOI AJUSTADO MANUALMENTE PELO ADMIN, NÃO SOBRESCREVER!
-    if (existente.tipo_fechamento === "AJUSTE_MANUAL") {
-      relatorio.ajustesPreservados++;
-      return;
-    }
-
-    await supabase.from("log_ponto").update(payload).eq("id", existente.id);
-    relatorio.pontos++;
-  } else {
-    const { data: inserted } = await supabase
-      .from("log_ponto")
-      .insert([payload])
-      .select("id, uuid_entrada, tipo_fechamento")
-      .maybeSingle();
-
-    if (inserted) {
-      mapaExistentes.set(inserted.uuid_entrada, inserted);
-      relatorio.pontos++;
-    }
+  if (existente && existente.id) {
+    payload.id = existente.id;
   }
+
+  sessoesParaUpsert.push(payload);
+  relatorio.pontos++;
 }

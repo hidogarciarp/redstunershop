@@ -11,7 +11,7 @@ export async function POST(req) {
   } catch (e) {}
 
   // Se a requisição veio do modo V2 (Banco Novo com tabelas unificadas)
-  if (body?.isV2) {
+  if (body?.isV2 || body?.v2) {
     const dias = body.dias || 2;
     console.log(`[V2] Disparando sincronização incremental no Banco Novo (janela de ${dias} dias)...`);
     try {
@@ -54,4 +54,22 @@ export async function POST(req) {
     message: "Reconciliação iniciada em segundo plano.",
     cmd
   });
+}
+
+export async function GET(req) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const dias = parseInt(searchParams.get("dias") || "2", 10);
+    const relatorio = await sincronizarLogsUnificados(dias);
+    return NextResponse.json({
+      success: true,
+      ok: true,
+      isV2: true,
+      message: `Sincronização V2 concluída com sucesso (janela de ${dias} dias)!`,
+      relatorio
+    });
+  } catch (err) {
+    console.error("[V2] Erro na sincronização GET:", err);
+    return NextResponse.json({ success: false, ok: false, error: err.message }, { status: 500 });
+  }
 }
