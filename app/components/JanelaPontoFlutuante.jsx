@@ -19,10 +19,25 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     return true;
   });
 
+  const carregarPontosRecentesRef = useRef(null);
+  const minimizadoRef = useRef(minimizado);
+  useEffect(() => {
+    minimizadoRef.current = minimizado;
+  }, [minimizado]);
+
+  const precisaRecarregarRef = useRef(false);
+  const timerDebounceRef = useRef(null);
+
   const alternarMinimizado = useCallback((val) => {
     setMinimizado(val);
+    minimizadoRef.current = val;
     if (typeof window !== "undefined") {
       sessionStorage.setItem("janela_ponto_flutuante_minimizado", String(val));
+    }
+    if (!val) {
+      // Ao abrir/maximizar, se houver dados pendentes ou para atualização fresca, recarrega
+      carregarPontosRecentesRef.current?.(true);
+      precisaRecarregarRef.current = false;
     }
   }, []);
 
@@ -389,6 +404,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
   };
 
   const carregarPontosRecentes = useCallback(async (silencioso = false) => {
+    carregarPontosRecentesRef.current = carregarPontosRecentes;
     if (!silencioso && !cacheCarregado) setCarregando(true);
     try {
       let inicioFiltroISO;
@@ -437,10 +453,10 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       const lookbackStrSP = lookbackDateObj.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
       const lookbackISO = new Date(`${lookbackStrSP}T00:00:00-03:00`).toISOString();
 
-      // 1. Logs de ponto
+      // 1. Logs de ponto (somente colunas essenciais para economizar egress)
       const { data: logsDiscord, error } = await supabase
         .from("discord_log_messages")
-        .select("*")
+        .select("id, content, created_at, embed_data")
         .eq("log_type", "ponto")
         .gte("created_at", lookbackISO)
         .order("id", { ascending: true })
@@ -476,13 +492,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         logsTunagem = [];
       }
 
-      // 4. Logs de baú para detectar ações do mecânico (usados estritamente para auditoria de histórico)
-      const { data: logsBau } = await supabase
-        .from("discord_log_messages")
-        .select("id, log_type, content, created_at")
-        .eq("log_type", "bau")
-        .gte("created_at", lookbackISO)
-        .order("id", { ascending: true });
+      // [OTIMIZAÇÃO EGRESS]: Logs de baú removidos do loop global.
+      // O baú não altera status nem fila da vez, sendo consultado exclusivamente sob demanda ao abrir auditoria individual.
 
       // Mapeia atividades de trabalho (bancada e tunagem) - EXCLUSIVAS para cálculo de tempo e fechamento de ponto
       const mapaAtividadesTrabalhoMecanico = {};
@@ -503,6 +514,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         }
         if (idMatch) {
           const id = idMatch[1].trim();
+          if (id === "0" || !id) return;
           const tsMs = new Date(ts).getTime();
           if (!mapaAtividadesTrabalhoMecanico[id]) mapaAtividadesTrabalhoMecanico[id] = [];
           mapaAtividadesTrabalhoMecanico[id].push(tsMs);
@@ -510,6 +522,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
           mapaAtividadesAuditMecanico[id].push(tsMs);
 
           const nomeMatch = c.match(/\[NOME COMPLETO\]:\s*([^\n\r]+)/i);
+          if (nomeMatch && nomeMatch[1].toLowerCase().includes("simulador")) return;
           const storeMatch = c.match(/\[STORENAME\]:\s*([^\n\r]+)/i);
           let oficina = "Reds Tunnershop";
           let oficinaId = "reds";
@@ -539,8 +552,12 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
 
       (logsTunagem || []).forEach((t) => {
         if (t.tecnico_id && t.data && t.hora) {
-          const ts = new Date(`${t.data}T${t.hora}-03:00`).getTime();
           const id = String(t.tecnico_id).trim();
+          const nomeTecnico = t.tecnico_nome ? String(t.tecnico_nome).trim() : "";
+          if (id === "0" || !id || nomeTecnico.toLowerCase().includes("simulador") || nomeTecnico.toLowerCase().includes("orçamento")) {
+            return;
+          }
+          const ts = new Date(`${t.data}T${t.hora}-03:00`).getTime();
           if (!mapaAtividadesTrabalhoMecanico[id]) mapaAtividadesTrabalhoMecanico[id] = [];
           mapaAtividadesTrabalhoMecanico[id].push(ts);
           if (!mapaAtividadesAuditMecanico[id]) mapaAtividadesAuditMecanico[id] = [];
@@ -562,25 +579,6 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       });
 
       Object.values(mapaTunagensMecanico).forEach((arr) => arr.sort((a, b) => a - b));
-
-      (logsBau || []).forEach((msg) => {
-        const c = msg.content || "";
-        const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
-        const dataMatch = c.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
-        let ts = msg.created_at;
-        if (dataMatch) {
-          const [_, dStr, hStr] = dataMatch;
-          const [dia, mes, ano] = dStr.split("/");
-          ts = new Date(`${ano}-${mes}-${dia}T${hStr}-03:00`).toISOString();
-        }
-        if (idMatch) {
-          const id = idMatch[1].trim();
-          // Baú entra APENAS no mapa de auditoria de histórico, NUNCA em atividades de trabalho de ponto
-          if (!mapaAtividadesAuditMecanico[id]) mapaAtividadesAuditMecanico[id] = [];
-          mapaAtividadesAuditMecanico[id].push(new Date(ts).getTime());
-        }
-      });
-
       Object.values(mapaAtividadesTrabalhoMecanico).forEach((arr) => arr.sort((a, b) => a - b));
       Object.values(mapaAtividadesAuditMecanico).forEach((arr) => arr.sort((a, b) => a - b));
 
@@ -640,7 +638,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             }
           }
 
-          if (!cobertaPorPonto && pontoAbertoTs !== null && ativ.tsMs >= pontoAbertoTs && ativ.tsMs <= (pontoAbertoTs + UMA_HORA_MS_REC * 2)) {
+          // Se o ponto ainda está aberto (sem saída posterior registrada), qualquer atividade após a entrada está coberta
+          if (!cobertaPorPonto && pontoAbertoTs !== null && ativ.tsMs >= (pontoAbertoTs - 15 * 60 * 1000)) {
             cobertaPorPonto = true;
           }
 
@@ -915,7 +914,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     }
   }, [isAuthorized, carregarPontosRecentes]);
 
-  // Realtime subscription
+  // Realtime subscription com Debounce (4s), filtro de tipo e pausa quando minimizado/background
   useEffect(() => {
     if (!isAuthorized) return;
 
@@ -924,16 +923,47 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "discord_log_messages" },
-        () => {
-          carregarPontosRecentes(true);
+        (payload) => {
+          const msg = payload?.new;
+          // Egress check: ignora qualquer mensagem que não seja de ponto ou bancada (ex: baú)
+          if (msg && msg.log_type && msg.log_type !== "ponto" && msg.log_type !== "bancada") {
+            return;
+          }
+
+          // Se a janela estiver minimizada ou a aba em background, suspende queries pesadas
+          if (minimizadoRef.current || (typeof document !== "undefined" && document.hidden)) {
+            precisaRecarregarRef.current = true;
+            return;
+          }
+
+          // Debounce de 4 segundos para agrupar múltiplos inserts consecutivos numa única requisição
+          if (timerDebounceRef.current) clearTimeout(timerDebounceRef.current);
+          timerDebounceRef.current = setTimeout(() => {
+            carregarPontosRecentesRef.current?.(true);
+          }, 4000);
         }
       )
       .subscribe();
 
+    const handleVisibilidade = () => {
+      if (typeof document !== "undefined" && !document.hidden && !minimizadoRef.current && precisaRecarregarRef.current) {
+        precisaRecarregarRef.current = false;
+        carregarPontosRecentesRef.current?.(true);
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilidade);
+    }
+
     return () => {
+      if (timerDebounceRef.current) clearTimeout(timerDebounceRef.current);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilidade);
+      }
       supabase.removeChannel(canal);
     };
-  }, [isAuthorized, carregarPontosRecentes]);
+  }, [isAuthorized]);
 
   // Keep-alive passivo do bot no Render enquanto o painel/monitor estiver aberto
   useEffect(() => {

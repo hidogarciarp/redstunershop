@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import ConciliacaoPage from "./ConciliacaoPage";
+import AuditoriaTimelinePage from "./AuditoriaTimelinePage";
 import { supabase } from "../../utils/supabaseClient";
 
 // ===== PARSER =====
@@ -1850,6 +1851,7 @@ export default function PontoAdminPage({
                 { id: "conciliacao", label: "⚖️ Conciliação" },
                 { id: "bonificacao", label: "🎁 Bonificação" },
                 { id: "auditoria",   label: "🔍 Auditoria de Baú" },
+                { id: "auditoria-timeline", label: "⏱️ Linha do Tempo & Ajustes" },
               ].map(({ id, label }) => (
                 <button
                   key={id}
@@ -3989,6 +3991,15 @@ export default function PontoAdminPage({
               </div>
             );
           })()}
+
+          {/* ------ ABA LINHA DO TEMPO & AJUSTES ------ */}
+          {abaAtiva === "auditoria-timeline" && (
+            <AuditoriaTimelinePage
+              theme={theme}
+              styles={styles}
+              usuarioLogado={usuarioLogado}
+            />
+          )}
 
 
 

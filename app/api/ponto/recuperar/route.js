@@ -43,9 +43,17 @@ export async function POST(request) {
     const body = await request.json();
     const { idJogo, nome, oficina, oficinaId = "reds", timestamp, motivo = "bancada" } = body;
 
-    if (!idJogo || !timestamp) {
+    if (!idJogo || idJogo === "0" || String(idJogo).trim() === "0" || !timestamp) {
       return NextResponse.json(
-        { error: "Campos obrigatórios ausentes: idJogo e timestamp são necessários." },
+        { error: "Campos obrigatórios ausentes ou ID 0 inválido." },
+        { status: 400 }
+      );
+    }
+
+    const nomeStr = String(nome || "").toLowerCase();
+    if (nomeStr.includes("simulador") || nomeStr.includes("orçamento") || nomeStr.includes("orcamento")) {
+      return NextResponse.json(
+        { error: "Simulador / Orçamento não pode ter ponto registrado." },
         { status: 400 }
       );
     }

@@ -201,7 +201,7 @@ export default function TunagemPage({
       if (vincs) setVinculos(vincs);
 
       // Consulta direta na tabela exclusiva logs_tunagem_reds
-      let query = supabase.from("logs_tunagem_reds").select("*").order("data", { ascending: false }).order("hora", { ascending: false });
+      let query = supabase.from("logs_tunagem_reds").select("*").order("data", { ascending: false }).order("hora", { ascending: false }).limit(10000);
 
       if (!acessoTotalCentral && usuarioId) query = query.eq("tecnico_id", usuarioId);
 
@@ -211,7 +211,7 @@ export default function TunagemPage({
       let { data: logs, error } = await query;
       if (error) {
         // Fallback seguro se logs_tunagem_reds não estiver pronta
-        let fallbackQuery = supabase.from("logs_tunagem").select("*").eq("mechanic_id", "reds").order("data", { ascending: false }).order("hora", { ascending: false });
+        let fallbackQuery = supabase.from("logs_tunagem").select("*").eq("mechanic_id", "reds").order("data", { ascending: false }).order("hora", { ascending: false }).limit(10000);
         if (!acessoTotalCentral && usuarioId) fallbackQuery = fallbackQuery.eq("tecnico_id", usuarioId);
         if (filtroDataInicio) fallbackQuery = fallbackQuery.gte("data", filtroDataInicio);
         if (filtroDataFim) fallbackQuery = fallbackQuery.lte("data", filtroDataFim);
@@ -224,7 +224,8 @@ export default function TunagemPage({
           if (ofc && (ofc.includes("beach") || ofc.includes("vespucci") || ofc.includes("harmony") || ofc.includes("dudark") || ofc.includes("salt") || ofc.includes("lab"))) {
             return false;
           }
-          if (l.mechanic_id && l.mechanic_id !== "reds") return false;
+          const mecId = l.mecanica_id || l.mechanic_id;
+          if (mecId && mecId !== "reds") return false;
           return true;
         });
         setLogsTunagem(acessoTotalCentral ? logsReds : logsReds.filter(isLogDoUsuario));
@@ -315,8 +316,9 @@ export default function TunagemPage({
       }
     }
 
-    if (log.mechanic_id) {
-      const mec = mecanicas.find((m) => m.id === log.mechanic_id);
+    const mecId = log.mecanica_id || log.mechanic_id;
+    if (mecId) {
+      const mec = mecanicas.find((m) => m.id === mecId);
       if (mec) return mec;
     }
 

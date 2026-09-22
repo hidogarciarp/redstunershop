@@ -134,15 +134,33 @@ export default function DbAdminPage({ theme, styles }) {
   const reconciliarBanco = async () => {
     setSincronizando(true);
     try {
-      const res = await fetch("/api/reconciliar", { method: "POST" });
-      if (res.ok) {
-        alert("🔄 Reconciliação iniciada em segundo plano! As tabelas tratadas e de pontos estão sendo atualizadas com base nos novos dados.");
+      const isV2 = typeof window !== "undefined" && (window.location.pathname.startsWith("/v2") || window.__REDS_V2_MODE__ === true);
+      const res = await fetch("/api/reconciliar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isV2, dias: 2 })
+      });
+      const json = await res.json();
+      if (res.ok && (json.success || json.ok)) {
+        if (isV2 && json.relatorio) {
+          alert(
+            `✅ Reconciliação V2 Concluída (Janela de 2 dias)!\n\n` +
+            `• 🚗 Tunagens processadas: ${json.relatorio.tunagens}\n` +
+            `• 🛠️ Bancada processadas: ${json.relatorio.bancada}\n` +
+            `• 📦 Baú processadas: ${json.relatorio.bau}\n` +
+            `• ⏱️ Sessões de Ponto: ${json.relatorio.pontos}\n` +
+            (json.relatorio.ajustesPreservados ? `• 🛡️ Ajustes manuais preservados: ${json.relatorio.ajustesPreservados}\n` : "")
+          );
+        } else {
+          alert("🔄 Reconciliação iniciada em segundo plano! As tabelas tratadas e de pontos estão sendo atualizadas.");
+        }
+        carregarDados();
       } else {
-        alert("Erro ao disparar reconciliação.");
+        alert("Aviso na reconciliação: " + (json.error || json.message || "Erro desconhecido"));
       }
     } catch (e) {
       console.error(e);
-      alert("Erro ao se conectar com a API de conciliação.");
+      alert("Erro ao se conectar com a API de conciliação: " + e.message);
     } finally {
       setSincronizando(false);
     }
@@ -508,6 +526,27 @@ export default function DbAdminPage({ theme, styles }) {
                     <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>DURAÇÃO</th>
                     <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>STATUS</th>
                   </>
+                ) : tabelaAtiva === "log_bancada_reds" ? (
+                  <>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>UUID</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>PASSPORT ID</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>MECÂNICO</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>ITEM CRAFTADO</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>QUANTIDADE</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>DATA</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>HORA</th>
+                  </>
+                ) : tabelaAtiva === "log_bau_reds" ? (
+                  <>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>UUID</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>PASSPORT ID</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>MECÂNICO</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>AÇÃO</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>ITEM</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>QUANTIDADE</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>DATA</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>HORA</th>
+                  </>
                 ) : (
                   <>
                     <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>UUID DO LOG</th>
@@ -527,13 +566,13 @@ export default function DbAdminPage({ theme, styles }) {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: "40px", color: theme.subtext, textAlign: "center" }}>
+                  <td colSpan={10} style={{ padding: "40px", color: theme.subtext, textAlign: "center" }}>
                     ⏳ Consultando registros no Supabase...
                   </td>
                 </tr>
               ) : registros.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: "40px", color: theme.subtext, textAlign: "center" }}>
+                  <td colSpan={10} style={{ padding: "40px", color: theme.subtext, textAlign: "center" }}>
                     🗄️ Nenhum registro encontrado para os filtros aplicados.
                   </td>
                 </tr>
@@ -614,6 +653,88 @@ export default function DbAdminPage({ theme, styles }) {
                             }}>
                               {reg.status_ponto || "normal"}
                             </span>
+                          </td>
+                        </>
+                      ) : tabelaAtiva === "log_bancada_reds" ? (
+                        <>
+                          <td style={{ padding: "16px 20px", fontSize: "12px", fontFamily: "monospace", color: theme.subtext }}>
+                            {reg.uuid ? reg.uuid.slice(0, 8) + "..." : "—"}
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "14px", fontWeight: "800" }}>
+                            {reg.id}
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "14px", fontWeight: "700" }}>
+                            {reg.nome || reg.usuario_nome || "—"}
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "13.5px", fontWeight: "600", color: "#f1f5f9" }}>
+                            {reg.item_craftado || reg.item || "—"}
+                          </td>
+                          <td style={{ padding: "16px 20px" }}>
+                            <span style={{
+                              background: "rgba(56, 189, 248, 0.15)",
+                              border: "1px solid #38bdf8",
+                              color: "#38bdf8",
+                              fontSize: "11px",
+                              fontWeight: "900",
+                              padding: "3px 8px",
+                              borderRadius: "6px"
+                            }}>
+                              {reg.quantidade ? `${reg.quantidade}x` : "1x"}
+                            </span>
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "13px" }}>
+                            {reg.data}
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "13px" }}>
+                            {reg.hora}
+                          </td>
+                        </>
+                      ) : tabelaAtiva === "log_bau_reds" ? (
+                        <>
+                          <td style={{ padding: "16px 20px", fontSize: "12px", fontFamily: "monospace", color: theme.subtext }}>
+                            {reg.uuid ? reg.uuid.slice(0, 8) + "..." : "—"}
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "14px", fontWeight: "800" }}>
+                            {reg.id}
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "14px", fontWeight: "700" }}>
+                            {reg.nome || reg.usuario_nome || "—"}
+                          </td>
+                          <td style={{ padding: "16px 20px" }}>
+                            <span style={{
+                              background: (reg.acao || "").toUpperCase().includes("GUARD") ? "rgba(34,197,94,0.15)" : "rgba(249,115,22,0.15)",
+                              border: `1px solid ${(reg.acao || "").toUpperCase().includes("GUARD") ? "#22c55e" : "#f97316"}`,
+                              color: (reg.acao || "").toUpperCase().includes("GUARD") ? "#4ade80" : "#fb923c",
+                              fontSize: "11px",
+                              fontWeight: "900",
+                              padding: "4px 8px",
+                              borderRadius: "6px",
+                              textTransform: "uppercase"
+                            }}>
+                              {reg.acao || "MOVIMENTOU"}
+                            </span>
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "13.5px", fontWeight: "600", color: "#f1f5f9" }}>
+                            {reg.item || "—"}
+                          </td>
+                          <td style={{ padding: "16px 20px" }}>
+                            <span style={{
+                              background: "rgba(56, 189, 248, 0.15)",
+                              border: "1px solid #38bdf8",
+                              color: "#38bdf8",
+                              fontSize: "11px",
+                              fontWeight: "900",
+                              padding: "3px 8px",
+                              borderRadius: "6px"
+                            }}>
+                              {reg.quantidade ? `${reg.quantidade}x` : "1x"}
+                            </span>
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "13px" }}>
+                            {reg.data}
+                          </td>
+                          <td style={{ padding: "16px 20px", fontSize: "13px" }}>
+                            {reg.hora}
                           </td>
                         </>
                       ) : (

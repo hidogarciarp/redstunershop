@@ -371,10 +371,10 @@ export default function RelatorioPage({
       let qTun = supabase.from("logs_tunagem_reds").select("*").order("data", { ascending: false }).limit(2000);
       if (condsTun.length > 0) qTun = qTun.or(condsTun.join(","));
 
-      let qBanc = supabase.from("log_bancada_reds").select("id, nome, data, hora, timestampz, uuid").order("data", { ascending: false }).limit(2000);
+      let qBanc = supabase.from("log_bancada_reds").select("*").order("data", { ascending: false }).limit(2000);
       if (condsBanc.length > 0) qBanc = qBanc.or(condsBanc.join(","));
 
-      let qBau = supabase.from("log_bau_reds").select("id, nome, data, hora, timestampz, uuid").order("data", { ascending: false }).limit(2000);
+      let qBau = supabase.from("log_bau_reds").select("*").order("data", { ascending: false }).limit(2000);
       if (condsBau.length > 0) qBau = qBau.or(condsBau.join(","));
 
       const [resAud, resPonto, resTun, resBanc, resBau] = await Promise.all([
@@ -403,14 +403,14 @@ export default function RelatorioPage({
 
           return {
             ...r,
-            id: r.id_jogo,
-            id_jogo: r.id_jogo,
-            usuario_id: r.id_jogo,
+            id: r.id_jogo || r.usuario_id || r.id,
+            id_jogo: r.id_jogo || r.usuario_id || r.id,
+            usuario_id: r.id_jogo || r.usuario_id || r.id,
             nome: r.nome,
             nome_personagem: r.nome,
-            uuid_entrada: r.uuid_sessao,
-            uuid_saida: r.saida ? r.uuid_sessao : null,
-            observacao: r.justificativa || r.motivo_crash || null,
+            uuid_entrada: r.uuid_entrada || r.uuid_sessao,
+            uuid_saida: r.uuid_saida || (r.saida ? (r.uuid_sessao || r.uuid_entrada) : null),
+            observacao: r.observacao || r.justificativa || r.motivo_crash || null,
             detalhes: det,
             totalTunagens: totTun,
             valorTunagens: valTun,
@@ -430,7 +430,7 @@ export default function RelatorioPage({
       // 1. Insere as auditadas (unificando por colaborador e entrada)
       formatadosAud.forEach((aud) => {
         const idColab = String(aud.id_jogo || aud.usuario_id || "");
-        const key = idColab && aud.entrada ? `${idColab}_${aud.entrada}` : String(aud.uuid_entrada || aud.uuid_sessao);
+        const key = String(aud.uuid_entrada || aud.uuid_sessao || `${idColab}_${aud.entrada}`);
         const existente = mapaLogs.get(key);
         if (!existente || (aud.total_tunagens || aud.total_bancada || aud.total_bau)) {
           mapaLogs.set(key, aud);
@@ -440,7 +440,7 @@ export default function RelatorioPage({
       // 2. Mescla as do ponto_cidade_reds
       logsPontoCidade.forEach((reg) => {
         const idColab = String(reg.id_jogo || reg.usuario_id || reg.id || "");
-        const key = idColab && reg.entrada ? `${idColab}_${reg.entrada}` : String(reg.uuid_entrada);
+        const key = String(reg.uuid_entrada || reg.uuid_sessao || `${idColab}_${reg.entrada}`);
         const existente = mapaLogs.get(key);
         if (!existente) {
           mapaLogs.set(key, reg);
@@ -458,41 +458,73 @@ export default function RelatorioPage({
 
       // 3. Cruzamento Dinâmico de Atividades: Garante que sessões recentes sem auditoria pré-calculada mostrem suas tunagens, bancada e baú em tempo real
       listaFinal.forEach((s) => {
+        const det = s.detalhes || { tunagens: [], bancada: [], bau: [] };
+        s.detalhes = {
+          tunagens: [...(det.tunagens || [])],
+          bancada: [...(det.bancada || [])],
+          bau: [...(det.bau || [])]
+        };
+      });
+
+      const sessoesComIntervalo = listaFinal.map((s) => {
         const entTs = new Date(s.entrada).getTime();
         const saiTs = s.saida ? new Date(s.saida).getTime() : (entTs + 4 * 3600000);
+        return { s, entTs, saiTs };
+      });
 
-        const det = s.detalhes || { tunagens: [], bancada: [], bau: [] };
-        let tunagens = (det.tunagens && det.tunagens.length > 0) ? det.tunagens : [];
-        let bancada = (det.bancada && det.bancada.length > 0) ? det.bancada : [];
-        let bau = (det.bau && det.bau.length > 0) ? det.bau : [];
+      const associarAtividade = (item, listaDestinoNome) => {
+        const ts = item.timestampz
+          ? new Date(item.timestampz).getTime()
+          : (item.data && item.hora ? new Date(`${item.data}T${item.hora}-03:00`).getTime() : null);
+        if (!ts || isNaN(ts)) return;
 
-        // Se a sessão está sem atividades gravadas, busca nos logs reais do banco
-        if (tunagens.length === 0 && tunsMec.length > 0) {
-          tunagens = tunsMec.filter((t) => {
-            const ts = t.timestampz ? new Date(t.timestampz).getTime() : (t.data && t.hora ? new Date(`${t.data}T${t.hora}-03:00`).getTime() : null);
-            return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
-          });
+        // 1. Procura sessão que contenha o timestamp exatamente
+        let match = sessoesComIntervalo.find(({ entTs, saiTs }) => ts >= entTs && ts <= saiTs);
+
+        // 2. Se não estiver estritamente dentro de nenhuma sessão, procura a sessão mais próxima (tolerância curta de até 15s)
+        if (!match) {
+          let menorDist = Infinity;
+          for (const cand of sessoesComIntervalo) {
+            const dist = Math.min(Math.abs(ts - cand.entTs), Math.abs(ts - cand.saiTs));
+            if (dist <= 15000 && dist < menorDist) {
+              menorDist = dist;
+              match = cand;
+            }
+          }
         }
 
-        if (bancada.length === 0 && bancMec.length > 0) {
-          bancada = bancMec.filter((b) => {
-            const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
-            return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+        if (match) {
+          const chaveItem = item.uuid || item.id || `${item.item || item.item_craftado || item.placa || 'item'}_${ts}`;
+          const jaTem = match.s.detalhes[listaDestinoNome].some(x => {
+            const c = x.uuid || x.id || `${x.item || x.item_craftado || x.placa || 'item'}_${x.timestampz || x.hora || ''}`;
+            return c === chaveItem;
           });
+          if (!jaTem) {
+            match.s.detalhes[listaDestinoNome].push(item);
+          }
         }
+      };
 
-        if (bau.length === 0 && bauMec.length > 0) {
-          bau = bauMec.filter((b) => {
-            const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
-            return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
-          });
-        }
+      if (tunsMec.length > 0) {
+        tunsMec.forEach(t => associarAtividade(t, "tunagens"));
+      }
+      if (bancMec.length > 0) {
+        bancMec.forEach(b => associarAtividade(b, "bancada"));
+      }
+      if (bauMec.length > 0) {
+        bauMec.forEach(b => associarAtividade(b, "bau"));
+      }
+
+      listaFinal.forEach((s) => {
+        const tunagens = s.detalhes.tunagens || [];
+        const bancada = s.detalhes.bancada || [];
+        const bau = s.detalhes.bau || [];
 
         s.totalTunagens = tunagens.length;
         s.valorTunagens = tunagens.reduce((acc, t) => acc + (parseFloat(t.valor_pago || t.valor) || 0), 0);
         s.totalBancada = bancada.length;
         s.valorBancada = bancada.reduce((acc, b) => acc + (parseFloat(b.valor) || 0), 0);
-        s.detalhes = { tunagens, bancada, bau };
+        s.totalBau = bau.length;
       });
 
       // 4. Filtrar duplicatas fantasmas de saída avulsa (sessões de 0 min com entrada === saida que coincidem com a saída de uma sessão legítima)
@@ -1193,15 +1225,15 @@ export default function RelatorioPage({
         const [rT, rB, rBau] = await Promise.all([qT, qB, qBau]);
         const tunagens = (rT.data || []).filter(t => {
           const ts = t.timestampz ? new Date(t.timestampz).getTime() : (t.data && t.hora ? new Date(`${t.data}T${t.hora}-03:00`).getTime() : null);
-          return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+          return ts && ts >= entTs && ts <= saiTs;
         });
         const bancada = (rB.data || []).filter(b => {
           const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
-          return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+          return ts && ts >= entTs && ts <= saiTs;
         });
         const bau = (rBau.data || []).filter(b => {
           const ts = b.timestampz ? new Date(b.timestampz).getTime() : (b.data && b.hora ? new Date(`${b.data}T${b.hora}-03:00`).getTime() : null);
-          return ts && ts >= entTs - 60000 && ts <= saiTs + 60000;
+          return ts && ts >= entTs && ts <= saiTs;
         });
 
         setSessaoAuditModal(prev => {
@@ -1782,7 +1814,7 @@ export default function RelatorioPage({
       : (logsCompletosFunc?.find(l => {
           if (sessaoAuditModal.uuid_entrada && (l.uuid_sessao === sessaoAuditModal.uuid_entrada || l.uuid_entrada === sessaoAuditModal.uuid_entrada)) return true;
           if (l.entrada && sessaoAuditModal.entrada) {
-            return Math.abs(new Date(l.entrada).getTime() - new Date(sessaoAuditModal.entrada).getTime()) < 180000;
+            return Math.abs(new Date(l.entrada).getTime() - new Date(sessaoAuditModal.entrada).getTime()) < 15000;
           }
           return false;
         }) || sessaoAuditModal);
@@ -1905,12 +1937,12 @@ export default function RelatorioPage({
                 {listBanc.map((b, bIdx) => (
                   <div key={bIdx} style={{ background: "rgba(192, 132, 252, 0.05)", border: "1px solid rgba(192, 132, 252, 0.2)", borderRadius: "8px", padding: "10px 14px", fontSize: "12px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <strong>🛠️ {b.item || b.nomeItem || b.nome_item || "Item de Bancada"}</strong>
-                      <span style={{ color: "#c084fc", fontWeight: "800" }}>${(parseFloat(b.valor) || 0).toLocaleString("pt-BR")}</span>
+                      <strong>🛠️ {b.item || b.item_craftado || b.nomeItem || b.nome_item || "Item de Bancada"}</strong>
+                      <span style={{ color: "#c084fc", fontWeight: "800" }}>${(parseFloat(b.valor || b.preco || 0)).toLocaleString("pt-BR")}</span>
                     </div>
                     <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", display: "flex", gap: "12px" }}>
                       {(b.qtd || b.quantidade) && <span>📦 Quantidade: {b.qtd || b.quantidade}x</span>}
-                      {(b.timestamp || b.created_at) && <span>🕒 {new Date(b.timestamp || b.created_at).toLocaleTimeString("pt-BR")}</span>}
+                      {(b.timestampz || b.timestamp || b.created_at) && <span>🕒 {new Date(b.timestampz || b.timestamp || b.created_at).toLocaleTimeString("pt-BR")}</span>}
                     </div>
                   </div>
                 ))}
@@ -1932,9 +1964,9 @@ export default function RelatorioPage({
                   return (
                     <div key={mIdx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", padding: "6px 10px", background: "rgba(255,255,255,0.02)", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
                       <span style={{ color: isRetirou ? "#fca5a5" : "#86efac", fontWeight: "700" }}>
-                        {isRetirou ? "📤 Retirou:" : "📥 Guardou:"} {m.item || m.nome_item || m.nomeItem}
+                        {isRetirou ? "📤 Retirou:" : "📥 Guardou:"} {(m.quantidade || m.qtd) ? `${m.quantidade || m.qtd}x ` : ""}{m.item || m.nome_item || m.nomeItem}
                       </span>
-                      {(m.timestamp || m.created_at) && <span style={{ color: "#94a3b8", fontSize: "10px" }}>{new Date(m.timestamp || m.created_at).toLocaleTimeString("pt-BR")}</span>}
+                      {(m.timestampz || m.timestamp || m.created_at) && <span style={{ color: "#94a3b8", fontSize: "10px" }}>{new Date(m.timestampz || m.timestamp || m.created_at).toLocaleTimeString("pt-BR")}</span>}
                     </div>
                   );
                 })}
@@ -2003,14 +2035,14 @@ export default function RelatorioPage({
           if (reg.uuid_entrada && (l.uuid_sessao === reg.uuid_entrada || l.uuid_entrada === reg.uuid_entrada)) return true;
           if (l.entrada && reg.entrada) {
             const diff = Math.abs(new Date(l.entrada).getTime() - new Date(reg.entrada).getTime());
-            if (diff < 180000) return true;
+            if (diff < 15000) return true;
           }
           return false;
         });
         if (matched) {
           return {
-            ...reg,
             ...matched,
+            ...reg,
             uuid_entrada: reg.uuid_entrada || matched.uuid_entrada || matched.uuid_sessao,
             uuid_saida: reg.uuid_saida || matched.uuid_saida,
             observacao: reg.observacao || matched.observacao,
@@ -2020,8 +2052,8 @@ export default function RelatorioPage({
             totalBancada: matched.totalBancada ?? reg.totalBancada ?? (matched.detalhes?.bancada?.length || 0),
             valorBancada: matched.valorBancada ?? reg.valorBancada ?? (matched.detalhes?.bancada?.reduce((a, b) => a + (parseFloat(b.valor) || 0), 0) || 0),
             totalBau: matched.totalBau ?? reg.totalBau ?? (matched.detalhes?.bau?.length || 0),
-            duracaoMin: matched.duracaoMin ?? reg.duracaoMin ?? ((matched.entrada && matched.saida) ? Math.round((new Date(matched.saida) - new Date(matched.entrada)) / 60000) : 0),
-            statusPonto: matched.statusPonto || reg.statusPonto
+            duracaoMin: reg.duracaoMin ?? matched.duracaoMin ?? ((reg.entrada && reg.saida) ? Math.round((new Date(reg.saida) - new Date(reg.entrada)) / 60000) : 0),
+            statusPonto: reg.statusPonto || matched.statusPonto
           };
         }
         return reg;
