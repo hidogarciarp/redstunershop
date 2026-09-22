@@ -144,13 +144,13 @@ function getV2RelationConfig(relation) {
 
   // PONTO (OUTRAS MECÂNICAS)
   if (r === "ponto_cidade_mecanica_2") {
-    return { target: "log_ponto", filter: { col: "mecanica_id", val: "vespucci" } };
-  }
-  if (r === "ponto_cidade_mecanica_3") {
     return { target: "log_ponto", filter: { col: "mecanica_id", val: "harmony" } };
   }
-  if (r === "ponto_cidade_mecanica_4") {
+  if (r === "ponto_cidade_mecanica_3") {
     return { target: "log_ponto", filter: { col: "mecanica_id", val: "dudark" } };
+  }
+  if (r === "ponto_cidade_mecanica_4") {
+    return { target: "log_ponto", filter: { col: "mecanica_id", val: "vespucci" } };
   }
 
   // LOGS DE TUNAGEM AO VIVO (RED'S - DISCORD BOT)

@@ -109,7 +109,31 @@ O monitor flutuante mantinha o site aberto o dia inteiro por dezenas de gestores
 
 ---
 
-## 5. Checklist para Promover a V2 como Versão Principal
+## 5. Correção do Mapeamento de Mecânicas Concorrentes no Heatmap / Relatório
+
+### Diagnóstico do Problema:
+No heatmap comparativo de presença semanal da aba **Relatório**, as mecânicas estavam com dados trocados:
+- **Dudark Motors** aparecia praticamente vazia/sem funcionamento, apesar de ter trabalhado a semana toda.
+- **Harmony** aparecia com alta taxa de cobertura durante todos os dias, apesar de estar fechada.
+- **Vespucci** estava com dados invertidos.
+
+### Causa Raiz:
+Em [`app/utils/supabaseClient.js`](file:///c:/Users/Garrido/registro-servicos/app/utils/supabaseClient.js), a função `getV2RelationConfig` estava com uma rotação incorreta no mapeamento das tabelas legadas para o `mecanica_id` unificado de `log_ponto`:
+- `ponto_cidade_mecanica_2` (Harmony) estava mapeada para `vespucci`.
+- `ponto_cidade_mecanica_3` (Dudark) estava mapeada para `harmony`.
+- `ponto_cidade_mecanica_4` (Vespucci) estava mapeada para `dudark`.
+
+### Solução Aplicada:
+Mapeamento corrigido:
+- `ponto_cidade_mecanica_2` ➔ `{ target: "log_ponto", filter: { col: "mecanica_id", val: "harmony" } }`
+- `ponto_cidade_mecanica_3` ➔ `{ target: "log_ponto", filter: { col: "mecanica_id", val: "dudark" } }`
+- `ponto_cidade_mecanica_4` ➔ `{ target: "log_ponto", filter: { col: "mecanica_id", val: "vespucci" } }`
+
+Resultado imediato: Harmony exibe apenas os 2 registros do dia 18/09 e vazia nos demais dias (fechada); Dudark exibe todas as suas 74 sessões da semana; Vespucci exibe todas as suas 96 sessões da semana.
+
+---
+
+## 6. Checklist para Promover a V2 como Versão Principal
 
 Quando for decidido substituir a rota principal (`/`) pela V2, execute os seguintes passos:
 
