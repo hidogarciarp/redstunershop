@@ -10,10 +10,12 @@ export async function POST(req) {
     body = await req.json();
   } catch (e) {}
 
-  // Se a requisição veio do modo V2 (Banco Novo com tabelas unificadas)
-  if (body?.isV2 || body?.v2) {
+  // O padrão oficial agora é a Versão 2 (Lakehouse Banco Novo). V1 é acionada apenas se isV1 for explicitamente true.
+  const isV1 = body?.isV1 === true || body?.v1 === true;
+
+  if (!isV1) {
     const dias = body.dias || 2;
-    console.log(`[V2] Disparando sincronização incremental no Banco Novo (janela de ${dias} dias)...`);
+    console.log(`[V2 Lakehouse] Disparando sincronização incremental no Banco Novo (janela de ${dias} dias)...`);
     try {
       const relatorio = await sincronizarLogsUnificados(dias);
       return NextResponse.json({
@@ -24,7 +26,7 @@ export async function POST(req) {
         relatorio
       });
     } catch (err) {
-      console.error("[V2] Erro na sincronização:", err);
+      console.error("[V2 Lakehouse] Erro na sincronização:", err);
       return NextResponse.json({ success: false, ok: false, error: err.message }, { status: 500 });
     }
   }

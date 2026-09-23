@@ -68,7 +68,9 @@ const buildMenuItems = ({ userPodeNotificar, userPodeFinancas, userIsAdmin, user
     { id: "candidaturas", label: "Candidaturas" },
     ...((userIsAdmin || userIsDono)
       ? [
-        { id: "v2-ambiente", label: "🚀 Versão 2 (Beta BD)", isV2: true },
+        (typeof window !== "undefined" && window.location.pathname.startsWith("/v1"))
+          ? { id: "versao-toggle", label: "🚀 Ir para Versão 2 (Principal)", isV2Nav: true }
+          : { id: "versao-toggle", label: "🛡️ Backup V1 (Banco Legado)", isV1Nav: true },
       ] : []),
   ];
 };
@@ -151,7 +153,8 @@ const getMenuIcon = (id) => {
     missoes: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" /></svg>,
     pagamentos: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>,
     bot: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8.01" y2="16"/><line x1="16" y1="16" x2="16.01" y2="16"/></svg>,
-    "v2-ambiente": <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>,
+    "versao-toggle": <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+    "v2-ambiente": <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
   };
   return icons[id] || <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="12" cy="12" r="10" /></svg>;
 };
@@ -228,12 +231,20 @@ const Sidebar = memo(function Sidebar({
       >
         {menuItems.map((item) => {
           const ativo = paginaAtual === item.id;
+          const isV1Toggle = item.isV1Nav;
+          const isV2Toggle = item.isV2Nav || item.isV2;
+          const isCustomToggle = isV1Toggle || isV2Toggle;
+
           return (
             <button
               key={item.id}
               onClick={() => {
-                if (item.id === "v2-ambiente") {
-                  window.location.href = "/v2";
+                if (item.id === "versao-toggle" || item.id === "v2-ambiente") {
+                  if (typeof window !== "undefined" && window.location.pathname.startsWith("/v1")) {
+                    window.location.href = "/";
+                  } else {
+                    window.location.href = "/v1";
+                  }
                   return;
                 }
                 if (item.id === "monitor-ponto") {
@@ -249,33 +260,55 @@ const Sidebar = memo(function Sidebar({
                 width: "100%",
                 padding: "9px 13px",
                 borderRadius: "8px",
-                color: item.isV2 ? "#6ee7b7" : (ativo ? "#ffffff" : "rgba(255,255,255,0.6)"),
+                color: isV1Toggle
+                  ? "#fcd34d"
+                  : isV2Toggle
+                  ? "#6ee7b7"
+                  : ativo
+                  ? "#ffffff"
+                  : "rgba(255,255,255,0.6)",
                 textDecoration: "none",
-                background: item.isV2 ? "rgba(16,185,129,0.14)" : (ativo ? "rgba(255,255,255,0.08)" : "transparent"),
-                border: item.isV2 ? "1px solid rgba(16,185,129,0.35)" : "none",
+                background: isV1Toggle
+                  ? "rgba(245,158,11,0.14)"
+                  : isV2Toggle
+                  ? "rgba(16,185,129,0.14)"
+                  : ativo
+                  ? "rgba(255,255,255,0.08)"
+                  : "transparent",
+                border: isV1Toggle
+                  ? "1px solid rgba(245,158,11,0.35)"
+                  : isV2Toggle
+                  ? "1px solid rgba(16,185,129,0.35)"
+                  : "none",
                 cursor: "pointer",
                 fontSize: "13px",
-                fontWeight: (ativo || item.isV2) ? "700" : "500",
+                fontWeight: ativo || isCustomToggle ? "700" : "500",
                 textAlign: "left",
                 transition: "color 0.15s, background 0.15s",
                 marginBottom: "2px",
-                boxShadow: item.isV2 ? "0 0 10px rgba(16,185,129,0.15)" : (ativo ? "inset 3px 0 0 #8b181e" : "none"),
+                boxShadow: isV1Toggle
+                  ? "0 0 10px rgba(245,158,11,0.15)"
+                  : isV2Toggle
+                  ? "0 0 10px rgba(16,185,129,0.15)"
+                  : ativo
+                  ? "inset 3px 0 0 #8b181e"
+                  : "none",
                 fontFamily: "'Inter', sans-serif",
               }}
               onMouseEnter={(e) => {
-                if (!ativo && !item.isV2) {
+                if (!ativo && !isCustomToggle) {
                   e.currentTarget.style.color = "#ffffff";
                   e.currentTarget.style.background = "rgba(255,255,255,0.05)";
                 }
               }}
               onMouseLeave={(e) => {
-                if (!ativo && !item.isV2) {
+                if (!ativo && !isCustomToggle) {
                   e.currentTarget.style.color = "rgba(255,255,255,0.6)";
                   e.currentTarget.style.background = "transparent";
                 }
               }}
             >
-              <span style={{ opacity: (ativo || item.isV2) ? 1 : 0.6, flexShrink: 0, display: "flex" }}>
+              <span style={{ opacity: ativo || isCustomToggle ? 1 : 0.6, flexShrink: 0, display: "flex" }}>
                 {getMenuIcon(item.id)}
               </span>
               {item.label}
@@ -458,12 +491,20 @@ export function TopHeaderBar({
           }}>
             {menuItems.map((item) => {
               const ativo = paginaAtual === item.id;
+              const isV1Toggle = item.isV1Nav;
+              const isV2Toggle = item.isV2Nav || item.isV2;
+              const isCustomToggle = isV1Toggle || isV2Toggle;
+
               return (
                 <button
                   key={item.id}
                   onClick={() => {
-                    if (item.id === "v2-ambiente") {
-                      window.location.href = "/v2";
+                    if (item.id === "versao-toggle" || item.id === "v2-ambiente") {
+                      if (typeof window !== "undefined" && window.location.pathname.startsWith("/v1")) {
+                        window.location.href = "/";
+                      } else {
+                        window.location.href = "/v1";
+                      }
                       return;
                     }
                     if (item.id === "monitor-ponto") {
@@ -473,16 +514,40 @@ export function TopHeaderBar({
                     setPaginaAtual(item.id);
                   }}
                   style={{
-                    background: item.isV2 ? "rgba(16,185,129,0.18)" : (ativo ? "rgba(139,24,30,0.32)" : "rgba(255,255,255,0.045)"),
-                    border: item.isV2 ? "1px solid rgba(16,185,129,0.5)" : (ativo ? "1px solid rgba(139,24,30,0.75)" : "1px solid rgba(255,255,255,0.08)"),
-                    color: item.isV2 ? "#6ee7b7" : (ativo ? "#ffffff" : "rgba(255,255,255,0.68)"),
+                    background: isV1Toggle
+                      ? "rgba(245,158,11,0.18)"
+                      : isV2Toggle
+                      ? "rgba(16,185,129,0.18)"
+                      : ativo
+                      ? "rgba(139,24,30,0.32)"
+                      : "rgba(255,255,255,0.045)",
+                    border: isV1Toggle
+                      ? "1px solid rgba(245,158,11,0.5)"
+                      : isV2Toggle
+                      ? "1px solid rgba(16,185,129,0.5)"
+                      : ativo
+                      ? "1px solid rgba(139,24,30,0.75)"
+                      : "1px solid rgba(255,255,255,0.08)",
+                    color: isV1Toggle
+                      ? "#fcd34d"
+                      : isV2Toggle
+                      ? "#6ee7b7"
+                      : ativo
+                      ? "#ffffff"
+                      : "rgba(255,255,255,0.68)",
                     padding: "7px 9px",
                     borderRadius: "8px",
                     cursor: "pointer",
                     fontSize: "11.5px",
-                    fontWeight: (ativo || item.isV2) ? "800" : "650",
+                    fontWeight: ativo || isCustomToggle ? "800" : "650",
                     whiteSpace: "nowrap",
-                    boxShadow: item.isV2 ? "0 0 12px rgba(16,185,129,0.25)" : (ativo ? "0 0 14px rgba(139,24,30,0.18)" : "none"),
+                    boxShadow: isV1Toggle
+                      ? "0 0 12px rgba(245,158,11,0.25)"
+                      : isV2Toggle
+                      ? "0 0 12px rgba(16,185,129,0.25)"
+                      : ativo
+                      ? "0 0 14px rgba(139,24,30,0.18)"
+                      : "none",
                     display: "inline-flex",
                     alignItems: "center",
                     gap: "6px",

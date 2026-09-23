@@ -106,8 +106,9 @@ async function otimizarImagem(file) {
   }
 }
 
-export function MainSite({ isV2 = false } = {}) {
-  const isModoV2 = isV2 || (typeof window !== "undefined" && window.location.pathname.startsWith("/v2"));
+export function MainSite({ isV2 = true } = {}) {
+  const isModoV1 = isV2 === false || (typeof window !== "undefined" && window.location.pathname.startsWith("/v1"));
+  const isModoV2 = !isModoV1;
 
   // ===== STATES =====
   const [paginaAtual, setPaginaAtual] = useState("login");
@@ -127,26 +128,28 @@ export function MainSite({ isV2 = false } = {}) {
     return "lateral";
   });
 
-  const [v2BannerMinimizado, setV2BannerMinimizado] = useState(false);
-  const [v2BannerFechado, setV2BannerFechado] = useState(false);
+  const [v1BannerMinimizado, setV1BannerMinimizado] = useState(false);
+  const [v1BannerFechado, setV1BannerFechado] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
+      window.__REDS_V1_MODE__ = isModoV1;
       window.__REDS_V2_MODE__ = isModoV2;
     }
-  }, [isModoV2]);
+  }, [isModoV1, isModoV2]);
 
+  // Se o usuário estiver acessando a V1 (Ambiente de Contingência/Backup), somente Donos e Administradores podem acessar
   useEffect(() => {
-    if (isModoV2 && sessionCarregada && usuarioLogado) {
+    if (isModoV1 && sessionCarregada && usuarioLogado) {
       const role = usuarioLogado?.role || "";
       const primary = role.split("|")[0];
       const isAllowed = primary === "admin" || primary === "dono" || role.includes("admin") || role.includes("dono");
       if (!isAllowed) {
-        alert("🚫 Acesso restrito: A Versão 2 (Tabelas Novas) é exclusiva para Donos e Administradores durante os testes.");
+        alert("🚫 Acesso restrito: A Versão 1 (Banco Legado de Backup) é exclusiva para Donos e Administradores.");
         window.location.href = "/";
       }
     }
-  }, [isModoV2, sessionCarregada, usuarioLogado]);
+  }, [isModoV1, sessionCarregada, usuarioLogado]);
 
   useEffect(() => {
     if (!usuarioLogado || getPrimaryRole(usuarioLogado.role || "") !== "dono") {
@@ -5377,19 +5380,19 @@ export function MainSite({ isV2 = false } = {}) {
           <button type="button" onClick={() => { setCargoVisualizacao(""); setPaginaAtual("dashboard"); }} style={{ border: "1px solid rgba(125,211,252,.4)", background: "rgba(14,165,233,.16)", color: "#bae6fd", borderRadius: "7px", padding: "5px 8px", cursor: "pointer", fontSize: "10px", fontWeight: 900 }}>Voltar para Dono</button>
         </div>
       )}
-      {isModoV2 && !v2BannerFechado && (
-        v2BannerMinimizado ? (
+      {isModoV1 && !v1BannerFechado && (
+        v1BannerMinimizado ? (
           <div
-            onClick={() => setV2BannerMinimizado(false)}
-            title="Modo V2 Ativo (Tabelas Centralizadas) - Clique para expandir opções"
+            onClick={() => setV1BannerMinimizado(false)}
+            title="Modo de Backup Ativo (V1 / Banco Legado) - Clique para expandir"
             style={{
               position: "fixed",
               bottom: paginaAtual === "dashboard" ? "145px" : "85px",
               right: "20px",
               zIndex: 9998,
-              background: "linear-gradient(135deg, rgba(6,78,59,0.96) 0%, rgba(15,23,42,0.96) 100%)",
-              border: "1px solid rgba(52,211,153,0.7)",
-              color: "#6ee7b7",
+              background: "linear-gradient(135deg, rgba(120,53,15,0.96) 0%, rgba(15,23,42,0.96) 100%)",
+              border: "1px solid rgba(245,158,11,0.7)",
+              color: "#fcd34d",
               padding: "6px 14px",
               borderRadius: "20px",
               cursor: "pointer",
@@ -5401,82 +5404,85 @@ export function MainSite({ isV2 = false } = {}) {
               gap: "6px",
               backdropFilter: "blur(12px)",
               fontFamily: "'Inter', sans-serif",
-              transition: "transform 0.15s ease"
+              transition: "transform 0.15s ease",
             }}
           >
-            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", boxShadow: "0 0 8px #10b981" }} />
-            <span>🚀 V2 Beta</span>
+            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#f59e0b", boxShadow: "0 0 8px #f59e0b" }} />
+            <span>🛡️ Backup V1</span>
           </div>
         ) : (
-          <div style={{
-            position: "fixed",
-            bottom: paginaAtual === "dashboard" ? "145px" : "85px",
-            right: "20px",
-            zIndex: 9998,
-            background: "linear-gradient(135deg, rgba(6,78,59,0.96) 0%, rgba(15,23,42,0.96) 100%)",
-            border: "1px solid rgba(52,211,153,0.7)",
-            color: "#ecfdf5",
-            padding: "9px 14px",
-            borderRadius: "12px",
-            boxShadow: "0 12px 35px rgba(0,0,0,0.65)",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            fontSize: "12px",
-            fontWeight: 800,
-            backdropFilter: "blur(14px)",
-            fontFamily: "'Inter', sans-serif"
-          }}>
-            <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#10b981", boxShadow: "0 0 10px #10b981", flexShrink: 0 }} />
+          <div
+            style={{
+              position: "fixed",
+              bottom: paginaAtual === "dashboard" ? "145px" : "85px",
+              right: "20px",
+              zIndex: 9998,
+              background: "linear-gradient(135deg, rgba(120,53,15,0.96) 0%, rgba(15,23,42,0.96) 100%)",
+              border: "1px solid rgba(245,158,11,0.7)",
+              color: "#fef3c7",
+              padding: "9px 14px",
+              borderRadius: "12px",
+              boxShadow: "0 12px 35px rgba(0,0,0,0.65)",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              fontSize: "12px",
+              fontWeight: 800,
+              backdropFilter: "blur(14px)",
+              fontFamily: "'Inter', sans-serif",
+            }}
+          >
+            <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#f59e0b", boxShadow: "0 0 10px #f59e0b", flexShrink: 0 }} />
             <div>
-              <div style={{ color: "#6ee7b7", fontSize: "12px", letterSpacing: "0.4px" }}>🚀 MODO V2 (NOVAS TABELAS)</div>
-              <div style={{ color: "#a7f3d0", fontSize: "10px", fontWeight: 500 }}>Base: log_ponto • log_tunagem • log_bancada • log_bau</div>
+              <div style={{ color: "#fcd34d", fontSize: "12px", letterSpacing: "0.4px" }}>🛡️ MODO DE BACKUP (V1 / LEGADO)</div>
+              <div style={{ color: "#fde68a", fontSize: "10px", fontWeight: 500 }}>Base de contingência: tabelas antigas em produção</div>
             </div>
             <button
               type="button"
               onClick={() => { window.location.href = "/"; }}
               style={{
-                background: "rgba(255,255,255,0.14)",
-                border: "1px solid rgba(255,255,255,0.25)",
+                background: "linear-gradient(135deg, #10b981, #059669)",
+                border: "none",
                 color: "#fff",
                 borderRadius: "8px",
-                padding: "5px 10px",
+                padding: "6px 12px",
                 cursor: "pointer",
                 fontSize: "11px",
                 fontWeight: 800,
-                marginLeft: "2px"
+                marginLeft: "2px",
+                boxShadow: "0 2px 8px rgba(16,185,129,0.3)",
               }}
             >
-              Voltar para V1
+              🚀 Voltar para V2
             </button>
             <button
               type="button"
-              onClick={() => setV2BannerMinimizado(true)}
+              onClick={() => setV1BannerMinimizado(true)}
               title="Minimizar aviso"
               style={{
                 background: "transparent",
                 border: "none",
-                color: "#a7f3d0",
+                color: "#fde68a",
                 cursor: "pointer",
                 fontSize: "15px",
                 padding: "2px 5px",
-                lineHeight: 1
+                lineHeight: 1,
               }}
             >
               –
             </button>
             <button
               type="button"
-              onClick={() => setV2BannerFechado(true)}
+              onClick={() => setV1BannerFechado(true)}
               title="Fechar aviso nesta sessão"
               style={{
                 background: "transparent",
                 border: "none",
-                color: "#a7f3d0",
+                color: "#fde68a",
                 cursor: "pointer",
                 fontSize: "13px",
                 padding: "2px 5px",
-                lineHeight: 1
+                lineHeight: 1,
               }}
             >
               ✕

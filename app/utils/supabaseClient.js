@@ -21,13 +21,18 @@ const v2Client = createClient(v2Url, v2Key, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-// Determina se a execução atual está no ambiente V2 (Clone com tabelas novas)
-export const isV2Mode = () => {
+// Determina se a execução atual está no ambiente Legado de Backup (V1)
+export const isV1Mode = () => {
   if (typeof window === "undefined") return false;
   return (
-    window.location.pathname.startsWith("/v2") ||
-    window.__REDS_V2_MODE__ === true
+    window.location.pathname.startsWith("/v1") ||
+    window.__REDS_V1_MODE__ === true
   );
+};
+
+// A Versão 2 (Tabelas Centralizadas no Lakehouse) agora é a versão padrão oficial de todo o sistema
+export const isV2Mode = () => {
+  return !isV1Mode();
 };
 
 // Parser para transformar mensagens brutas de ponto do Discord em registros legíveis de log_ponto_reds
