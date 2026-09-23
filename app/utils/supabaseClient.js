@@ -440,10 +440,31 @@ function handleV2From(relation) {
                 const cleanNome = rawNome
                   .replace(/^\[(?:NOME COMPLETO|ITEMKEY|PRICE)\]:\s*/i, "")
                   .trim();
-                const rawItem = item.item_craftado || item.item || "";
-                const cleanItem = rawItem
+                let rawItem = item.item_craftado || item.item || "";
+                let cleanItem = rawItem
                   .replace(/^\[(?:ITEMNAME|ITEMKEY)\]:\s*/i, "")
                   .trim();
+
+                let acaoCalc = item.acao;
+                let qtdCalc = item.quantidade || 1;
+                let horaCalc = item.hora;
+
+                if (target === "log_bau" && item.raw_text) {
+                  const matchAcao =
+                    item.raw_text.match(/\[(RETIROU|GUARDOU|COLOCOU|MOVIMENTOU)\]:?\s*(?:(\d+)\s*x\s+)?([^\n\r`]+)/i) ||
+                    item.raw_text.match(/(?:^|\n)\s*(RETIROU|GUARDOU|COLOCOU|MOVIMENTOU):?\s*(?:(\d+)\s*x\s+)?([^\n\r`]+)/i);
+                  if (matchAcao) {
+                    acaoCalc = matchAcao[1].toUpperCase();
+                    if (matchAcao[2]) qtdCalc = parseInt(matchAcao[2], 10);
+                    if (matchAcao[3] && matchAcao[3].trim()) cleanItem = matchAcao[3].trim();
+                  }
+                  if (!horaCalc || horaCalc === "00:00:00") {
+                    const matchHora =
+                      item.raw_text.match(/\[DATA\]:\s*\d{2}\/\d{2}\/\d{4}(?:,\s*|\s+)(\d{2}:\d{2}:\d{2})/i) ||
+                      item.raw_text.match(/\[HORA\]:\s*(\d{2}:\d{2}:\d{2})/i);
+                    if (matchHora) horaCalc = matchHora[1];
+                  }
+                }
 
                 let valorCalc = item.valor || item.valor_pago || 0;
                 if (!valorCalc && item.raw_text) {
@@ -459,12 +480,14 @@ function handleV2From(relation) {
                   usuario_id: item.usuario_id || item.id,
                   nome: cleanNome || "—",
                   usuario_nome: cleanNome || "—",
+                  acao: acaoCalc || item.acao || "MOVIMENTOU",
                   item: cleanItem || item.item || item.item_craftado || "Item",
                   nome_item: cleanItem || item.item || item.item_craftado || "Item",
                   nomeItem: cleanItem || item.item || item.item_craftado || "Item",
                   item_craftado: cleanItem || item.item_craftado || item.item || "Item",
-                  quantidade: item.quantidade || 1,
-                  qtd: item.quantidade || 1,
+                  quantidade: qtdCalc,
+                  qtd: qtdCalc,
+                  hora: horaCalc || item.hora || "—",
                   valor: valorCalc,
                   preco: valorCalc,
                 };

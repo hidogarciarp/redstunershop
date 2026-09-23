@@ -288,27 +288,40 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
       const formatados = [];
       for (const b of bauNovas) {
         const matchId = b.content.match(/\[ID\]:\s*(\d+)\s+([^`\n\r]+)/i);
-        const matchAcao = b.content.match(/(GUARDOU|RETIROU)\s+([^`\n\r]+)/i);
+        const matchAcao =
+          b.content.match(/\[(RETIROU|GUARDOU|COLOCOU|MOVIMENTOU)\]:?\s*(?:(\d+)\s*x\s+)?([^\n\r`]+)/i) ||
+          b.content.match(/(?:^|\n)\s*(RETIROU|GUARDOU|COLOCOU|MOVIMENTOU):?\s*(?:(\d+)\s*x\s+)?([^\n\r`]+)/i);
+        const matchDataHora = b.content.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4})(?:,\s*|\s+)(\d{2}:\d{2}:\d{2})/i);
         const matchData = b.content.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4})/i);
         const matchHora = b.content.match(/\[HORA\]:\s*(\d{2}:\d{2}:\d{2})/i);
         const matchUuid = b.content.match(/\[UUID\]:\s*([a-f0-9-]{36})/i);
 
         let dt = b.created_at.split("T")[0];
-        if (matchData) {
+        let hr = "00:00:00";
+        if (matchDataHora) {
+          const parts = matchDataHora[1].split("/");
+          dt = `${parts[2]}-${parts[1]}-${parts[0]}`;
+          hr = matchDataHora[2];
+        } else if (matchData) {
           const parts = matchData[1].split("/");
           dt = `${parts[2]}-${parts[1]}-${parts[0]}`;
+          if (matchHora) hr = matchHora[1];
         }
+
+        const acao = matchAcao ? matchAcao[1].toUpperCase() : "MOVIMENTOU";
+        const qtd = matchAcao && matchAcao[2] ? parseInt(matchAcao[2], 10) : 1;
+        const itemNome = matchAcao && matchAcao[3] && matchAcao[3].trim() ? matchAcao[3].trim() : "Item";
 
         const item = {
           uuid: matchUuid ? matchUuid[1].trim() : `bau_${b.id}`,
           mecanica_id: b.mechanic_id || "reds",
           usuario_id: matchId ? matchId[1].trim() : "0",
           usuario_nome: matchId ? matchId[2].trim() : "Desconhecido",
-          acao: matchAcao ? matchAcao[1].toUpperCase() : "MOVIMENTOU",
-          item: matchAcao ? matchAcao[2].trim() : "Item",
-          quantidade: 1,
+          acao,
+          item: itemNome,
+          quantidade: qtd,
           data: dt,
-          hora: matchHora ? matchHora[1] : "00:00:00",
+          hora: hr,
           timestampz: b.created_at,
           discord_message_id: String(b.id),
           discord_channel_id: b.channel_id,
