@@ -32,66 +32,6 @@ function getProdClient() {
   });
 }
 
-const CATEGORIA_LABELS = {
-  dificuldades: "🔧 Dificuldades do Dia a Dia (Bugs / Cidade)",
-  estoque: "📦 Estoque & Recursos (Peças / Bancada / Baú)",
-  atendimento: "🏪 Atendimento & Concorrência",
-  interno: "📌 Problemas Internos & Convivência",
-  sugestoes: "💡 Sugestão de Melhoria",
-  outros: "💬 Outros Assuntos",
-};
-
-const CATEGORIA_CORES = {
-  dificuldades: 0xef4444, // Vermelho
-  estoque: 0xf59e0b,      // Âmbar
-  atendimento: 0x3b82f6,  // Azul
-  interno: 0xa855f7,      // Roxo
-  sugestoes: 0x10b981,    // Verde
-  outros: 0x64748b,       // Cinza
-};
-
-async function enviarNotificacaoDiscord(feedback) {
-  const webhookUrl =
-    process.env.DISCORD_WEBHOOK_REPORT ||
-    "https://discord.com/api/webhooks/1548094785573617768/grgXpJw1AaCLkqgaBR298iXEzBuCHTk6zP2qHa3WNOU_pbEFNr7lp79ANT_LnIvJRpJF";
-
-  if (!webhookUrl) return;
-
-  const autorTexto = feedback.anonimo
-    ? "🕵️‍♂️ Anônimo (Mecânico da RED'S)"
-    : `👤 ${feedback.usuario_nome || "Colaborador"} ${feedback.usuario_id ? `(ID: ${feedback.usuario_id})` : ""} - ${feedback.usuario_cargo || "Mecânico"}`;
-
-  const catLabel = CATEGORIA_LABELS[feedback.categoria] || feedback.categoria;
-  const embedColor = CATEGORIA_CORES[feedback.categoria] || 0xef4444;
-
-  const embed = {
-    title: `📢 Novo Feedback da Equipe (${feedback.categoria.toUpperCase()})`,
-    description: feedback.mensagem,
-    color: embedColor,
-    fields: [
-      { name: "📁 Categoria", value: catLabel, inline: true },
-      { name: "👤 Autor", value: autorTexto, inline: true },
-      { name: "🔒 Modo", value: feedback.anonimo ? "🛡️ 100% Anônimo" : "Identificado", inline: true },
-    ],
-    footer: {
-      text: "RED'S TUNERSHOP • Ouvidoria & Feedbacks para Reunião",
-    },
-    timestamp: new Date().toISOString(),
-  };
-
-  try {
-    await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: `🚨 **Novo Feedback Registrado no Painel da RED'S!**`,
-        embeds: [embed],
-      }),
-    });
-  } catch (err) {
-    console.error("[Ouvidoria] Erro ao enviar webhook Discord:", err);
-  }
-}
 
 export async function POST(request) {
   try {
@@ -160,17 +100,11 @@ export async function POST(request) {
       }
     }
 
-    // Disparar Webhook para o Discord dos Donos imediatamente
-    await enviarNotificacaoDiscord({
-      ...payload,
-      id: feedbackId,
-    });
-
     if (!feedbackId && erroDb) {
       return NextResponse.json(
         {
           ok: false,
-          error: `Erro ao gravar no banco de dados (${erroDb}). Notificação de segurança enviada ao Discord.`,
+          error: `Erro ao gravar no banco de dados (${erroDb}).`,
         },
         { status: 500 }
       );
