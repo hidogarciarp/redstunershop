@@ -3870,22 +3870,20 @@ export function MainSite({ isV2 = true } = {}) {
   useEffect(() => {
     if (!usuarioLogado) return;
 
+    // 1. Canal dedicado para tunagens da RED'S (alimentado diretamente pelo bot)
     const canalTunagemDirect = supabase
       .channel("global-tunagem-direct")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "logs_tunagem" }, (payload) => {
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "logs_tunagem_reds" }, (payload) => {
         const novoLog = payload.new;
         if (!novoLog) return;
 
-        // FILTRO ESTRITO: Apenas tunagens da RED'S TUNERSHOP
-        const ofcLower = (novoLog.oficina_nome || "").toLowerCase();
-        const isReds = ofcLower.includes("red") || 
-                       (novoLog.discord_channel_id === "1544859496701108325") ||
-                       (novoLog.mechanic_id === "reds" && !ofcLower);
+        const uId = String(usuarioLogado?.id || "");
+        const uNome = (usuarioLogado?.nome || "").toLowerCase().trim();
+        const logTecId = String(novoLog.tecnico_id || novoLog.mechanic_id || "");
+        const logTecNome = (novoLog.tecnico_nome || "").toLowerCase().trim();
 
-        if (!isReds) return; // Ignora qualquer outra mecânica (SaltLab, Beach, Vespucci, etc.)!
-
-        const isMeu = usuarioLogado?.id && (String(novoLog.tecnico_id) === String(usuarioLogado.id) || String(novoLog.mechanic_id) === String(usuarioLogado.id));
-        const isAdmin = usuarioLogado?.role === "admin" || usuarioLogado?.role === "dono" || usuarioLogado?.role === "gerente";
+        const isMeu = uId && (logTecId === uId || (uNome && logTecNome.includes(uNome)));
+        const isAdmin = isAdminOuDono(usuarioLogado?.role);
         const deveNotificar = isMeu || (isAdmin && notificarTodasTunagens);
 
         if (deveNotificar) {
@@ -3911,6 +3909,7 @@ export function MainSite({ isV2 = true } = {}) {
       })
       .subscribe();
 
+    // 2. Canal de contingência pelo stream bruto de mensagens do Discord
     const canalDiscordServicos = supabase
       .channel("global-discord-servicos")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages" }, async (payload) => {
@@ -3931,6 +3930,7 @@ export function MainSite({ isV2 = true } = {}) {
             }
             novoLog.discord_message_id = msg.discord_id || msg.id;
             novoLog.discord_channel_id = msg.channel_id;
+            novoLog.timestampz = msg.created_at || new Date().toISOString();
 
             // Determina a oficina real
             const oficina = (novoLog.oficina_nome || "").toLowerCase();
@@ -3959,18 +3959,27 @@ export function MainSite({ isV2 = true } = {}) {
             }
             novoLog.mechanic_id = targetMechanic;
 
-            // Salva na tabela geral (a tabela central compartilhada)
-            await supabase.from("logs_tunagem").upsert([novoLog], { onConflict: "uuid" });
+            // Salva na tabela geral unificada
+            try {
+              const logParaV2 = { ...novoLog, mecanica_id: targetMechanic };
+              delete logParaV2.mechanic_id;
+              await supabase.from("logs_tunagem").upsert([logParaV2], { onConflict: "uuid" });
+            } catch (e) {}
 
-            // Apenas e estritamente eventos confirmados da RED'S vão para logs_tunagem_reds e geram alertas
+            // Eventos confirmados da RED'S vão para logs_tunagem_reds e geram alertas
             const isRealmenteReds = targetMechanic === "reds" && !isBeachOuVespucci && !isHarmony && !isDudarkOuSalt && (oficina.includes("red") || msgContent.includes("red's") || msgContent.includes("reds") || novoLog.discord_channel_id === "1544859496701108325");
             if (isRealmenteReds) {
               try {
                 await supabase.from("logs_tunagem_reds").upsert([novoLog], { onConflict: "uuid" });
               } catch (e) {}
 
-              const isMeu = usuarioLogado?.id && (String(novoLog.tecnico_id) === String(usuarioLogado.id) || String(novoLog.mechanic_id) === String(usuarioLogado.id));
-              const isAdmin = usuarioLogado?.role === "admin" || usuarioLogado?.role === "dono" || usuarioLogado?.role === "gerente";
+              const uId = String(usuarioLogado?.id || "");
+              const uNome = (usuarioLogado?.nome || "").toLowerCase().trim();
+              const logTecId = String(novoLog.tecnico_id || novoLog.mechanic_id || "");
+              const logTecNome = (novoLog.tecnico_nome || "").toLowerCase().trim();
+
+              const isMeu = uId && (logTecId === uId || (uNome && logTecNome.includes(uNome)));
+              const isAdmin = isAdminOuDono(usuarioLogado?.role);
               const deveNotificar = isMeu || (isAdmin && notificarTodasTunagens);
 
               if (deveNotificar) {

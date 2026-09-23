@@ -527,15 +527,25 @@ function handleV2From(relation) {
   };
 
   // Intercepta .insert(...) e .upsert(...) para garantir integridade do mecanica_id
+  const sanitizarPayloadV2 = (v) => {
+    if (!v || typeof v !== "object") return;
+    if (filter && !v[filter.col]) v[filter.col] = filter.val;
+    if ("mechanic_id" in v) {
+      if (!v.mecanica_id) v.mecanica_id = v.mechanic_id;
+      delete v.mechanic_id;
+    }
+    if (target === "log_tunagem" && !v.timestampz) {
+      v.timestampz = new Date().toISOString();
+    }
+  };
+
   const origInsert = builder.insert.bind(builder);
   builder.insert = function (values, options) {
-    if (filter && values) {
+    if (values) {
       if (Array.isArray(values)) {
-        values.forEach((v) => {
-          if (v && !v[filter.col]) v[filter.col] = filter.val;
-        });
+        values.forEach(sanitizarPayloadV2);
       } else if (typeof values === "object") {
-        if (!values[filter.col]) values[filter.col] = filter.val;
+        sanitizarPayloadV2(values);
       }
     }
     return origInsert(values, options);
@@ -543,13 +553,11 @@ function handleV2From(relation) {
 
   const origUpsert = builder.upsert.bind(builder);
   builder.upsert = function (values, options) {
-    if (filter && values) {
+    if (values) {
       if (Array.isArray(values)) {
-        values.forEach((v) => {
-          if (v && !v[filter.col]) v[filter.col] = filter.val;
-        });
+        values.forEach(sanitizarPayloadV2);
       } else if (typeof values === "object") {
-        if (!values[filter.col]) values[filter.col] = filter.val;
+        sanitizarPayloadV2(values);
       }
     }
     return origUpsert(values, options);
