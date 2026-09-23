@@ -3,17 +3,31 @@ import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
-function getSupabaseClient() {
-  const url =
-    process.env.NEXT_PUBLIC_NEW_SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    "https://prperurjtvayjrazdxvh.supabase.co";
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.NEXT_PUBLIC_NEW_SUPABASE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    "";
-  return createClient(url, key, {
+// Banco V2 / Novo (Onde a tabela feedbacks_equipe está criada no MecanicasRua2)
+const v2Url =
+  process.env.NEXT_PUBLIC_NEW_SUPABASE_URL ||
+  "https://sxrfkbjbyjdmyyxbzobb.supabase.co";
+const v2Key =
+  process.env.NEXT_PUBLIC_NEW_SUPABASE_KEY ||
+  "sb_publishable_et87L-NCrieyXmvteW84-w_v9cxAbjG";
+
+// Banco Produção / Legado
+const prodUrl =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  "https://prperurjtvayjrazdxvh.supabase.co";
+const prodKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBycGVydXJqdHZheWpyYXpkeHZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwMjEwMzUsImV4cCI6MjA5MDU5NzAzNX0.MDk7Pm5fYQ_18GPUDv0R360y_M1eBaJ2-zKHPhmQOJ0";
+
+function getV2Client() {
+  return createClient(v2Url, v2Key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+function getProdClient() {
+  return createClient(prodUrl, prodKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
@@ -95,32 +109,55 @@ export async function POST(request) {
       categoria: categoria || "sugestoes",
       mensagem: mensagem.trim(),
       anonimo: Boolean(anonimo),
-      usuario_id: anonimo ? null : (usuarioId ? parseInt(usuarioId, 10) : null),
+      usuario_id: anonimo ? null : (usuarioId ? String(usuarioId) : null),
       usuario_nome: anonimo ? null : (usuarioNome || null),
       usuario_cargo: anonimo ? null : (usuarioCargo || null),
       status: "pendente",
       criado_em: new Date().toISOString(),
     };
 
-    const supabase = getSupabaseClient();
-    let salvoNoBanco = false;
     let feedbackId = null;
+    let erroDb = null;
 
+    // 1. Tentar salvar no Banco V2 (MecanicasRua2)
+    const v2Client = getV2Client();
     try {
-      const { data, error } = await supabase
+      const { data, error } = await v2Client
         .from("feedbacks_equipe")
         .insert([payload])
         .select("id")
         .maybeSingle();
 
       if (!error && data) {
-        salvoNoBanco = true;
         feedbackId = data.id;
       } else if (error) {
-        console.warn("[Ouvidoria] Aviso ao salvar em feedbacks_equipe:", error.message);
+        erroDb = error.message;
+        console.warn("[Ouvidoria] Aviso ao salvar no V2:", error.message);
       }
     } catch (e) {
-      console.warn("[Ouvidoria] Tabela feedbacks_equipe indisponível, seguindo com Discord:", e.message);
+      erroDb = e.message;
+      console.warn("[Ouvidoria] Exceção no V2:", e.message);
+    }
+
+    // 2. Se falhar, tenta no banco antigo de produção como fallback
+    if (!feedbackId) {
+      const prodClient = getProdClient();
+      try {
+        const { data, error } = await prodClient
+          .from("feedbacks_equipe")
+          .insert([payload])
+          .select("id")
+          .maybeSingle();
+
+        if (!error && data) {
+          feedbackId = data.id;
+          erroDb = null;
+        } else if (error) {
+          console.warn("[Ouvidoria] Aviso ao salvar no Prod:", error.message);
+        }
+      } catch (e) {
+        console.warn("[Ouvidoria] Exceção no Prod:", e.message);
+      }
     }
 
     // Disparar Webhook para o Discord dos Donos imediatamente
@@ -129,9 +166,19 @@ export async function POST(request) {
       id: feedbackId,
     });
 
+    if (!feedbackId && erroDb) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Erro ao gravar no banco de dados (${erroDb}). Notificação de segurança enviada ao Discord.`,
+        },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json({
       ok: true,
-      salvoNoBanco,
+      salvoNoBanco: Boolean(feedbackId),
       id: feedbackId,
       mensagem: "Feedback enviado com sucesso! Agradecemos sua contribuição.",
     });
@@ -146,29 +193,56 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const categoria = searchParams.get("categoria");
     const status = searchParams.get("status");
-    const limite = parseInt(searchParams.get("limite") || "100", 10);
+    const limite = parseInt(searchParams.get("limite") || "200", 10);
 
-    const supabase = getSupabaseClient();
-    let query = supabase
+    // 1. Tentar ler do Banco V2 (MecanicasRua2)
+    const v2Client = getV2Client();
+    let queryV2 = v2Client
       .from("feedbacks_equipe")
       .select("*")
       .order("criado_em", { ascending: false })
       .limit(limite);
 
     if (categoria && categoria !== "todas") {
-      query = query.eq("categoria", categoria);
+      queryV2 = queryV2.eq("categoria", categoria);
     }
     if (status && status !== "todos") {
-      query = query.eq("status", status);
+      queryV2 = queryV2.eq("status", status);
     }
 
-    const { data, error } = await query;
-    if (error) {
-      // Se a tabela ainda não foi criada, retorna lista vazia amigável
-      return NextResponse.json({ ok: true, data: [], aviso: error.message });
+    const { data: dataV2, error: errorV2 } = await queryV2;
+    if (!errorV2 && Array.isArray(dataV2)) {
+      return NextResponse.json({ ok: true, data: dataV2 });
     }
 
-    return NextResponse.json({ ok: true, data: data || [] });
+    // 2. Se falhar, tenta ler do banco prod
+    const prodClient = getProdClient();
+    let queryProd = prodClient
+      .from("feedbacks_equipe")
+      .select("*")
+      .order("criado_em", { ascending: false })
+      .limit(limite);
+
+    if (categoria && categoria !== "todas") {
+      queryProd = queryProd.eq("categoria", categoria);
+    }
+    if (status && status !== "todos") {
+      queryProd = queryProd.eq("status", status);
+    }
+
+    const { data: dataProd, error: errorProd } = await queryProd;
+    if (!errorProd && Array.isArray(dataProd)) {
+      return NextResponse.json({ ok: true, data: dataProd });
+    }
+
+    return NextResponse.json(
+      {
+        ok: false,
+        data: [],
+        error: errorV2?.message || errorProd?.message || "Erro ao consultar feedbacks.",
+      },
+      { status: 500 }
+    );
   } catch (err) {
     console.error("[Ouvidoria] Erro ao buscar feedbacks:", err);
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
@@ -192,15 +266,35 @@ export async function PATCH(request) {
       updates.respondido_em = new Date().toISOString();
     }
 
-    const supabase = getSupabaseClient();
-    const { error } = await supabase
+    // Tentar atualizar no Banco V2
+    const v2Client = getV2Client();
+    const resV2 = await v2Client
       .from("feedbacks_equipe")
       .update(updates)
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
 
-    if (error) throw error;
+    if (!resV2.error && resV2.data && resV2.data.length > 0) {
+      return NextResponse.json({ ok: true, message: "Status atualizado com sucesso!" });
+    }
 
-    return NextResponse.json({ ok: true, message: "Status atualizado com sucesso!" });
+    // Se não encontrou no V2, tenta no Prod
+    const prodClient = getProdClient();
+    const resProd = await prodClient
+      .from("feedbacks_equipe")
+      .update(updates)
+      .eq("id", id)
+      .select("id");
+
+    if (!resProd.error && resProd.data && resProd.data.length > 0) {
+      return NextResponse.json({ ok: true, message: "Status atualizado com sucesso!" });
+    }
+
+    if (resV2.error || resProd.error) {
+      throw new Error(resV2.error?.message || resProd.error?.message);
+    }
+
+    return NextResponse.json({ ok: true, message: "Atualizado com sucesso." });
   } catch (err) {
     console.error("[Ouvidoria] Erro ao atualizar feedback:", err);
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });

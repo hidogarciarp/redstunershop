@@ -40,3 +40,8 @@ USING (true);
 CREATE POLICY "Permitir atualização de feedbacks para todos" 
 ON public.feedbacks_equipe FOR UPDATE 
 USING (true);
+
+CREATE POLICY "Permitir deleção de feedbacks para todos" 
+ON public.feedbacks_equipe FOR DELETE 
+USING (true);
+
