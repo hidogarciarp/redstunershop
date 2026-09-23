@@ -77,7 +77,7 @@ export default function OuvidoriaPage({ theme, styles, usuarioLogado }) {
   // Formulário
   const [categoria, setCategoria] = useState("dificuldades");
   const [mensagem, setMensagem] = useState("");
-  const [anonimo, setAnonimo] = useState(true);
+  const [anonimo, setAnonimo] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [sucessoMsg, setSucessoMsg] = useState(false);
   const [erroMsg, setErroMsg] = useState("");
