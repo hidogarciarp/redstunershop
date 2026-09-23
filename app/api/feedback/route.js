@@ -142,6 +142,8 @@ export async function GET(request) {
     }
     if (status && status !== "todos") {
       queryV2 = queryV2.eq("status", status);
+    } else {
+      queryV2 = queryV2.neq("status", "excluido");
     }
 
     const { data: dataV2, error: errorV2 } = await queryV2;
@@ -162,6 +164,8 @@ export async function GET(request) {
     }
     if (status && status !== "todos") {
       queryProd = queryProd.eq("status", status);
+    } else {
+      queryProd = queryProd.neq("status", "excluido");
     }
 
     const { data: dataProd, error: errorProd } = await queryProd;
@@ -231,6 +235,48 @@ export async function PATCH(request) {
     return NextResponse.json({ ok: true, message: "Atualizado com sucesso." });
   } catch (err) {
     console.error("[Ouvidoria] Erro ao atualizar feedback:", err);
+    return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get("id");
+
+    if (!id) {
+      return NextResponse.json({ ok: false, error: "ID é obrigatório para exclusão." }, { status: 400 });
+    }
+
+    const v2Client = getV2Client();
+
+    // 1. Tentar deletar diretamente no V2 (hard delete)
+    const resV2 = await v2Client
+      .from("feedbacks_equipe")
+      .delete()
+      .eq("id", id)
+      .select("id");
+
+    if (!resV2.error && resV2.data && resV2.data.length > 0) {
+      return NextResponse.json({ ok: true, message: "Feedback excluído com sucesso!" });
+    }
+
+    // 2. Se a exclusão física não afetou linhas (ex: RLS restritivo), marca como soft delete
+    await v2Client
+      .from("feedbacks_equipe")
+      .update({ status: "excluido" })
+      .eq("id", id);
+
+    // 3. Replicação de segurança para o banco prod
+    try {
+      const prodClient = getProdClient();
+      await prodClient.from("feedbacks_equipe").delete().eq("id", id);
+      await prodClient.from("feedbacks_equipe").update({ status: "excluido" }).eq("id", id);
+    } catch (_) {}
+
+    return NextResponse.json({ ok: true, message: "Feedback excluído com sucesso!" });
+  } catch (err) {
+    console.error("[Ouvidoria] Erro ao excluir feedback:", err);
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
   }
 }

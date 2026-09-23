@@ -180,6 +180,28 @@ export default function OuvidoriaPage({ theme, styles, usuarioLogado }) {
     }
   };
 
+  // Excluir feedback
+  const excluirFeedback = async (id) => {
+    if (!window.confirm("Deseja realmente excluir este feedback?")) return;
+
+    // Atualização otimista na interface
+    setFeedbacks((prev) => prev.filter((f) => f.id !== id));
+
+    try {
+      const res = await fetch(`/api/feedback?id=${id}`, {
+        method: "DELETE",
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || "Erro ao excluir feedback");
+      }
+    } catch (err) {
+      console.error("Erro ao excluir feedback:", err);
+      alert("Erro ao excluir do banco de dados: " + err.message);
+      carregarFeedbacks();
+    }
+  };
+
   // Feedbacks filtrados
   const feedbacksFiltrados = useMemo(() => {
     return feedbacks.filter((f) => {
@@ -693,8 +715,8 @@ export default function OuvidoriaPage({ theme, styles, usuarioLogado }) {
                         </span>
                       </div>
 
-                      {/* Controle de Status */}
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      {/* Controle de Status e Ações */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <select
                           value={fb.status || "pendente"}
                           onChange={(e) => atualizarStatus(fb.id, e.target.value)}
@@ -724,6 +746,35 @@ export default function OuvidoriaPage({ theme, styles, usuarioLogado }) {
                           <option value="em_analise">🔍 Em Análise</option>
                           <option value="resolvido">✅ Resolvido</option>
                         </select>
+
+                        <button
+                          onClick={() => excluirFeedback(fb.id)}
+                          title="Excluir feedback"
+                          style={{
+                            background: "rgba(239, 68, 68, 0.15)",
+                            border: "1px solid rgba(239, 68, 68, 0.4)",
+                            color: "#f87171",
+                            padding: "4px 8px",
+                            borderRadius: "6px",
+                            fontSize: "11px",
+                            fontWeight: "800",
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            transition: "all 0.15s ease",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = "rgba(239, 68, 68, 0.35)";
+                            e.currentTarget.style.color = "#fff";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = "rgba(239, 68, 68, 0.15)";
+                            e.currentTarget.style.color = "#f87171";
+                          }}
+                        >
+                          🗑️ Excluir
+                        </button>
                       </div>
                     </div>
 
