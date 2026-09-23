@@ -52,6 +52,7 @@ import CandidaturasPage from "./components/pages/CandidaturasPage";
 import RecrutamentoPage from "./components/pages/RecrutamentoPage";
 import MissoesPage from "./components/pages/MissoesPage";
 import AvisosPage from "./components/pages/AvisosPage";
+import OuvidoriaPage from "./components/pages/OuvidoriaPage";
 import CursosPage from "./components/pages/CursosPage";
 import ModalDetalheTunagem from "./components/ModalDetalheTunagem";
 import { analisarServicoTunagem, parseLogsTunagemTexto } from "./utils/calculadoraTunagem";
@@ -5996,6 +5997,21 @@ export function MainSite({ isV2 = false } = {}) {
           adicionarNovoQuadro={adicionarNovoQuadro}
           formatarTextoAvisos={formatarTextoAvisos}
           setPaginaAtual={setPaginaAtual}
+        />
+      </div>
+    );
+  }
+
+  // ===== PÁGINA: OUVIDORIA =====
+  if (paginaAtual === "ouvidoria") {
+    return (
+      <div style={styles.dashContainer}>
+        <AppModalNotificacao />
+        <AppHeaderBar />
+        <OuvidoriaPage
+          styles={styles}
+          theme={theme}
+          usuarioLogado={usuarioParaInterface}
         />
       </div>
     );
