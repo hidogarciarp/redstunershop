@@ -370,7 +370,7 @@ export async function GET(request) {
     const dataInicioBusca = isSemana ? dataInicio : dataAnteriorStr;
     const dataInicioUtc = new Date(`${dataInicioBusca}T00:00:00-03:00`).toISOString();
 
-    let queryDiscord = prod
+    let queryDiscord = v2
       .from("discord_log_messages")
       .select("id, content, created_at")
       .eq("log_type", "ponto")
