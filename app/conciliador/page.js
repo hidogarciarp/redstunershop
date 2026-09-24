@@ -440,7 +440,7 @@ export default function ConciliadorPontoPage() {
               {/* Seletor de Mecânico */}
               <div>
                 <label style={{ display: "block", fontSize: "11px", fontWeight: "800", color: "#94a3b8", marginBottom: "4px", textTransform: "uppercase" }}>
-                  🧑‍🔧 Mecânico ({usuarios.length} disponíveis)
+                  🧑‍🔧 Mecânico ({usuarios.length} ativos na hierarquia)
                 </label>
                 <select
                   value={usuarioId}
@@ -458,12 +458,12 @@ export default function ConciliadorPontoPage() {
                     fontWeight: "700",
                     outline: "none",
                     cursor: "pointer",
-                    minWidth: "250px"
+                    minWidth: "280px"
                   }}
                 >
                   {usuarios.map((u) => (
                     <option key={u.id} value={u.id}>
-                      {u.nome} (ID: #{u.id})
+                      {u.cargoLabel ? `[${u.cargoLabel}] ` : ""}{u.nome} (ID: #{u.id})
                     </option>
                   ))}
                 </select>

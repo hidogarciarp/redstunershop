@@ -308,11 +308,52 @@ export async function GET(request) {
 
     const { prod, v2 } = getClients();
 
-    // 1. Busca lista de usuários para o seletor
-    const { data: usuarios } = await v2
+    // 1. Busca lista de usuários para o seletor (apenas ativos na hierarquia, ordenados do cargo mais baixo para o mais alto)
+    const { data: usuariosBrutos } = await v2
       .from("usuarios")
-      .select("id, nome, role")
-      .order("nome", { ascending: true });
+      .select("id, nome, role, status, oculto_hierarquia");
+
+    const CARGOS_ORDEM = [
+      { value: "jovem_aprendiz", label: "Jovem Aprendiz", nivel: 1 },
+      { value: "estagiario", label: "Estagiário", nivel: 1 },
+      { value: "mecanico", label: "Mecânico", nivel: 2 },
+      { value: "mecanico_senior", label: "Mecânico Sênior", nivel: 3 },
+      { value: "supervisor", label: "Supervisor", nivel: 4 },
+      { value: "gerente", label: "Gerente", nivel: 5 },
+      { value: "gerente_rh", label: "Gerente RH", nivel: 6 },
+      { value: "gerente_geral", label: "Gerente Geral", nivel: 6 },
+      { value: "dono", label: "Dono", nivel: 7 },
+      { value: "admin", label: "Admin (sistema)", nivel: 8 },
+    ];
+
+    const getCargoInfo = (role) => {
+      const primary = (role || "").split("|")[0].toLowerCase().trim();
+      const idx = CARGOS_ORDEM.findIndex((c) => c.value === primary);
+      if (idx !== -1) {
+        return { ordem: idx, nivel: CARGOS_ORDEM[idx].nivel, label: CARGOS_ORDEM[idx].label };
+      }
+      return { ordem: 999, nivel: 99, label: primary || "Mecânico" };
+    };
+
+    const usuarios = (usuariosBrutos || [])
+      .filter((u) => (!u.status || u.status === "ativo") && !u.oculto_hierarquia)
+      .map((u) => {
+        const info = getCargoInfo(u.role);
+        return {
+          id: u.id,
+          nome: u.nome,
+          role: u.role,
+          cargoOrdem: info.ordem,
+          cargoNivel: info.nivel,
+          cargoLabel: info.label,
+        };
+      })
+      .sort((a, b) => {
+        if (a.cargoOrdem !== b.cargoOrdem) {
+          return a.cargoOrdem - b.cargoOrdem; // Do mais baixo pro mais alto
+        }
+        return a.nome.localeCompare(b.nome);
+      });
 
     // 2. Busca mensagens de ponto do Discord (canal da RED'S: 1388991065226346718)
     // Estende a janela: inclui o dia anterior para identificar se saídas da madrugada pertencem a turnos da noite anterior,
