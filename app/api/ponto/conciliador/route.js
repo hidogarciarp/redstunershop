@@ -176,29 +176,40 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
   saidas.sort((a, b) => a.hora.localeCompare(b.hora));
 
   entradas.forEach((ent, idx) => {
-    if (ent.saidaId) return;
-
     const proximaEntrada = entradas[idx + 1];
-    const saidaCandidata = saidas.find((s) => {
-      if (s.pareadoCom) return false;
-      const horaSai = s.hora;
-      const horaEnt = ent.hora;
-      const horaProx = proximaEntrada ? proximaEntrada.hora : "23:59:59";
-      return horaSai >= horaEnt && horaSai <= horaProx;
-    });
 
-    if (saidaCandidata) {
-      ent.saidaId = saidaCandidata.id;
-      saidaCandidata.pareadoCom = ent.id;
-    } else {
-      const horaIni = ent.hora;
-      const horaFim = proximaEntrada ? proximaEntrada.hora : "23:59:59";
-      const atvsNoIntervalo = (atividades || []).filter((atv) => atv.hora >= horaIni && atv.hora <= horaFim);
-      if (atvsNoIntervalo.length > 0) {
-        atvsNoIntervalo[atvsNoIntervalo.length - 1].isUltima = true;
+    if (!ent.saidaId) {
+      const saidaCandidata = saidas.find((s) => {
+        if (s.pareadoCom) return false;
+        const horaSai = s.hora;
+        const horaEnt = ent.hora;
+        const horaProx = proximaEntrada ? proximaEntrada.hora : "23:59:59";
+        return horaSai >= horaEnt && horaSai <= horaProx;
+      });
+
+      if (saidaCandidata) {
+        ent.saidaId = saidaCandidata.id;
+        saidaCandidata.pareadoCom = ent.id;
       }
-      ent.atividades = atvsNoIntervalo;
     }
+
+    const saidaVinculada = saidas.find((s) => s.id === ent.saidaId);
+    const horaIni = ent.hora;
+    const horaFim = saidaVinculada ? saidaVinculada.hora : (proximaEntrada ? proximaEntrada.hora : "23:59:59");
+    const horaLimiteProxima = proximaEntrada ? proximaEntrada.hora : "23:59:59";
+
+    // Pega todas as atividades deste dia entre a entrada e a próxima entrada (ou saída)
+    const atvsNoIntervalo = (atividades || [])
+      .filter((atv) => atv.hora >= horaIni && atv.hora <= horaLimiteProxima)
+      .map((atv) => ({
+        ...atv,
+        dentroDoPar: saidaVinculada ? atv.hora <= saidaVinculada.hora : true,
+      }));
+
+    if (atvsNoIntervalo.length > 0) {
+      atvsNoIntervalo[atvsNoIntervalo.length - 1].isUltima = true;
+    }
+    ent.atividades = atvsNoIntervalo;
   });
 
   entradas.sort((a, b) => a.hora.localeCompare(b.hora));
@@ -296,7 +307,7 @@ export async function GET(request) {
 
     let bancadaQuery = v2
       .from("log_bancada")
-      .select("uuid, item, quantidade, valor, hora, data, timestampz")
+      .select("uuid, item_craftado, quantidade, hora, data, timestampz")
       .eq("mecanica_id", "reds")
       .eq("usuario_id", String(usuarioId))
       .order("hora", { ascending: true });
@@ -338,7 +349,7 @@ export async function GET(request) {
         tipo: "bancada",
         data: b.data,
         hora: b.hora ? b.hora.slice(0, 8) : "00:00:00",
-        desc: `🛠️ Bancada: ${b.quantidade || 1}x ${b.item || "Item"} — R$ ${Number(b.valor || 0).toLocaleString("pt-BR")}`,
+        desc: `🛠️ Bancada: ${b.quantidade || 1}x ${b.item_craftado || "Item"}`,
         timestampz: b.timestampz,
       })),
     ].sort((a, b) => a.hora.localeCompare(b.hora));

@@ -66,6 +66,10 @@ export default function ConciliadorPontoPage() {
   const [draggedSaidaId, setDraggedSaidaId] = useState(null);
   const [dragOverEntradaId, setDragOverEntradaId] = useState(null);
   const [mensagem, setMensagem] = useState(null);
+  const [atividadesExpandidas, setAtividadesExpandidas] = useState({});
+
+  const toggleExpandirAtividades = (id) =>
+    setAtividadesExpandidas((prev) => ({ ...prev, [id]: !prev[id] }));
 
   const semanaInfo = calcularSemanaOffset(semanaOffset);
 
@@ -1209,83 +1213,228 @@ export default function ConciliadorPontoPage() {
                       </div>
                     </div>
 
-                    {/* GAVETA DE EVIDÊNCIAS INTERMEDIÁRIAS (Se não tem saída casada) */}
-                    {!saidaCasada && (
-                      <div style={{
-                        marginTop: "16px",
-                        paddingTop: "14px",
-                        borderTop: "1px solid rgba(255,255,255,0.08)"
-                      }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
-                          <span style={{ fontSize: "12px", fontWeight: "800", color: "#38bdf8", display: "flex", alignItems: "center", gap: "6px" }}>
-                            🔍 Âncoras de Atividade Detectadas no Intervalo
-                          </span>
-                          <button
-                            onClick={() => criarSaida1Minuto(ent.id, ent.hora)}
-                            style={{
-                              background: "rgba(239,68,68,0.12)",
-                              border: "1px solid rgba(239,68,68,0.3)",
-                              color: "#f87171",
-                              padding: "3px 8px",
-                              borderRadius: "6px",
-                              fontSize: "11px",
-                              fontWeight: "700",
-                              cursor: "pointer"
-                            }}
-                          >
-                            ⏱️ Fechar com 1 Minuto (Crash sem trampo)
-                          </button>
-                        </div>
+                    {/* GAVETA DE ATIVIDADES E SERVIÇOS NO INTERVALO */}
+                    <div style={{
+                      marginTop: "16px",
+                      paddingTop: "14px",
+                      borderTop: "1px solid rgba(255,255,255,0.08)"
+                    }}>
+                      {!saidaCasada ? (
+                        /* Caso NÃO tenha saída casada: Modo Busca de Âncora */
+                        <>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
+                            <span style={{ fontSize: "12px", fontWeight: "800", color: "#38bdf8", display: "flex", alignItems: "center", gap: "6px" }}>
+                              🔍 Âncoras de Atividade Detectadas no Intervalo
+                            </span>
+                            <button
+                              onClick={() => criarSaida1Minuto(ent.id, ent.hora)}
+                              style={{
+                                background: "rgba(239,68,68,0.12)",
+                                border: "1px solid rgba(239,68,68,0.3)",
+                                color: "#f87171",
+                                padding: "3px 8px",
+                                borderRadius: "6px",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                cursor: "pointer"
+                              }}
+                            >
+                              ⏱️ Fechar com 1 Minuto (Crash sem trampo)
+                            </button>
+                          </div>
 
-                        {ent.atividades && ent.atividades.length > 0 ? (
-                          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                            {ent.atividades.map((atv) => (
-                              <div
-                                key={atv.id}
-                                style={{
-                                  background: atv.isUltima ? "rgba(56, 189, 248, 0.1)" : "rgba(255,255,255,0.03)",
-                                  border: `1px solid ${atv.isUltima ? "rgba(56, 189, 248, 0.35)" : "rgba(255,255,255,0.06)"}`,
-                                  padding: "8px 12px",
-                                  borderRadius: "8px",
+                          {ent.atividades && ent.atividades.length > 0 ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                              {ent.atividades.map((atv) => (
+                                <div
+                                  key={atv.id}
+                                  style={{
+                                    background: atv.isUltima ? "rgba(56, 189, 248, 0.1)" : "rgba(255,255,255,0.03)",
+                                    border: `1px solid ${atv.isUltima ? "rgba(56, 189, 248, 0.35)" : "rgba(255,255,255,0.06)"}`,
+                                    padding: "8px 12px",
+                                    borderRadius: "8px",
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    flexWrap: "wrap",
+                                    gap: "8px"
+                                  }}
+                                >
+                                  <span style={{ fontSize: "12px", color: "#e2e8f0" }}>
+                                    <strong style={{ color: atv.tipo === "tunagem" ? "#38bdf8" : "#c084fc" }}>[{atv.hora}]</strong> {atv.desc}
+                                  </span>
+
+                                  <button
+                                    onClick={() => gerarSaidaPorAtividade(ent.id, atv)}
+                                    style={{
+                                      background: atv.isUltima
+                                        ? "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)"
+                                        : "rgba(255,255,255,0.08)",
+                                      border: "none",
+                                      color: "#fff",
+                                      padding: "5px 12px",
+                                      borderRadius: "6px",
+                                      fontSize: "11px",
+                                      fontWeight: "800",
+                                      cursor: "pointer",
+                                      boxShadow: atv.isUltima ? "0 2px 8px rgba(2,132,199,0.3)" : "none"
+                                    }}
+                                  >
+                                    {atv.isUltima ? `⚡ Criar Saída no Último Serviço (${atv.hora})` : `Usar este (${atv.hora})`}
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", padding: "4px 0" }}>
+                              Nenhuma tunagem ou compra de bancada registrada por este mecânico no intervalo.
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        /* Caso TENHA saída casada: Exibir Auditoria de Serviços no Período */
+                        <div>
+                          {(() => {
+                            const atvs = ent.atividades || [];
+                            const tunagens = atvs.filter((a) => a.tipo === "tunagem");
+                            const bancadas = atvs.filter((a) => a.tipo === "bancada");
+                            const isExpandido = Boolean(atividadesExpandidas[ent.id]);
+                            const ultimaAtividade = atvs.length > 0 ? atvs[atvs.length - 1] : null;
+
+                            return (
+                              <div>
+                                <div style={{
                                   display: "flex",
                                   justifyContent: "space-between",
                                   alignItems: "center",
                                   flexWrap: "wrap",
                                   gap: "8px"
-                                }}
-                              >
-                                <span style={{ fontSize: "12px", color: "#e2e8f0" }}>
-                                  <strong style={{ color: "#38bdf8" }}>[{atv.hora}]</strong> {atv.desc}
-                                </span>
+                                }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: "12px", fontWeight: "800", color: atvs.length > 0 ? "#38bdf8" : "#94a3b8", display: "flex", alignItems: "center", gap: "5px" }}>
+                                      <span>🛠️</span>
+                                      Serviços Realizados no Turno ({atvs.length}):
+                                    </span>
+                                    {atvs.length > 0 ? (
+                                      <div style={{ display: "flex", gap: "6px" }}>
+                                        <span style={{
+                                          background: "rgba(56,189,248,0.15)",
+                                          border: "1px solid rgba(56,189,248,0.3)",
+                                          color: "#38bdf8",
+                                          fontSize: "10.5px",
+                                          fontWeight: "800",
+                                          padding: "1px 6px",
+                                          borderRadius: "6px"
+                                        }}>
+                                          🚗 {tunagens.length} tunagem(ns)
+                                        </span>
+                                        <span style={{
+                                          background: "rgba(168,85,247,0.15)",
+                                          border: "1px solid rgba(168,85,247,0.3)",
+                                          color: "#c084fc",
+                                          fontSize: "10.5px",
+                                          fontWeight: "800",
+                                          padding: "1px 6px",
+                                          borderRadius: "6px"
+                                        }}>
+                                          ⚙️ {bancadas.length} bancada(s)
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <span style={{ fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
+                                        Nenhum registro de tunagem ou bancada neste intervalo
+                                      </span>
+                                    )}
+                                  </div>
 
-                                <button
-                                  onClick={() => gerarSaidaPorAtividade(ent.id, atv)}
-                                  style={{
-                                    background: atv.isUltima
-                                      ? "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)"
-                                      : "rgba(255,255,255,0.08)",
-                                    border: "none",
-                                    color: "#fff",
-                                    padding: "5px 12px",
-                                    borderRadius: "6px",
-                                    fontSize: "11px",
-                                    fontWeight: "800",
-                                    cursor: "pointer",
-                                    boxShadow: atv.isUltima ? "0 2px 8px rgba(2,132,199,0.3)" : "none"
-                                  }}
-                                >
-                                  {atv.isUltima ? `⚡ Criar Saída no Último Serviço (${atv.hora})` : `Usar este (${atv.hora})`}
-                                </button>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    {ultimaAtividade && ent.tipoFechamento === "CRASH_SEM_ATIVIDADE" && (
+                                      <button
+                                        onClick={() => gerarSaidaPorAtividade(ent.id, ultimaAtividade)}
+                                        style={{
+                                          background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
+                                          border: "none",
+                                          color: "#fff",
+                                          padding: "4px 10px",
+                                          borderRadius: "6px",
+                                          fontSize: "11px",
+                                          fontWeight: "800",
+                                          cursor: "pointer",
+                                          boxShadow: "0 2px 8px rgba(245,158,11,0.3)"
+                                        }}
+                                        title={`Substituir saída fantasma pela última atividade real (${ultimaAtividade.hora})`}
+                                      >
+                                        ⚡ Retificar p/ Última Atividade ({ultimaAtividade.hora})
+                                      </button>
+                                    )}
+
+                                    {atvs.length > 0 && (
+                                      <button
+                                        onClick={() => toggleExpandirAtividades(ent.id)}
+                                        style={{
+                                          background: "rgba(255,255,255,0.06)",
+                                          border: "1px solid rgba(255,255,255,0.12)",
+                                          color: "#cbd5e1",
+                                          padding: "3px 8px",
+                                          borderRadius: "6px",
+                                          fontSize: "11px",
+                                          fontWeight: "700",
+                                          cursor: "pointer"
+                                        }}
+                                      >
+                                        {isExpandido ? "▲ Ocultar Serviços" : `▼ Ver ${atvs.length} Serviços`}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {isExpandido && atvs.length > 0 && (
+                                  <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                                    {atvs.map((atv) => (
+                                      <div
+                                        key={atv.id}
+                                        style={{
+                                          background: "rgba(255,255,255,0.03)",
+                                          border: `1px solid ${atv.isUltima ? "rgba(56, 189, 248, 0.4)" : "rgba(255,255,255,0.06)"}`,
+                                          padding: "7px 12px",
+                                          borderRadius: "8px",
+                                          display: "flex",
+                                          justifyContent: "space-between",
+                                          alignItems: "center",
+                                          flexWrap: "wrap",
+                                          gap: "8px"
+                                        }}
+                                      >
+                                        <span style={{ fontSize: "11.5px", color: "#e2e8f0" }}>
+                                          <strong style={{ color: atv.tipo === "tunagem" ? "#38bdf8" : "#c084fc" }}>[{atv.hora}]</strong> {atv.desc}
+                                        </span>
+
+                                        <button
+                                          onClick={() => gerarSaidaPorAtividade(ent.id, atv)}
+                                          style={{
+                                            background: "rgba(255,255,255,0.08)",
+                                            border: "1px solid rgba(255,255,255,0.15)",
+                                            color: "#fff",
+                                            padding: "3px 8px",
+                                            borderRadius: "5px",
+                                            fontSize: "10.5px",
+                                            fontWeight: "700",
+                                            cursor: "pointer"
+                                          }}
+                                          title={`Reancorar saída exatamente neste horário (${atv.hora})`}
+                                        >
+                                          ⚓ Usar este ({atv.hora})
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", padding: "4px 0" }}>
-                            Nenhuma tunagem ou compra de bancada registrada por este mecânico no intervalo.
-                          </div>
-                        )}
-                      </div>
-                    )}
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })}
