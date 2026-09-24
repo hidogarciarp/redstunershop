@@ -529,7 +529,7 @@ function handleV2From(relation) {
   const sanitizarPayloadV2 = (v) => {
     if (!v || typeof v !== "object") return;
     if (filter && !v[filter.col]) v[filter.col] = filter.val;
-    if ("mechanic_id" in v) {
+    if (target !== "discord_log_messages" && "mechanic_id" in v) {
       if (!v.mecanica_id) v.mecanica_id = v.mechanic_id;
       delete v.mechanic_id;
     }
