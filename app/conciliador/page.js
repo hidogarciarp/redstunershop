@@ -67,6 +67,17 @@ export default function ConciliadorPontoPage() {
   const [dragOverEntradaId, setDragOverEntradaId] = useState(null);
   const [mensagem, setMensagem] = useState(null);
   const [atividadesExpandidas, setAtividadesExpandidas] = useState({});
+  const [ocultarVinculadas, setOcultarVinculadas] = useState(true);
+  const [saidaSelecionadaId, setSaidaSelecionadaId] = useState(null);
+  const [saidaDetalhesModal, setSaidaDetalhesModal] = useState(null);
+  const [copiadoUuid, setCopiadoUuid] = useState(false);
+
+  const copiarParaClipboard = (texto) => {
+    if (!texto) return;
+    navigator.clipboard?.writeText(texto);
+    setCopiadoUuid(true);
+    setTimeout(() => setCopiadoUuid(false), 2000);
+  };
 
   const toggleExpandirAtividades = (id) =>
     setAtividadesExpandidas((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -299,12 +310,26 @@ export default function ConciliadorPontoPage() {
     return true;
   });
 
-  const saidasVisiveis = saidas.filter((s) => {
+  const saidasDoPeriodo = saidas.filter((s) => {
     if (modo === "semana" && diaAtivoNaSemana !== "todos") {
       return s.data === diaAtivoNaSemana;
     }
     return true;
   });
+
+  const totalSaidasDoPeriodo = saidasDoPeriodo.length;
+  const totalSaidasLivresDoPeriodo = saidasDoPeriodo.filter((s) => !s.pareadoCom).length;
+  const totalSaidasVinculadasDoPeriodo = totalSaidasDoPeriodo - totalSaidasLivresDoPeriodo;
+
+  const saidasVisiveis = saidasDoPeriodo.filter((s) => {
+    if (ocultarVinculadas && s.pareadoCom) {
+      return false;
+    }
+    return true;
+  });
+
+  const saidasDisponiveisDropdown = saidasDoPeriodo.filter((s) => !s.pareadoCom);
+  const saidaSelecionadaObj = saidas.find((s) => s.id === saidaSelecionadaId);
 
   const sessoesExistentesVisiveis = sessoesExistentes.filter((s) => {
     if (modo === "semana" && diaAtivoNaSemana !== "todos") {
@@ -1145,7 +1170,11 @@ export default function ConciliadorPontoPage() {
                             justifyContent: "space-between",
                             alignItems: "center"
                           }}>
-                            <div>
+                            <div
+                              onClick={() => setSaidaDetalhesModal(saidaCasada)}
+                              style={{ cursor: "pointer", flex: 1 }}
+                              title="Clique para ver os detalhes completos deste log de saída"
+                            >
                               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                 <span style={{
                                   fontSize: "10px",
@@ -1173,41 +1202,121 @@ export default function ConciliadorPontoPage() {
                               </div>
                             </div>
 
-                            <button
-                              onClick={() => descasarPonto(ent.id)}
-                              style={{
-                                background: "rgba(255,255,255,0.08)",
-                                border: "1px solid rgba(255,255,255,0.15)",
-                                color: isAuditado ? "#cbd5e1" : "#f87171",
-                                borderRadius: "8px",
-                                padding: "6px 10px",
-                                fontSize: "11px",
-                                fontWeight: "800",
-                                cursor: "pointer"
-                              }}
-                              title={isAuditado ? "Reabrir par para reauditoria" : "Desfazer Casamento"}
-                            >
-                              {isAuditado ? "✂️ Reabrir Par" : "✂️ Descasar"}
-                            </button>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSaidaDetalhesModal(saidaCasada);
+                                }}
+                                style={{
+                                  background: "rgba(56,189,248,0.15)",
+                                  border: "1px solid rgba(56,189,248,0.35)",
+                                  color: "#38bdf8",
+                                  borderRadius: "8px",
+                                  padding: "6px 10px",
+                                  fontSize: "11px",
+                                  fontWeight: "800",
+                                  cursor: "pointer"
+                                }}
+                                title="Ver informações completas do log de saída"
+                              >
+                                ℹ️ Log
+                              </button>
+
+                              <button
+                                onClick={() => descasarPonto(ent.id)}
+                                style={{
+                                  background: "rgba(255,255,255,0.08)",
+                                  border: "1px solid rgba(255,255,255,0.15)",
+                                  color: isAuditado ? "#cbd5e1" : "#f87171",
+                                  borderRadius: "8px",
+                                  padding: "6px 10px",
+                                  fontSize: "11px",
+                                  fontWeight: "800",
+                                  cursor: "pointer"
+                                }}
+                                title={isAuditado ? "Reabrir par para reauditoria" : "Desfazer Casamento"}
+                              >
+                                {isAuditado ? "✂️ Reabrir Par" : "✂️ Descasar"}
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div
                             onDragOver={(e) => handleDragOver(e, ent.id)}
                             onDragLeave={handleDragLeave}
                             onDrop={(e) => handleDrop(e, ent.id)}
+                            onClick={() => {
+                              if (saidaSelecionadaId) {
+                                casarPonto(ent.id, saidaSelecionadaId);
+                                setSaidaSelecionadaId(null);
+                              }
+                            }}
                             style={{
-                              border: `2px dashed ${isOver ? "#c084fc" : "rgba(255, 255, 255, 0.2)"}`,
-                              background: isOver ? "rgba(168, 85, 247, 0.15)" : "rgba(0, 0, 0, 0.2)",
+                              border: `2px ${saidaSelecionadaId ? "solid #c084fc" : isOver ? "solid #a855f7" : "dashed rgba(255, 255, 255, 0.2)"}`,
+                              background: saidaSelecionadaId
+                                ? "linear-gradient(135deg, rgba(168,85,247,0.2) 0%, rgba(126,34,206,0.2) 100%)"
+                                : isOver
+                                ? "rgba(168, 85, 247, 0.15)"
+                                : "rgba(0, 0, 0, 0.2)",
                               borderRadius: "12px",
                               padding: "16px",
                               textAlign: "center",
-                              color: isOver ? "#c084fc" : "#94a3b8",
+                              color: saidaSelecionadaId ? "#c084fc" : isOver ? "#c084fc" : "#94a3b8",
                               fontSize: "12px",
                               fontWeight: "700",
-                              transition: "all 0.2s"
+                              transition: "all 0.2s",
+                              cursor: saidaSelecionadaId ? "pointer" : "default",
+                              boxShadow: saidaSelecionadaId ? "0 0 15px rgba(168,85,247,0.3)" : "none"
                             }}
                           >
-                            {isOver ? "🎯 Solte a Saída Aqui para Casar!" : "📥 Arraste uma saída da direita e solte aqui"}
+                            {saidaSelecionadaId ? (
+                              <div>
+                                <div style={{ fontSize: "13px", fontWeight: "900", color: "#c084fc" }}>
+                                  🎯 Clique aqui para casar com a saída {saidaSelecionadaObj?.hora}!
+                                </div>
+                                <div style={{ fontSize: "11px", color: "#cbd5e1", marginTop: "2px" }}>
+                                  {saidaSelecionadaObj?.origem}
+                                </div>
+                              </div>
+                            ) : isOver ? (
+                              "🎯 Solte a Saída Aqui para Casar!"
+                            ) : (
+                              <div>
+                                <div>📥 Arraste uma saída da direita OU clique nela no banco lateral</div>
+                                {saidasDisponiveisDropdown.length > 0 && (
+                                  <div style={{ marginTop: "8px" }} onClick={(e) => e.stopPropagation()}>
+                                    <select
+                                      defaultValue=""
+                                      onChange={(e) => {
+                                        if (e.target.value) {
+                                          casarPonto(ent.id, e.target.value);
+                                          e.target.value = "";
+                                        }
+                                      }}
+                                      style={{
+                                        background: "#1e293b",
+                                        border: "1px solid rgba(168,85,247,0.4)",
+                                        color: "#c084fc",
+                                        padding: "5px 10px",
+                                        borderRadius: "8px",
+                                        fontSize: "11.5px",
+                                        fontWeight: "800",
+                                        cursor: "pointer",
+                                        outline: "none"
+                                      }}
+                                    >
+                                      <option value="" disabled>⚡ Escolher Saída Disponível...</option>
+                                      {saidasDisponiveisDropdown.map((s) => (
+                                        <option key={s.id} value={s.id}>
+                                          🔴 {s.hora} ({s.data ? `${s.data.slice(8, 10)}/${s.data.slice(5, 7)}` : ""}) — {s.origem}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1521,18 +1630,102 @@ export default function ConciliadorPontoPage() {
           )}
         </div>
 
-        {/* COLUNA DIREITA: Banco de Saídas Disponíveis */}
-        <div>
-          <div style={{ marginBottom: "14px" }}>
-            <h2 style={{ fontSize: "15px", fontWeight: "800", color: "#cbd5e1", margin: 0, display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#ef4444" }} />
-              Banco de Saídas ({saidasVisiveis.length})
-            </h2>
-            <span style={{ fontSize: "12px", color: "#64748b" }}>
-              Arraste para os slots da esquerda
-            </span>
+        {/* COLUNA DIREITA: Banco de Saídas Disponíveis (Fixado na Rolagem) */}
+        <div style={{
+          position: "sticky",
+          top: "20px",
+          maxHeight: "calc(100vh - 40px)",
+          display: "flex",
+          flexDirection: "column",
+          alignSelf: "start",
+          background: "rgba(15, 23, 42, 0.8)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: "16px",
+          padding: "16px",
+          boxShadow: "0 8px 30px rgba(0,0,0,0.5)"
+        }}>
+          {/* Header do Banco de Saídas */}
+          <div style={{ marginBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ fontSize: "14.5px", fontWeight: "800", color: "#cbd5e1", margin: 0, display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#ef4444" }} />
+                Banco de Saídas
+              </h2>
+              <span style={{
+                background: totalSaidasLivresDoPeriodo > 0 ? "rgba(16,185,129,0.18)" : "rgba(255,255,255,0.06)",
+                border: `1px solid ${totalSaidasLivresDoPeriodo > 0 ? "rgba(16,185,129,0.4)" : "rgba(255,255,255,0.1)"}`,
+                color: totalSaidasLivresDoPeriodo > 0 ? "#34d399" : "#94a3b8",
+                padding: "2px 8px",
+                borderRadius: "10px",
+                fontSize: "11px",
+                fontWeight: "900"
+              }}>
+                {totalSaidasLivresDoPeriodo} livre(s)
+              </span>
+            </div>
+
+            {/* Toggle para Ocultar Saídas Já Vinculadas */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "10px" }}>
+              <label style={{
+                fontSize: "11.5px",
+                color: ocultarVinculadas ? "#c084fc" : "#94a3b8",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                userSelect: "none",
+                fontWeight: "700"
+              }}>
+                <input
+                  type="checkbox"
+                  checked={ocultarVinculadas}
+                  onChange={(e) => setOcultarVinculadas(e.target.checked)}
+                  style={{ cursor: "pointer", accentColor: "#a855f7" }}
+                />
+                <span>Ocultar já vinculadas</span>
+              </label>
+
+              <span style={{ fontSize: "10.5px", color: "#64748b" }}>
+                {saidasVisiveis.length} de {totalSaidasDoPeriodo}
+              </span>
+            </div>
           </div>
 
+          {/* Banner de Saída Selecionada para Casamento Rápido */}
+          {saidaSelecionadaId && (
+            <div style={{
+              background: "linear-gradient(135deg, rgba(168,85,247,0.25) 0%, rgba(126,34,206,0.3) 100%)",
+              border: "1px solid #c084fc",
+              borderRadius: "10px",
+              padding: "8px 12px",
+              marginBottom: "10px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              boxShadow: "0 0 15px rgba(168,85,247,0.3)"
+            }}>
+              <div style={{ fontSize: "11.5px", color: "#fff" }}>
+                🎯 Saída <strong>{saidaSelecionadaObj?.hora}</strong> selecionada! Clique no slot da entrada.
+              </div>
+              <button
+                onClick={() => setSaidaSelecionadaId(null)}
+                style={{
+                  background: "rgba(255,255,255,0.15)",
+                  border: "none",
+                  color: "#fff",
+                  borderRadius: "6px",
+                  padding: "2px 8px",
+                  fontSize: "11px",
+                  cursor: "pointer",
+                  fontWeight: "800"
+                }}
+              >
+                ✕ Cancelar
+              </button>
+            </div>
+          )}
+
+          {/* Lista de Saídas com Rolagem Própria */}
           {saidasVisiveis.length === 0 ? (
             <div style={{
               background: "rgba(15, 23, 42, 0.4)",
@@ -1543,72 +1736,119 @@ export default function ConciliadorPontoPage() {
               fontSize: "12px",
               color: "#64748b"
             }}>
-              Nenhuma saída encontrada neste período.
+              {ocultarVinculadas && totalSaidasVinculadasDoPeriodo > 0
+                ? "Todas as saídas deste período já foram vinculadas! Desmarque 'Ocultar já vinculadas' acima para vê-las."
+                : "Nenhuma saída encontrada neste período."}
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+              overflowY: "auto",
+              paddingRight: "4px",
+              flex: 1
+            }}>
               {saidasVisiveis.map((sai) => {
                 const estaCasada = Boolean(sai.pareadoCom);
                 const entradaPareada = sai.pareadoCom ? entradas.find((e) => e.id === sai.pareadoCom) : null;
                 const foiAuditada = Boolean(entradaPareada?.auditado || sai.auditado);
+                const isSelected = saidaSelecionadaId === sai.id;
 
                 return (
                   <div
                     key={sai.id}
                     draggable={!estaCasada}
                     onDragStart={(e) => handleDragStart(e, sai.id)}
+                    onClick={() => {
+                      if (!estaCasada) {
+                        setSaidaSelecionadaId(isSelected ? null : sai.id);
+                      }
+                    }}
                     style={{
-                      background: foiAuditada
+                      background: isSelected
+                        ? "linear-gradient(135deg, rgba(168,85,247,0.25) 0%, rgba(126,34,206,0.2) 100%)"
+                        : foiAuditada
                         ? "rgba(16, 185, 129, 0.08)"
                         : estaCasada
                         ? "rgba(245, 158, 11, 0.08)"
                         : "rgba(239, 68, 68, 0.12)",
                       border: `1.5px solid ${
-                        foiAuditada
+                        isSelected
+                          ? "#c084fc"
+                          : foiAuditada
                           ? "rgba(16, 185, 129, 0.35)"
                           : estaCasada
                           ? "rgba(245, 158, 11, 0.35)"
                           : "rgba(239, 68, 68, 0.4)"
                       }`,
                       borderRadius: "14px",
-                      padding: "14px 16px",
-                      cursor: estaCasada ? "default" : "grab",
+                      padding: "12px 14px",
+                      cursor: estaCasada ? "default" : "pointer",
                       opacity: estaCasada ? 0.75 : 1,
                       transition: "all 0.2s",
-                      boxShadow: estaCasada ? "none" : "0 4px 12px rgba(239,68,68,0.15)"
+                      boxShadow: isSelected
+                        ? "0 0 18px rgba(168,85,247,0.4)"
+                        : estaCasada
+                        ? "none"
+                        : "0 4px 12px rgba(239,68,68,0.15)"
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{
-                        fontSize: "11px",
+                        fontSize: "10.5px",
                         fontWeight: "900",
-                        color: foiAuditada ? "#34d399" : estaCasada ? "#fbbf24" : "#f87171"
+                        color: isSelected ? "#c084fc" : foiAuditada ? "#34d399" : estaCasada ? "#fbbf24" : "#f87171"
                       }}>
-                        {foiAuditada ? "🛡️ Homologada em Banco" : estaCasada ? "🔒 Casada (Pendente)" : "✋ Disponível (Arraste)"}
+                        {isSelected
+                          ? "🎯 Selecionada (Clique na Entrada)"
+                          : foiAuditada
+                          ? "🛡️ Homologada em Banco"
+                          : estaCasada
+                          ? "🔒 Casada (Pendente)"
+                          : "✋ Livre (Clique ou Arraste)"}
                       </span>
+
                       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         {sai.data && (
                           <span style={{ fontSize: "10px", fontWeight: "800", color: "#c084fc", background: "rgba(168,85,247,0.18)", padding: "1px 6px", borderRadius: "4px" }}>
                             📅 {sai.data.slice(8, 10)}/{sai.data.slice(5, 7)}
                           </span>
                         )}
-                        <span style={{ fontSize: "10px", color: "#64748b" }}>
-                          {sai.id}
-                        </span>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSaidaDetalhesModal(sai);
+                          }}
+                          style={{
+                            background: "rgba(255,255,255,0.08)",
+                            border: "1px solid rgba(255,255,255,0.15)",
+                            color: "#cbd5e1",
+                            borderRadius: "6px",
+                            padding: "2px 6px",
+                            fontSize: "10px",
+                            fontWeight: "800",
+                            cursor: "pointer"
+                          }}
+                          title="Ver informações completas do log de saída"
+                        >
+                          ℹ️ Log
+                        </button>
                       </div>
                     </div>
 
-                    <div style={{ fontSize: "22px", fontWeight: "900", color: "#fff", marginTop: "4px" }}>
+                    <div style={{ fontSize: "20px", fontWeight: "900", color: "#fff", marginTop: "4px" }}>
                       {sai.hora}
                     </div>
 
-                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
+                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
                       {sai.origem}
                     </div>
 
                     {!estaCasada && (
-                      <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "1px dashed rgba(239,68,68,0.25)", fontSize: "11px", color: "#fca5a5", display: "flex", alignItems: "center", gap: "6px" }}>
-                        <span>↔️</span> Arraste para o card de entrada órfão
+                      <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "1px dashed rgba(239,68,68,0.25)", fontSize: "10.5px", color: isSelected ? "#c084fc" : "#fca5a5", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span>{isSelected ? "✨ Clique na entrada à esquerda para vincular" : "↔️ Arraste ou clique para selecionar"}</span>
                       </div>
                     )}
                   </div>
@@ -1617,24 +1857,211 @@ export default function ConciliadorPontoPage() {
             </div>
           )}
 
-          {/* Dicas da Ferramenta */}
+          {/* Dica Compacta no Rodapé da Barra Lateral */}
           <div style={{
-            marginTop: "20px",
-            background: "rgba(255, 255, 255, 0.03)",
-            border: "1px solid rgba(255, 255, 255, 0.08)",
-            borderRadius: "12px",
-            padding: "14px",
-            fontSize: "12px",
-            color: "#94a3b8",
-            lineHeight: "1.5"
+            marginTop: "12px",
+            paddingTop: "10px",
+            borderTop: "1px solid rgba(255, 255, 255, 0.06)",
+            fontSize: "11px",
+            color: "#64748b",
+            lineHeight: "1.4"
           }}>
-            <strong style={{ color: "#fff", display: "block", marginBottom: "6px" }}>💡 Recursos da Ferramenta:</strong>
-            • <strong>Drag & Drop:</strong> Arraste saídas soltas para conectar a qualquer entrada.<br/>
-            • <strong>Âncoras de Trabalho:</strong> Em caso de crash, use o botão azul para fechar o ponto no segundo exato em que o mecânico tunou um veículo.<br/>
-            • <strong>Gravação Segura:</strong> Clicar em &quot;Gravar Sessões&quot; salva o resultado validado em <code>log_ponto</code>.
+            💡 <strong>Dica de Pareamento:</strong> Clique numa saída livre para selecioná-la e depois clique na entrada desejada, sem precisar arrastar pela tela.
           </div>
         </div>
       </div>
+
+      {/* MODAL DE DETALHES DO LOG DE SAÍDA */}
+      {saidaDetalhesModal && (
+        <div
+          onClick={() => setSaidaDetalhesModal(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(6px)",
+            zIndex: 999999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px"
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#0f172a",
+              border: "1.5px solid rgba(168, 85, 247, 0.4)",
+              borderRadius: "18px",
+              maxWidth: "560px",
+              width: "100%",
+              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.8)",
+              overflow: "hidden"
+            }}
+          >
+            {/* Header do Modal */}
+            <div style={{
+              padding: "16px 20px",
+              background: "linear-gradient(135deg, rgba(30,27,75,0.8) 0%, rgba(15,23,42,0.9) 100%)",
+              borderBottom: "1px solid rgba(255,255,255,0.08)",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "22px" }}>🔴</span>
+                <div>
+                  <div style={{ fontSize: "15px", fontWeight: "900", color: "#fff" }}>
+                    Informações do Registro de Saída
+                  </div>
+                  <div style={{ fontSize: "11.5px", color: "#94a3b8" }}>
+                    Horário: <strong style={{ color: "#f87171" }}>{saidaDetalhesModal.hora}</strong> • Data: <strong>{saidaDetalhesModal.data}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setSaidaDetalhesModal(null)}
+                style={{
+                  background: "rgba(255,255,255,0.08)",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#fff",
+                  borderRadius: "8px",
+                  width: "32px",
+                  height: "32px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  fontWeight: "900"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Conteúdo do Modal */}
+            <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}>
+              {/* Grid de Informações Básicas */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                <div style={{ background: "rgba(255,255,255,0.03)", padding: "10px 14px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <span style={{ fontSize: "10.5px", color: "#94a3b8", fontWeight: "800", textTransform: "uppercase" }}>
+                    📌 Tipo de Fechamento
+                  </span>
+                  <div style={{ fontSize: "13px", fontWeight: "900", color: "#c084fc", marginTop: "4px" }}>
+                    {saidaDetalhesModal.tipoFechamento || "NORMAL"}
+                  </div>
+                </div>
+
+                <div style={{ background: "rgba(255,255,255,0.03)", padding: "10px 14px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <span style={{ fontSize: "10.5px", color: "#94a3b8", fontWeight: "800", textTransform: "uppercase" }}>
+                    📡 Origem do Dado
+                  </span>
+                  <div style={{ fontSize: "13px", fontWeight: "900", color: "#38bdf8", marginTop: "4px" }}>
+                    {saidaDetalhesModal.origem || "Discord / Sistema"}
+                  </div>
+                </div>
+              </div>
+
+              {/* UUID com botão de copiar */}
+              <div style={{ background: "rgba(255,255,255,0.03)", padding: "12px 14px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <span style={{ fontSize: "10.5px", color: "#94a3b8", fontWeight: "800", textTransform: "uppercase" }}>
+                    🔑 UUID do Registro
+                  </span>
+                  {saidaDetalhesModal.uuid && (
+                    <button
+                      onClick={() => copiarParaClipboard(saidaDetalhesModal.uuid)}
+                      style={{
+                        background: copiadoUuid ? "rgba(16,185,129,0.2)" : "rgba(255,255,255,0.08)",
+                        border: `1px solid ${copiadoUuid ? "#10b981" : "rgba(255,255,255,0.15)"}`,
+                        color: copiadoUuid ? "#34d399" : "#cbd5e1",
+                        borderRadius: "6px",
+                        padding: "2px 8px",
+                        fontSize: "10.5px",
+                        fontWeight: "800",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {copiadoUuid ? "✅ Copiado!" : "📋 Copiar UUID"}
+                    </button>
+                  )}
+                </div>
+                <code style={{ fontSize: "12px", color: "#e2e8f0", wordBreak: "break-all", background: "rgba(0,0,0,0.3)", padding: "6px 8px", borderRadius: "6px", display: "block" }}>
+                  {saidaDetalhesModal.uuid || "Não possui UUID dedicado"}
+                </code>
+              </div>
+
+              {/* Status de Pareamento */}
+              <div style={{ background: "rgba(255,255,255,0.03)", padding: "10px 14px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                <span style={{ fontSize: "10.5px", color: "#94a3b8", fontWeight: "800", textTransform: "uppercase" }}>
+                  🔗 Status de Vinculação
+                </span>
+                <div style={{ fontSize: "12.5px", fontWeight: "800", color: saidaDetalhesModal.pareadoCom ? "#34d399" : "#fbbf24", marginTop: "4px" }}>
+                  {saidaDetalhesModal.pareadoCom
+                    ? `🔒 Casada com Entrada (${saidaDetalhesModal.pareadoCom})`
+                    : "✋ Disponível no Banco de Saídas (Livre para Parear)"}
+                </div>
+              </div>
+
+              {/* Timestamp ISO */}
+              {saidaDetalhesModal.timestampz && (
+                <div style={{ fontSize: "11px", color: "#64748b" }}>
+                  Timestamp ISO: <code>{saidaDetalhesModal.timestampz}</code>
+                </div>
+              )}
+
+              {/* Mensagem Bruta do Discord / Observação */}
+              {(saidaDetalhesModal.raw || saidaDetalhesModal.observacao) && (
+                <div>
+                  <span style={{ fontSize: "10.5px", color: "#94a3b8", fontWeight: "800", textTransform: "uppercase", display: "block", marginBottom: "4px" }}>
+                    📄 Log Bruto / Informações Originais:
+                  </span>
+                  <pre style={{
+                    background: "#090d16",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "8px",
+                    padding: "10px 12px",
+                    fontSize: "11px",
+                    color: "#94a3b8",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    maxHeight: "150px",
+                    overflowY: "auto",
+                    fontFamily: "monospace"
+                  }}>
+                    {saidaDetalhesModal.raw || saidaDetalhesModal.observacao}
+                  </pre>
+                </div>
+              )}
+            </div>
+
+            {/* Footer do Modal */}
+            <div style={{
+              padding: "12px 20px",
+              background: "rgba(0,0,0,0.3)",
+              borderTop: "1px solid rgba(255,255,255,0.06)",
+              textAlign: "right"
+            }}>
+              <button
+                onClick={() => setSaidaDetalhesModal(null)}
+                style={{
+                  background: "linear-gradient(135deg, #a855f7 0%, #7e22ce 100%)",
+                  border: "none",
+                  color: "#fff",
+                  padding: "8px 18px",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                  fontWeight: "800",
+                  cursor: "pointer"
+                }}
+              >
+                Entendido / Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -126,6 +126,8 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
         hora: ev.hora,
         origem: ev.origem,
         uuid: ev.uuid,
+        raw: ev.raw,
+        timestampz: ev.timestampz,
         pareadoCom: null,
       });
     }
@@ -144,9 +146,13 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
           saidaId: null,
           auditado: true,
           tipoFechamento: s.tipo_fechamento,
+          observacao: s.observacao,
+          timestampz: s.entrada,
           atividades: [],
         };
         entradas.push(ent);
+      } else {
+        ent.observacao = s.observacao;
       }
 
       let sai = saidas.find((x) => !x.pareadoCom && (x.uuid === s.uuid_saida || x.hora === s.horaSaidaFormatada));
@@ -161,8 +167,14 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
           geradoPorLog: true,
           auditado: true,
           tipoFechamento: s.tipo_fechamento,
+          observacao: s.observacao,
+          timestampz: s.saida,
+          raw: s.observacao ? `[REGISTRO LOG_PONTO]\nTipo: ${s.tipo_fechamento}\nObservação: ${s.observacao}\nEntrada: ${s.entrada}\nSaída: ${s.saida}\nUUID Saída: ${s.uuid_saida}` : null,
         };
         saidas.push(sai);
+      } else {
+        sai.observacao = s.observacao;
+        sai.tipoFechamento = s.tipo_fechamento;
       }
 
       ent.saidaId = sai.id;
