@@ -106,8 +106,9 @@ export async function POST(request) {
       "```",
     ].join("\n");
 
+    const safeId = Date.now() * 1000 + Math.floor(Math.random() * 1000);
     const novoLog = {
-      id: Date.now(),
+      id: safeId,
       discord_id: snowflake,
       channel_id: canalId,
       mechanic_id: oficinaId,

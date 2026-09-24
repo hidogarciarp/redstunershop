@@ -702,15 +702,17 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                 });
               }
 
-              // Persiste em segundo plano no Supabase via API do site
-              persistirPontoRecuperado({
-                idJogo: id,
-                nome: eventoRecuperado.nome,
-                oficina: eventoRecuperado.oficina,
-                oficinaId: eventoRecuperado.oficinaId,
-                timestamp: timestampEntrada,
-                motivo: primeiraAtiv.tipo
-              });
+              // Persiste em segundo plano no Supabase apenas se for atividade recente (ao vivo)
+              if (Date.now() - ultimaAtiv.tsMs <= UMA_HORA_MS_REC) {
+                persistirPontoRecuperado({
+                  idJogo: id,
+                  nome: eventoRecuperado.nome,
+                  oficina: eventoRecuperado.oficina,
+                  oficinaId: eventoRecuperado.oficinaId,
+                  timestamp: timestampEntrada,
+                  motivo: primeiraAtiv.tipo
+                });
+              }
             }
           });
         }

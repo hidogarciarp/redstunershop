@@ -3,10 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 // 1. Cliente de Produção (Banco Atual)
 const prodUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  "https://prperurjtvayjrazdxvh.supabase.co";
+  "https://sxrfkbjbyjdmyyxbzobb.supabase.co";
 const prodKey =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBycGVydXJqdHZheWpyYXpkeHZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwMjEwMzUsImV4cCI6MjA5MDU5NzAzNX0.MDk7Pm5fYQ_18GPUDv0R360y_M1eBaJ2-zKHPhmQOJ0";
+  "sb_publishable_et87L-NCrieyXmvteW84-w_v9cxAbjG";
 const prodClient = createClient(prodUrl, prodKey);
 
 // 2. Cliente da Versão 2 (Banco Novo)

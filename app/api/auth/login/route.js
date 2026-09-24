@@ -1,20 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { supabase as supabaseClient } from "@/app/utils/supabaseClient";
 
 export const dynamic = "force-dynamic";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://prperurjtvayjrazdxvh.supabase.co";
-// Prioriza a chave de serviço administrativa para não ser afetada por RLS no servidor.
-// Fallback para a chave pública anônima se a de serviço ainda não tiver sido definida na Vercel.
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-
 function getSupabaseClient() {
-  return createClient(supabaseUrl, supabaseKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
+  return supabaseClient;
 }
 
 export async function POST(request) {
