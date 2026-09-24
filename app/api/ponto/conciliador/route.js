@@ -133,8 +133,16 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
     }
   });
 
-  if (sessoesExistentes && sessoesExistentes.length > 0) {
-    sessoesExistentes.forEach((s) => {
+  const sessoesValidas = (sessoesExistentes || []).filter((s) => {
+    if (s.uuid_entrada && s.uuid_entrada.startsWith("AUTO_ENTRADA_")) {
+      const duplicada = sessoesExistentes.some((outra) => outra.id !== s.id && outra.uuid_saida === s.uuid_saida);
+      if (duplicada) return false;
+    }
+    return true;
+  });
+
+  if (sessoesValidas && sessoesValidas.length > 0) {
+    sessoesValidas.forEach((s) => {
       let ent = entradas.find((e) => e.uuid === s.uuid_entrada || e.hora === s.horaEntradaFormatada);
       if (!ent) {
         ent = {
@@ -155,7 +163,12 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
         ent.observacao = s.observacao;
       }
 
-      let sai = saidas.find((x) => !x.pareadoCom && (x.uuid === s.uuid_saida || x.hora === s.horaSaidaFormatada));
+      // Busca a saída primeiro por UUID exato para priorizar o log original do Discord
+      let sai = saidas.find((x) => !x.pareadoCom && x.uuid && x.uuid === s.uuid_saida);
+      if (!sai) {
+        sai = saidas.find((x) => !x.pareadoCom && x.hora === s.horaSaidaFormatada);
+      }
+
       if (!sai) {
         sai = {
           id: `sai-rec-${s.id}`,
@@ -175,6 +188,7 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
       } else {
         sai.observacao = s.observacao;
         sai.tipoFechamento = s.tipo_fechamento;
+        sai.auditado = true;
       }
 
       ent.saidaId = sai.id;
@@ -196,6 +210,12 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
         const horaSai = s.hora;
         const horaEnt = ent.hora;
         const horaProx = proximaEntrada ? proximaEntrada.hora : "23:59:59";
+
+        // Se a saída veio da madrugada seguinte (virada de noite), permite casar se for a última entrada do dia
+        if ((s.dataOriginal && s.dataOriginal !== ent.data) || (s.data && s.data !== ent.data)) {
+          return !proximaEntrada;
+        }
+
         return horaSai >= horaEnt && horaSai <= horaProx;
       });
 
@@ -207,16 +227,26 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
 
     const saidaVinculada = saidas.find((s) => s.id === ent.saidaId);
     const horaIni = ent.hora;
-    const horaFim = saidaVinculada ? saidaVinculada.hora : (proximaEntrada ? proximaEntrada.hora : "23:59:59");
     const horaLimiteProxima = proximaEntrada ? proximaEntrada.hora : "23:59:59";
 
     // Pega todas as atividades deste dia entre a entrada e a próxima entrada (ou saída)
     const atvsNoIntervalo = (atividades || [])
       .filter((atv) => atv.hora >= horaIni && atv.hora <= horaLimiteProxima)
-      .map((atv) => ({
-        ...atv,
-        dentroDoPar: saidaVinculada ? atv.hora <= saidaVinculada.hora : true,
-      }));
+      .map((atv) => {
+        let dentroDoPar = true;
+        if (saidaVinculada) {
+          if (saidaVinculada.hora >= horaIni) {
+            dentroDoPar = atv.hora <= saidaVinculada.hora;
+          } else {
+            // Virada de meia-noite
+            dentroDoPar = atv.data === ent.data ? atv.hora >= horaIni : atv.hora <= saidaVinculada.hora;
+          }
+        }
+        return {
+          ...atv,
+          dentroDoPar,
+        };
+      });
 
     if (atvsNoIntervalo.length > 0) {
       atvsNoIntervalo[atvsNoIntervalo.length - 1].isUltima = true;
@@ -227,9 +257,20 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
   entradas.sort((a, b) => a.hora.localeCompare(b.hora));
   saidas.sort((a, b) => a.hora.localeCompare(b.hora));
 
+  // Deduplica saidas pelo UUID para garantir que nenhum UUID real apareça mais de uma vez no mesmo dia
+  const saidasUnicas = [];
+  const uuidsSaidasVistos = new Set();
+  saidas.forEach((s) => {
+    if (s.uuid && !s.uuid.startsWith("CRASH_") && !s.uuid.startsWith("AUTO_")) {
+      if (uuidsSaidasVistos.has(s.uuid)) return;
+      uuidsSaidasVistos.add(s.uuid);
+    }
+    saidasUnicas.push(s);
+  });
+
   const totalMinutos = entradas.reduce((acc, ent) => {
     if (!ent.saidaId) return acc;
-    const sai = saidas.find((s) => s.id === ent.saidaId);
+    const sai = saidasUnicas.find((s) => s.id === ent.saidaId);
     if (!sai) return acc;
     return acc + calcularDuracao(ent.hora, sai.hora);
   }, 0);
@@ -241,9 +282,9 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
   return {
     data: dataDia,
     entradas,
-    saidas,
+    saidas: saidasUnicas,
     atividades: atividades || [],
-    sessoesExistentes: sessoesExistentes || [],
+    sessoesExistentes: sessoesValidas,
     totalMinutos,
     totalSessoes: entradas.length,
     sessoesCasadas,
@@ -274,38 +315,36 @@ export async function GET(request) {
       .order("nome", { ascending: true });
 
     // 2. Busca mensagens de ponto do Discord (canal da RED'S: 1388991065226346718)
+    // Estende a janela: inclui o dia anterior para identificar se saídas da madrugada pertencem a turnos da noite anterior,
+    // e vai até 06:00 do dia seguinte para cobrir saídas de turnos que viram a noite.
+    const [anoF, mesF, diaF] = dataFiltro.split("-").map(Number);
+    const dAnt = new Date(anoF, mesF - 1, diaF - 1);
+    const dataAnteriorStr = `${dAnt.getFullYear()}-${String(dAnt.getMonth() + 1).padStart(2, "0")}-${String(dAnt.getDate()).padStart(2, "0")}`;
+
+    const dataFimBase = isSemana ? dataFim : dataFiltro;
+    const [fAno, fMes, fDia] = dataFimBase.split("-").map(Number);
+    const dFimBuffer = new Date(fAno, fMes - 1, fDia + 1, 6, 0, 0);
+    const dataFimBufferStr = `${dFimBuffer.getFullYear()}-${String(dFimBuffer.getMonth() + 1).padStart(2, "0")}-${String(dFimBuffer.getDate()).padStart(2, "0")}`;
+    const dataFimUtc = new Date(`${dataFimBufferStr}T06:00:00-03:00`).toISOString();
+    const dataInicioBusca = isSemana ? dataInicio : dataAnteriorStr;
+    const dataInicioUtc = new Date(`${dataInicioBusca}T00:00:00-03:00`).toISOString();
+
     let queryDiscord = prod
       .from("discord_log_messages")
       .select("id, content, created_at")
       .eq("log_type", "ponto")
       .ilike("content", `%[ID]: ${usuarioId} %`)
+      .gte("created_at", dataInicioUtc)
+      .lte("created_at", dataFimUtc)
       .order("id", { ascending: true });
-
-    if (isSemana) {
-      const dataInicioUtc = new Date(`${dataInicio}T00:00:00-03:00`).toISOString();
-      const dataFimUtc = new Date(`${dataFim}T23:59:59-03:00`).toISOString();
-      queryDiscord = queryDiscord.gte("created_at", dataInicioUtc).lte("created_at", dataFimUtc);
-    } else {
-      const [ano, mes, dia] = dataFiltro.split("-");
-      const dataBr = `${dia}/${mes}/${ano}`;
-      queryDiscord = queryDiscord.ilike("content", `%${dataBr}%`);
-    }
 
     const { data: rawPontoMsgs } = await queryDiscord;
 
-    const todosEventosPonto = [];
+    const rawEventosPonto = [];
     (rawPontoMsgs || []).forEach((m) => {
       const parsed = parseMsgPonto(m.content, m.created_at, String(m.id));
       if (parsed && String(parsed.usuario_id) === String(usuarioId)) {
-        if (isSemana) {
-          if (parsed.data >= dataInicio && parsed.data <= dataFim) {
-            todosEventosPonto.push(parsed);
-          }
-        } else {
-          if (parsed.data === dataFiltro) {
-            todosEventosPonto.push(parsed);
-          }
-        }
+        rawEventosPonto.push(parsed);
       }
     });
 
@@ -338,7 +377,8 @@ export async function GET(request) {
     } else {
       tunagensQuery = tunagensQuery.eq("data", dataFiltro);
       bancadaQuery = bancadaQuery.eq("data", dataFiltro);
-      sessoesQuery = sessoesQuery.eq("data", dataFiltro);
+      // Busca também as sessões do dia anterior para saber se alguma saída da madrugada pertence à virada de noite
+      sessoesQuery = sessoesQuery.gte("data", dataAnteriorStr).lte("data", dataFiltro);
     }
 
     const [tunagensRes, bancadaRes, sessoesRes] = await Promise.all([
@@ -377,6 +417,50 @@ export async function GET(request) {
         horaSaidaFormatada: hSai,
       };
     });
+
+    // 3.5. Reassocia saídas de virada de noite (madrugada) ao dia da entrada correspondente
+    const saidasReassociadas = new Set();
+
+    // 1) Se a saída já está registrada em uma sessão do log_ponto, adota a data da sessão
+    todasSessoesFormatadas.forEach((s) => {
+      if (s.uuid_saida && !s.uuid_saida.startsWith("CRASH_") && !s.uuid_saida.startsWith("AUTO_")) {
+        const evSai = rawEventosPonto.find((ev) => ev.tipo === "saida" && ev.uuid === s.uuid_saida);
+        if (evSai) {
+          evSai.dataOriginal = evSai.dataOriginal || evSai.data;
+          evSai.data = s.data; // Associa a saída à data de início do expediente no banco
+          evSai.sessaoVinculadaId = s.id;
+          saidasReassociadas.add(evSai.id);
+        }
+      }
+    });
+
+    // 2) Para saídas do Discord de madrugada (00:00 às 06:00) ainda não homologadas:
+    rawEventosPonto.forEach((evSai) => {
+      if (evSai.tipo === "saida" && !saidasReassociadas.has(evSai.id) && evSai.hora <= "06:00:00") {
+        const [a, m, d] = evSai.data.split("-").map(Number);
+        const dAnt = new Date(a, m - 1, d - 1);
+        const dataAnterior = `${dAnt.getFullYear()}-${String(dAnt.getMonth() + 1).padStart(2, "0")}-${String(dAnt.getDate()).padStart(2, "0")}`;
+
+        // Houve entrada tarde na noite anterior (>= 20:00) sem saída no mesmo dia?
+        const temEntradaNoturna = rawEventosPonto.some(
+          (evEnt) => evEnt.tipo === "entrada" && (evEnt.dataOriginal || evEnt.data) === dataAnterior && evEnt.hora >= "20:00:00"
+        );
+        const temEntradaAntesNoDia = rawEventosPonto.some(
+          (evEnt) => evEnt.tipo === "entrada" && (evEnt.dataOriginal || evEnt.data) === evSai.data && evEnt.hora < evSai.hora
+        );
+
+        if (temEntradaNoturna && !temEntradaAntesNoDia) {
+          evSai.dataOriginal = evSai.dataOriginal || evSai.data;
+          evSai.data = dataAnterior;
+          saidasReassociadas.add(evSai.id);
+        }
+      }
+    });
+
+    // Filtra eventos para a janela solicitada considerando as saídas reassociadas
+    const dataMin = isSemana ? dataInicio : dataFiltro;
+    const dataMax = isSemana ? dataFim : dataFiltro;
+    const todosEventosPonto = rawEventosPonto.filter((ev) => ev.data >= dataMin && ev.data <= dataMax);
 
     // 4. Constrói o resultado para os 7 dias da semana
     const diasDaSemanaResultado = semanaRef.dias.map((d) => {
@@ -475,7 +559,15 @@ export async function POST(request) {
       const [hIni, mIni, sIni] = (s.horaEntrada || "00:00:00").split(":").map(Number);
       const [hFim, mFim, sFim] = (s.horaSaida || "00:00:00").split(":").map(Number);
       let diffMin = Math.round(((hFim * 3600 + mFim * 60 + (sFim || 0)) - (hIni * 3600 + mIni * 60 + (sIni || 0))) / 60);
-      if (diffMin < 0) diffMin += 1440;
+      let dataSaida = dataSessao;
+
+      if (diffMin < 0) {
+        diffMin += 1440;
+        // Horário de saída virou a noite (menor que o de entrada)
+        const [a, m, d] = dataSessao.split("-").map(Number);
+        const dProx = new Date(a, m - 1, d + 1);
+        dataSaida = `${dProx.getFullYear()}-${String(dProx.getMonth() + 1).padStart(2, "0")}-${String(dProx.getDate()).padStart(2, "0")}`;
+      }
 
       return {
         mecanica_id: "reds",
@@ -483,7 +575,7 @@ export async function POST(request) {
         nome: nome || "Mecânico",
         data: dataSessao,
         entrada: `${dataSessao}T${s.horaEntrada}-03:00`,
-        saida: `${dataSessao}T${s.horaSaida}-03:00`,
+        saida: `${dataSaida}T${s.horaSaida}-03:00`,
         uuid_entrada: s.uuidEntrada || `concil-ent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         uuid_saida: s.uuidSaida || `concil-sai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         total_minutos: diffMin,

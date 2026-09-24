@@ -107,9 +107,21 @@ export default function ConciliadorPontoPage() {
 
         if (md === "semana") {
           const todasEnts = (json.diasDaSemana || []).flatMap((d) => d.entradas || []);
-          const todasSais = (json.diasDaSemana || []).flatMap((d) => d.saidas || []);
+          const rawSais = (json.diasDaSemana || []).flatMap((d) => d.saidas || []);
+          const saisMap = new Map();
+          rawSais.forEach((s) => {
+            const key = (s.uuid && !s.uuid.startsWith("CRASH_") && !s.uuid.startsWith("AUTO_")) ? s.uuid : s.id;
+            if (!saisMap.has(key)) {
+              saisMap.set(key, s);
+            } else {
+              const existente = saisMap.get(key);
+              if (!existente.pareadoCom && s.pareadoCom) {
+                saisMap.set(key, s);
+              }
+            }
+          });
           setEntradas(todasEnts);
-          setSaidas(todasSais);
+          setSaidas(Array.from(saisMap.values()));
         } else {
           setEntradas(json.entradas || []);
           setSaidas(json.saidas || []);
@@ -1190,7 +1202,7 @@ export default function ConciliadorPontoPage() {
                                 </span>
                                 {saidaCasada.data && (
                                   <span style={{ fontSize: "10px", fontWeight: "800", color: "#c084fc", background: "rgba(168,85,247,0.18)", padding: "1px 6px", borderRadius: "4px" }}>
-                                    📅 {saidaCasada.data.slice(8, 10)}/{saidaCasada.data.slice(5, 7)}
+                                    📅 {(saidaCasada.dataOriginal || saidaCasada.data).slice(8, 10)}/{(saidaCasada.dataOriginal || saidaCasada.data).slice(5, 7)}
                                   </span>
                                 )}
                               </div>
@@ -1915,7 +1927,12 @@ export default function ConciliadorPontoPage() {
                     Informações do Registro de Saída
                   </div>
                   <div style={{ fontSize: "11.5px", color: "#94a3b8" }}>
-                    Horário: <strong style={{ color: "#f87171" }}>{saidaDetalhesModal.hora}</strong> • Data: <strong>{saidaDetalhesModal.data}</strong>
+                    Horário: <strong style={{ color: "#f87171" }}>{saidaDetalhesModal.hora}</strong> • Data: <strong>{saidaDetalhesModal.dataOriginal || saidaDetalhesModal.data}</strong>
+                    {saidaDetalhesModal.dataOriginal && saidaDetalhesModal.dataOriginal !== saidaDetalhesModal.data && (
+                      <span style={{ marginLeft: "6px", fontSize: "10px", color: "#c084fc", fontWeight: "700" }}>
+                        (🌙 Turno iniciado em {saidaDetalhesModal.data.slice(8, 10)}/{saidaDetalhesModal.data.slice(5, 7)})
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
