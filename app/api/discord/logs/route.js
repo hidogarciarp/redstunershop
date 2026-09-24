@@ -1,16 +1,12 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { supabase as supabaseAdmin } from "@/app/utils/supabaseClient";
 
 export const dynamic = "force-dynamic";
 
 const INGEST_SECRET = process.env.DISCORD_BOT_INGEST_SECRET || "rua2_mec_9XkP72sLq_2026_seguro";
 
 function getSupabaseAdmin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://prperurjtvayjrazdxvh.supabase.co";
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  return createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false }
-  });
+  return supabaseAdmin;
 }
 
 function parsePonto(rawText) {

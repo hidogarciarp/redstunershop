@@ -160,7 +160,7 @@ function getV2RelationConfig(relation) {
 
   // LOGS DE TUNAGEM AO VIVO (RED'S - DISCORD BOT)
   if (["logs_tunagem_reds", "log_tunagem_reds"].includes(r)) {
-    return { target: "logs_tunagem_reds", filter: null, isAoVivo: true };
+    return { target: "log_tunagem", filter: { col: "mecanica_id", val: "reds" } };
   }
 
   // TUNAGEM UNIFICADA / HISTÓRICO GERAL
@@ -214,9 +214,8 @@ function handleV2From(relation) {
     };
   }
 
-  // Tabelas alimentadas ao vivo pelo bot do Discord / webhooks (residem no Supabase de produção)
-  const isTabelaAoVivo = target === "discord_log_messages" || target === "logs_tunagem_reds";
-  const clientParaUso = isTabelaAoVivo ? prodClient : v2Client;
+  // Todas as tabelas no Banco Novo (v2) utilizam v2Client
+  const clientParaUso = v2Client;
   const builder = clientParaUso.from(target);
 
   // Intercepta .delete(...)
@@ -585,12 +584,11 @@ export const supabase = new Proxy(prodClient, {
       };
     }
 
-    // Realtime (WebSockets): o bot do Discord no Render insere no prodClient.
-    // Todas as subscrições de canais devem conectar ao prodClient para receber os eventos ao vivo.
+    // Realtime (WebSockets)
     if (prop === "channel" || prop === "removeChannel" || prop === "removeAllChannels" || prop === "getChannels") {
-      const fn = prodClient[prop];
+      const fn = activeClient[prop];
       if (typeof fn === "function") {
-        return fn.bind(prodClient);
+        return fn.bind(activeClient);
       }
       return fn;
     }
