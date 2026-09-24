@@ -149,7 +149,7 @@ async function processarTodosPontos() {
 
       if (atual.tipo === "ENTRADA") {
         if (sessaoAberta) {
-          const diffSeg = Math.min(3600, Math.max(60, Math.round((atual.timestamp.getTime() - sessaoAberta.entrada.getTime()) / 1000)));
+          const diffSeg = 60; // Regra 3: 1 minuto para crash sem atividade
           todasSessoes.push({
             mecanica_id: mecanicaId,
             usuario_id: usuarioId,
@@ -158,11 +158,11 @@ async function processarTodosPontos() {
             entrada: sessaoAberta.entrada.toISOString(),
             uuid_entrada: sessaoAberta.uuid,
             saida: new Date(sessaoAberta.entrada.getTime() + diffSeg * 1000).toISOString(),
-            uuid_saida: "CRASH_AUTO",
+            uuid_saida: "CRASH_SEM_ATIVIDADE",
             tipo_fechamento: "CRASH_SEM_ATIVIDADE",
-            total_minutos: Math.round(diffSeg / 60),
+            total_minutos: 1,
             total_segundos: diffSeg,
-            observacao: "Crash detectado na nova entrada."
+            observacao: "Crash sem atividade. Fechado com 1 minuto."
           });
         }
 
