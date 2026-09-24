@@ -38,6 +38,142 @@ export default function DbAdminPage({ theme, styles }) {
     }
   };
 
+  // Modal de Auditoria de Sessão de Ponto (Atividades & Serviços)
+  const [sessaoInspecao, setSessaoInspecao] = useState(null);
+  const [atividadesSessao, setAtividadesSessao] = useState({ tunagens: [], bancada: [], bau: [] });
+  const [carregandoAtividades, setCarregandoAtividades] = useState(false);
+  const [abaAtividades, setAbaAtividades] = useState("todas"); // todas, tunagens, bancada, bau
+  const [logRawAberto, setLogRawAberto] = useState(null);
+  const [copiadoUuid, setCopiadoUuid] = useState(null);
+
+  const copiarParaClipboard = (texto) => {
+    if (!texto) return;
+    navigator.clipboard.writeText(texto);
+    setCopiadoUuid(texto);
+    setTimeout(() => setCopiadoUuid(null), 2000);
+  };
+
+  const abrirAuditoriaSessao = async (sessao) => {
+    setSessaoInspecao(sessao);
+    setCarregandoAtividades(true);
+    setAbaAtividades("todas");
+    setLogRawAberto(null);
+
+    try {
+      const entMs = new Date(sessao.entrada).getTime() - 60000;
+      const saiMs = (sessao.saida ? new Date(sessao.saida).getTime() : Date.now()) + 60000;
+      const idUsuario = String(sessao.id_jogo || sessao.usuario_id || "");
+      const nomeUsuario = String(sessao.nome || "").toLowerCase().trim();
+
+      // 1. Tunagens
+      let tunagens = [];
+      try {
+        const { data: tData } = await supabase
+          .from("log_tunagem")
+          .select("*")
+          .eq("mecanica_id", "reds");
+
+        if (tData) {
+          tunagens = tData.filter((t) => {
+            const matchUser = (idUsuario && String(t.tecnico_id) === idUsuario) ||
+                              (nomeUsuario && (t.tecnico_nome || "").toLowerCase().includes(nomeUsuario));
+            if (!matchUser) return false;
+            const tTime = new Date(t.timestampz || `${t.data}T${t.hora}-03:00`).getTime();
+            return tTime >= entMs && tTime <= saiMs;
+          });
+        }
+      } catch (err) {
+        console.warn("Erro ao buscar tunagens da sessão:", err);
+      }
+
+      // 2. Bancada & Baú (discord_log_messages)
+      let bancada = [];
+      let bau = [];
+      try {
+        const { data: dLogs } = await supabase
+          .from("discord_log_messages")
+          .select("id, content, created_at, log_type")
+          .in("log_type", ["bancada", "bau"])
+          .gte("created_at", new Date(entMs).toISOString())
+          .lte("created_at", new Date(saiMs).toISOString())
+          .order("created_at", { ascending: true });
+
+        if (dLogs) {
+          for (const item of dLogs) {
+            const content = item.content || "";
+            const contentLower = content.toLowerCase();
+            const matchUser = (idUsuario && content.includes(`[ID]: ${idUsuario}`)) ||
+                              (nomeUsuario && contentLower.includes(nomeUsuario));
+            if (!matchUser) continue;
+
+            const clean = content.replace(/```ini/gi, "").replace(/```/g, "");
+
+            if (item.log_type === "bancada") {
+              const itemName = (clean.match(/\[ITEMNAME\]:\s*([^\n\r]+)/i) || [])[1];
+              const qtd = (clean.match(/\[QUANTIDADE\]:\s*([^\n\r]+)/i) || [])[1];
+              const price = (clean.match(/\[PRICE\]:\s*([^\n\r]+)/i) || [])[1];
+              const acao = (clean.match(/\[AÇÃO\]:\s*([^\n\r]+)/i) || [])[1];
+              const uuidMatch = (clean.match(/\[UUID\]:\s*([a-f0-9-]+)/i) || [])[1];
+
+              bancada.push({
+                id: item.id,
+                uuid: uuidMatch || `bancada-${item.id}`,
+                tipo: "bancada",
+                item: itemName ? itemName.trim() : "Item de Bancada",
+                quantidade: qtd ? qtd.trim() : "1",
+                preco: price ? price.trim() : null,
+                acao: acao ? acao.trim() : "buy",
+                timestamp: item.created_at,
+                raw: content
+              });
+            } else if (item.log_type === "bau") {
+              const retirou = (clean.match(/\[RETIROU\]:\s*([^\n\r]+)/i) || [])[1];
+              const guardou = (clean.match(/\[GUARDOU\]:\s*([^\n\r]+)/i) || [])[1];
+              const bauNome = (clean.match(/\[ID BAÚ\]:\s*([^\n\r]+)/i) || [])[1];
+              const uuidMatch = (clean.match(/\[UUID\]:\s*([a-f0-9-]+)/i) || [])[1];
+
+              const acao = retirou ? "RETIROU" : guardou ? "GUARDOU" : "MOVIMENTOU";
+              const itemDesc = retirou ? retirou.trim() : guardou ? guardou.trim() : "Item do Baú";
+
+              bau.push({
+                id: item.id,
+                uuid: uuidMatch || `bau-${item.id}`,
+                tipo: "bau",
+                acao,
+                item: itemDesc,
+                bauNome: bauNome ? bauNome.trim() : "Baú Geral",
+                timestamp: item.created_at,
+                raw: content
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Erro ao buscar logs de bancada/baú:", err);
+      }
+
+      setAtividadesSessao({
+        tunagens: tunagens.map((t) => ({
+          id: t.uuid,
+          uuid: t.uuid,
+          tipo: "tunagem",
+          veiculo: t.veiculo_nome,
+          placa: t.placa,
+          valor: t.valor_pago,
+          dono: t.dono_nome,
+          timestamp: t.timestampz || `${t.data}T${t.hora}-03:00`,
+          raw: t.raw_text || JSON.stringify(t, null, 2)
+        })),
+        bancada,
+        bau
+      });
+    } catch (e) {
+      console.error("Erro ao auditar sessão de ponto:", e);
+    } finally {
+      setCarregandoAtividades(false);
+    }
+  };
+
   // Carregar dados
   const carregarDados = async (paginaAlvo = pagina) => {
     setLoading(true);
@@ -521,9 +657,9 @@ export default function DbAdminPage({ theme, styles }) {
                   <>
                     <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>ID / SESSÃO</th>
                     <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>MECÂNICO</th>
-                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>ENTRADA</th>
-                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>SAÍDA</th>
-                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>DURAÇÃO</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: "#38bdf8" }} title="Clique na linha para auditar as atividades">ENTRADA 🔍</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: "#38bdf8" }} title="Clique na linha para auditar as atividades">SAÍDA 🔍</th>
+                    <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: "#38bdf8" }} title="Clique na linha para auditar as atividades">DURAÇÃO 🔍</th>
                     <th style={{ padding: "16px 20px", fontSize: "12px", fontWeight: "800", color: theme.subtext }}>STATUS</th>
                   </>
                 ) : tabelaAtiva === "log_bancada_reds" ? (
@@ -631,14 +767,60 @@ export default function DbAdminPage({ theme, styles }) {
                             <strong>{reg.nome || "—"}</strong>
                             <div style={{ fontSize: "11px", color: theme.subtext }}>ID: {reg.id_jogo}</div>
                           </td>
-                          <td style={{ padding: "16px 20px", fontSize: "12.5px" }}>
-                            {formatarDataHoraBR(reg.entrada)}
+                          <td
+                            onClick={() => abrirAuditoriaSessao(reg)}
+                            style={{
+                              padding: "16px 20px",
+                              fontSize: "12.5px",
+                              cursor: "pointer",
+                              color: "#38bdf8",
+                              fontWeight: "600",
+                              transition: "all 0.15s"
+                            }}
+                            title="Clique para auditar movimentações e serviços desta sessão"
+                          >
+                            <span style={{ borderBottom: "1px dashed #38bdf8" }}>
+                              {formatarDataHoraBR(reg.entrada)}
+                            </span>
                           </td>
-                          <td style={{ padding: "16px 20px", fontSize: "12.5px" }}>
-                            {reg.saida ? formatarDataHoraBR(reg.saida) : <span style={{ color: "#22c55e", fontWeight: "800" }}>🟢 Em Aberto</span>}
+                          <td
+                            onClick={() => abrirAuditoriaSessao(reg)}
+                            style={{
+                              padding: "16px 20px",
+                              fontSize: "12.5px",
+                              cursor: "pointer",
+                              color: reg.saida ? "#38bdf8" : undefined,
+                              fontWeight: reg.saida ? "600" : "normal",
+                              transition: "all 0.15s"
+                            }}
+                            title="Clique para auditar movimentações e serviços desta sessão"
+                          >
+                            {reg.saida ? (
+                              <span style={{ borderBottom: "1px dashed #38bdf8" }}>
+                                {formatarDataHoraBR(reg.saida)}
+                              </span>
+                            ) : (
+                              <span style={{ color: "#22c55e", fontWeight: "800" }}>🟢 Em Aberto</span>
+                            )}
                           </td>
-                          <td style={{ padding: "16px 20px", fontSize: "13px", fontWeight: "700" }}>
-                            {reg.duracao_min ? `${reg.duracao_min} min` : (reg.saida ? "< 1 min" : "Em andamento")}
+                          <td
+                            onClick={() => abrirAuditoriaSessao(reg)}
+                            style={{ padding: "16px 20px", fontSize: "13px", fontWeight: "700", cursor: "pointer" }}
+                            title="Clique para auditar movimentações e serviços desta sessão"
+                          >
+                            <span style={{
+                              background: "rgba(56, 189, 248, 0.12)",
+                              border: "1px solid rgba(56, 189, 248, 0.3)",
+                              padding: "4px 8px",
+                              borderRadius: "6px",
+                              color: "#38bdf8",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px"
+                            }}>
+                              {reg.duracao_min ? `${reg.duracao_min} min` : (reg.saida ? "< 1 min" : "Em andamento")}
+                              <span style={{ fontSize: "11px" }}>🔍</span>
+                            </span>
                           </td>
                           <td style={{ padding: "16px 20px" }}>
                             <span style={{
@@ -773,7 +955,27 @@ export default function DbAdminPage({ theme, styles }) {
                         </>
                       )}
 
-                      <td style={{ padding: "16px 20px", textAlign: "center" }}>
+                      <td style={{ padding: "16px 20px", textAlign: "center", whiteSpace: "nowrap" }}>
+                        {tabelaAtiva === "sessoes_ponto_auditoria_reds" && (
+                          <button
+                            onClick={() => abrirAuditoriaSessao(reg)}
+                            style={{
+                              background: "rgba(56, 189, 248, 0.15)",
+                              border: "1px solid #38bdf8",
+                              borderRadius: "6px",
+                              padding: "6px 10px",
+                              color: "#38bdf8",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              fontWeight: "800",
+                              marginRight: "6px",
+                              transition: "all 0.2s"
+                            }}
+                            title="Auditar serviços e movimentações desta sessão"
+                          >
+                            🔍 Ver Logs
+                          </button>
+                        )}
                         <button
                           onClick={() => deletarRegistro(reg)}
                           style={{
@@ -857,6 +1059,442 @@ export default function DbAdminPage({ theme, styles }) {
           </div>
         )}
       </div>
+      {/* MODAL DE AUDITORIA DE SESSÃO DE PONTO (SERVIÇOS E MOVIMENTAÇÕES) */}
+      {sessaoInspecao && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.85)",
+            backdropFilter: "blur(12px)",
+            zIndex: 10000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px"
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSessaoInspecao(null);
+          }}
+        >
+          <div
+            style={{
+              background: theme.card || "#111827",
+              border: `1px solid ${theme.border || "#374151"}`,
+              borderRadius: "20px",
+              width: "100%",
+              maxWidth: "920px",
+              maxHeight: "90vh",
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 25px 60px -15px rgba(0,0,0,0.7)",
+              overflow: "hidden"
+            }}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                padding: "20px 24px",
+                borderBottom: `1px solid ${theme.border}`,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                background: theme.card2 || "#1f2937"
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <h2 style={{ fontSize: "19px", fontWeight: "900", margin: 0, color: theme.text }}>
+                    📋 Auditoria de Movimentações & Serviços
+                  </h2>
+                  <span
+                    style={{
+                      background: "rgba(56, 189, 248, 0.15)",
+                      border: "1px solid #38bdf8",
+                      color: "#38bdf8",
+                      fontSize: "12px",
+                      fontWeight: "800",
+                      padding: "2px 8px",
+                      borderRadius: "6px"
+                    }}
+                  >
+                    Sessão #{sessaoInspecao.id || sessaoInspecao.uuid_sessao}
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: "16px", marginTop: "8px", fontSize: "13px", color: theme.subtext, flexWrap: "wrap" }}>
+                  <span>👤 <strong>{sessaoInspecao.nome}</strong> (ID: {sessaoInspecao.id_jogo || sessaoInspecao.usuario_id || "—"})</span>
+                  <span>🟢 Entrada: <strong>{formatarDataHoraBR(sessaoInspecao.entrada)}</strong></span>
+                  <span>🔴 Saída: <strong>{sessaoInspecao.saida ? formatarDataHoraBR(sessaoInspecao.saida) : "Em Aberto"}</strong></span>
+                  <span>⏱️ Duração: <strong>{sessaoInspecao.duracao_min ? `${sessaoInspecao.duracao_min} min` : (sessaoInspecao.saida ? "< 1 min" : "Em andamento")}</strong></span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setSessaoInspecao(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: theme.subtext,
+                  fontSize: "24px",
+                  cursor: "pointer",
+                  lineHeight: "1",
+                  padding: "4px"
+                }}
+                title="Fechar"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Resumo / Cards Estatísticos */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: "12px",
+                padding: "16px 24px",
+                borderBottom: `1px solid ${theme.border}`,
+                background: "rgba(0,0,0,0.15)"
+              }}
+            >
+              {/* Tunagens */}
+              <div
+                onClick={() => setAbaAtividades("tunagens")}
+                style={{
+                  background: abaAtividades === "tunagens" ? "rgba(168, 85, 247, 0.2)" : theme.card2,
+                  border: `1px solid ${abaAtividades === "tunagens" ? "#a855f7" : theme.border}`,
+                  borderRadius: "12px",
+                  padding: "12px 16px",
+                  cursor: "pointer",
+                  transition: "all 0.2s"
+                }}
+              >
+                <div style={{ fontSize: "11px", fontWeight: "800", color: "#c084fc", textTransform: "uppercase" }}>🚗 Tunagens Feitas</div>
+                <div style={{ fontSize: "20px", fontWeight: "900", color: theme.text, marginTop: "2px" }}>
+                  {atividadesSessao.tunagens.length}
+                </div>
+                <div style={{ fontSize: "11.5px", color: "#4ade80", fontWeight: "700", marginTop: "2px" }}>
+                  R$ {atividadesSessao.tunagens.reduce((acc, t) => acc + Number(t.valor || 0), 0).toLocaleString("pt-BR")}
+                </div>
+              </div>
+
+              {/* Bancada */}
+              <div
+                onClick={() => setAbaAtividades("bancada")}
+                style={{
+                  background: abaAtividades === "bancada" ? "rgba(56, 189, 248, 0.2)" : theme.card2,
+                  border: `1px solid ${abaAtividades === "bancada" ? "#38bdf8" : theme.border}`,
+                  borderRadius: "12px",
+                  padding: "12px 16px",
+                  cursor: "pointer",
+                  transition: "all 0.2s"
+                }}
+              >
+                <div style={{ fontSize: "11px", fontWeight: "800", color: "#38bdf8", textTransform: "uppercase" }}>🛠️ Compras / Bancada</div>
+                <div style={{ fontSize: "20px", fontWeight: "900", color: theme.text, marginTop: "2px" }}>
+                  {atividadesSessao.bancada.length}
+                </div>
+                <div style={{ fontSize: "11.5px", color: theme.subtext, marginTop: "2px" }}>
+                  Peças e Ferramentas
+                </div>
+              </div>
+
+              {/* Baú */}
+              <div
+                onClick={() => setAbaAtividades("bau")}
+                style={{
+                  background: abaAtividades === "bau" ? "rgba(249, 115, 22, 0.2)" : theme.card2,
+                  border: `1px solid ${abaAtividades === "bau" ? "#f97316" : theme.border}`,
+                  borderRadius: "12px",
+                  padding: "12px 16px",
+                  cursor: "pointer",
+                  transition: "all 0.2s"
+                }}
+              >
+                <div style={{ fontSize: "11px", fontWeight: "800", color: "#fb923c", textTransform: "uppercase" }}>📦 Movimentações de Baú</div>
+                <div style={{ fontSize: "20px", fontWeight: "900", color: theme.text, marginTop: "2px" }}>
+                  {atividadesSessao.bau.length}
+                </div>
+                <div style={{ fontSize: "11.5px", color: theme.subtext, marginTop: "2px" }}>
+                  Retiradas & Guardados
+                </div>
+              </div>
+
+              {/* Total Geral */}
+              <div
+                onClick={() => setAbaAtividades("todas")}
+                style={{
+                  background: abaAtividades === "todas" ? "rgba(236, 72, 153, 0.2)" : theme.card2,
+                  border: `1px solid ${abaAtividades === "todas" ? "#ec4899" : theme.border}`,
+                  borderRadius: "12px",
+                  padding: "12px 16px",
+                  cursor: "pointer",
+                  transition: "all 0.2s"
+                }}
+              >
+                <div style={{ fontSize: "11px", fontWeight: "800", color: "#f472b6", textTransform: "uppercase" }}>⚡ Total de Registros</div>
+                <div style={{ fontSize: "20px", fontWeight: "900", color: theme.text, marginTop: "2px" }}>
+                  {atividadesSessao.tunagens.length + atividadesSessao.bancada.length + atividadesSessao.bau.length}
+                </div>
+                <div style={{ fontSize: "11.5px", color: theme.subtext, marginTop: "2px" }}>
+                  Atividades no Turno
+                </div>
+              </div>
+            </div>
+
+            {/* Tabs de Filtro de Atividades */}
+            <div style={{ display: "flex", gap: "8px", padding: "12px 24px", borderBottom: `1px solid ${theme.border}`, background: theme.card2, flexWrap: "wrap" }}>
+              {[
+                { id: "todas", label: `Todas (${atividadesSessao.tunagens.length + atividadesSessao.bancada.length + atividadesSessao.bau.length})` },
+                { id: "tunagens", label: `🚗 Tunagens (${atividadesSessao.tunagens.length})` },
+                { id: "bancada", label: `🛠️ Bancada (${atividadesSessao.bancada.length})` },
+                { id: "bau", label: `📦 Baú (${atividadesSessao.bau.length})` },
+              ].map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setAbaAtividades(t.id)}
+                  style={{
+                    background: abaAtividades === t.id ? "#ec4899" : "transparent",
+                    color: abaAtividades === t.id ? "#fff" : theme.subtext,
+                    border: `1px solid ${abaAtividades === t.id ? "#ec4899" : theme.border}`,
+                    padding: "6px 14px",
+                    borderRadius: "8px",
+                    fontSize: "12.5px",
+                    fontWeight: "800",
+                    cursor: "pointer",
+                    transition: "all 0.15s"
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Lista com Scroll */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: "10px" }}>
+              {carregandoAtividades ? (
+                <div style={{ textAlign: "center", padding: "40px", color: theme.subtext }}>
+                  ⏳ Buscando todas as movimentações e serviços realizados no período desta sessão...
+                </div>
+              ) : (() => {
+                let lista = [];
+                if (abaAtividades === "todas" || abaAtividades === "tunagens") {
+                  lista.push(...atividadesSessao.tunagens);
+                }
+                if (abaAtividades === "todas" || abaAtividades === "bancada") {
+                  lista.push(...atividadesSessao.bancada);
+                }
+                if (abaAtividades === "todas" || abaAtividades === "bau") {
+                  lista.push(...atividadesSessao.bau);
+                }
+
+                // Ordenar cronologicamente
+                lista.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+                if (lista.length === 0) {
+                  return (
+                    <div style={{ textAlign: "center", padding: "40px", color: theme.subtext, background: theme.card2, borderRadius: "12px", border: `1px dashed ${theme.border}` }}>
+                      🔍 Nenhuma movimentação ou serviço registrado para {sessaoInspecao.nome} no intervalo deste período.
+                    </div>
+                  );
+                }
+
+                return lista.map((item, idx) => {
+                  const isTunagem = item.tipo === "tunagem";
+                  const isBancada = item.tipo === "bancada";
+                  const isBau = item.tipo === "bau";
+                  const isGuardou = isBau && item.acao === "GUARDOU";
+
+                  const tagBg = isTunagem ? "rgba(168, 85, 247, 0.15)" : isBancada ? "rgba(56, 189, 248, 0.15)" : isGuardou ? "rgba(34, 197, 94, 0.15)" : "rgba(249, 115, 22, 0.15)";
+                  const tagBorder = isTunagem ? "#a855f7" : isBancada ? "#38bdf8" : isGuardou ? "#22c55e" : "#f97316";
+                  const tagColor = isTunagem ? "#c084fc" : isBancada ? "#38bdf8" : isGuardou ? "#4ade80" : "#fb923c";
+                  const tagLabel = isTunagem ? "🚗 TUNAGEM" : isBancada ? "🛠️ BANCADA" : isGuardou ? "📦 BAÚ (GUARDOU)" : "📦 BAÚ (RETIROU)";
+
+                  return (
+                    <div
+                      key={item.uuid || `${item.tipo}-${item.id || idx}`}
+                      style={{
+                        background: theme.card2,
+                        border: `1px solid ${theme.border}`,
+                        borderRadius: "12px",
+                        padding: "14px 18px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <span
+                            style={{
+                              background: tagBg,
+                              border: `1px solid ${tagBorder}`,
+                              color: tagColor,
+                              fontSize: "10.5px",
+                              fontWeight: "900",
+                              padding: "3px 8px",
+                              borderRadius: "6px"
+                            }}
+                          >
+                            {tagLabel}
+                          </span>
+                          <span style={{ fontSize: "12.5px", color: theme.subtext, fontWeight: "600" }}>
+                            🕒 {formatarDataHoraBR(item.timestamp)}
+                          </span>
+                        </div>
+
+                        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                          {item.uuid && (
+                            <button
+                              onClick={() => copiarParaClipboard(item.uuid)}
+                              style={{
+                                background: copiadoUuid === item.uuid ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.05)",
+                                border: `1px solid ${copiadoUuid === item.uuid ? "#22c55e" : theme.border}`,
+                                color: copiadoUuid === item.uuid ? "#4ade80" : theme.subtext,
+                                borderRadius: "6px",
+                                padding: "4px 8px",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                cursor: "pointer"
+                              }}
+                              title="Copiar UUID"
+                            >
+                              {copiadoUuid === item.uuid ? "✅ Copiado" : "📋 Copiar UUID"}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setLogRawAberto(logRawAberto === item.uuid ? null : item.uuid)}
+                            style={{
+                              background: logRawAberto === item.uuid ? "rgba(236,72,153,0.2)" : "rgba(255,255,255,0.05)",
+                              border: `1px solid ${logRawAberto === item.uuid ? "#ec4899" : theme.border}`,
+                              color: logRawAberto === item.uuid ? "#f472b6" : theme.subtext,
+                              borderRadius: "6px",
+                              padding: "4px 8px",
+                              fontSize: "11px",
+                              fontWeight: "700",
+                              cursor: "pointer"
+                            }}
+                          >
+                            {logRawAberto === item.uuid ? "Ocultar Log" : "📄 Ver Log"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Conteúdo Detalhado */}
+                      {isTunagem && (
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <div>
+                            <span style={{ fontSize: "14px", fontWeight: "800", color: theme.text }}>
+                              {item.veiculo || "Veículo sem nome"}
+                            </span>
+                            <span style={{ marginLeft: "8px", fontSize: "11px", color: "#38bdf8", fontFamily: "monospace", background: "rgba(56,189,248,0.1)", padding: "2px 6px", borderRadius: "4px" }}>
+                              {item.placa || "SEM PLACA"}
+                            </span>
+                            {item.dono && (
+                              <span style={{ marginLeft: "8px", fontSize: "12px", color: theme.subtext }}>
+                                • Dono: <strong>{item.dono}</strong>
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: "14px", fontWeight: "900", color: "#22c55e" }}>
+                            R$ {Number(item.valor || 0).toLocaleString("pt-BR")}
+                          </div>
+                        </div>
+                      )}
+
+                      {isBancada && (
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <div>
+                            <span style={{ fontSize: "14px", fontWeight: "800", color: theme.text }}>
+                              {item.quantidade}x {item.item}
+                            </span>
+                            <span style={{ marginLeft: "8px", fontSize: "11.5px", color: theme.subtext }}>
+                              (Ação: {item.acao})
+                            </span>
+                          </div>
+                          {item.preco && (
+                            <div style={{ fontSize: "13px", fontWeight: "800", color: "#f59e0b" }}>
+                              R$ {item.preco}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {isBau && (
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <div>
+                            <span style={{ fontSize: "14px", fontWeight: "800", color: theme.text }}>
+                              {item.item}
+                            </span>
+                            <span style={{ marginLeft: "8px", fontSize: "11.5px", color: theme.subtext }}>
+                              • Baú: <strong>{item.bauNome}</strong>
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Log Raw Expandido */}
+                      {logRawAberto === item.uuid && (
+                        <pre
+                          style={{
+                            background: "rgba(0,0,0,0.5)",
+                            border: `1px solid ${theme.border}`,
+                            borderRadius: "8px",
+                            padding: "12px",
+                            fontSize: "11.5px",
+                            color: "#94a3b8",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-all",
+                            marginTop: "6px",
+                            fontFamily: "monospace"
+                          }}
+                        >
+                          {item.raw}
+                        </pre>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                padding: "14px 24px",
+                borderTop: `1px solid ${theme.border}`,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                background: theme.card2
+              }}
+            >
+              <div style={{ fontSize: "12px", color: theme.subtext }}>
+                💡 Todas as ações gravadas pelo mecânico durante a janela do ponto são filtradas em tempo real.
+              </div>
+              <button
+                onClick={() => setSessaoInspecao(null)}
+                style={{
+                  background: theme.card,
+                  border: `1px solid ${theme.border}`,
+                  padding: "8px 18px",
+                  borderRadius: "8px",
+                  color: theme.text,
+                  fontWeight: "700",
+                  cursor: "pointer",
+                  fontSize: "13px"
+                }}
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
