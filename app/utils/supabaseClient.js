@@ -547,7 +547,49 @@ function handleV2From(relation) {
         sanitizarPayloadV2(values);
       }
     }
-    return origInsert(values, options);
+    const query = origInsert(values, options);
+    let selectCalled = false;
+    let selectArgs = [];
+    const origSelect = query.select ? query.select.bind(query) : null;
+    if (origSelect) {
+      query.select = function (...args) {
+        selectCalled = true;
+        selectArgs = args;
+        return origSelect(...args);
+      };
+    }
+    const origThen = query.then.bind(query);
+    query.then = function (onfulfilled, onrejected) {
+      return origThen(async (result) => {
+        if (result?.error?.code === "23505" && result?.error?.message?.includes("_pkey")) {
+          try {
+            const { data: maxRows } = await clientParaUso
+              .from(target)
+              .select("id")
+              .order("id", { ascending: false })
+              .limit(1);
+            const maxId = Number(maxRows?.[0]?.id) || 0;
+            const nextId = maxId + 1;
+            let retryValues;
+            if (Array.isArray(values)) {
+              retryValues = values.map((item, idx) => ({ id: nextId + idx, ...item }));
+            } else {
+              retryValues = { id: nextId, ...values };
+            }
+            let retryQuery = clientParaUso.from(target).insert(retryValues, options);
+            if (selectCalled && retryQuery.select) {
+              retryQuery = retryQuery.select(...selectArgs);
+            }
+            const retryResult = await retryQuery;
+            return onfulfilled ? onfulfilled(retryResult) : retryResult;
+          } catch (e) {
+            return onfulfilled ? onfulfilled(result) : result;
+          }
+        }
+        return onfulfilled ? onfulfilled(result) : result;
+      }, onrejected);
+    };
+    return query;
   };
 
   const origUpsert = builder.upsert.bind(builder);
