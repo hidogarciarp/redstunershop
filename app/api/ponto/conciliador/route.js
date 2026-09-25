@@ -106,8 +106,14 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
   const entradas = [];
   const saidas = [];
 
+  const seenEnt = new Set();
+  const seenSai = new Set();
+
   eventosPonto.forEach((ev) => {
+    const chave = ev.uuid ? ev.uuid.toLowerCase() : `${ev.data || dataDia}_${ev.hora}`;
     if (ev.tipo === "entrada") {
+      if (seenEnt.has(chave)) return;
+      seenEnt.add(chave);
       entradas.push({
         id: `ent-${ev.id}`,
         data: ev.data || dataDia,
@@ -120,6 +126,8 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
         atividades: [],
       });
     } else {
+      if (seenSai.has(chave)) return;
+      seenSai.add(chave);
       saidas.push({
         id: `sai-${ev.id}`,
         data: ev.data || dataDia,
@@ -396,9 +404,13 @@ export async function GET(request) {
     const { data: rawPontoMsgs } = await queryDiscord;
 
     const rawEventosPonto = [];
+    const seenUuids = new Set();
     (rawPontoMsgs || []).forEach((m) => {
       const parsed = parseMsgPonto(m.content, m.created_at, String(m.id));
       if (parsed && String(parsed.usuario_id) === String(usuarioId)) {
+        const chave = parsed.uuid ? parsed.uuid.toLowerCase() : `${parsed.tipo}_${parsed.data}_${parsed.hora}`;
+        if (seenUuids.has(chave)) return;
+        seenUuids.add(chave);
         rawEventosPonto.push(parsed);
       }
     });
