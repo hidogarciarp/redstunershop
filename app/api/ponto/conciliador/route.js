@@ -201,6 +201,20 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
   entradas.sort((a, b) => a.hora.localeCompare(b.hora));
   saidas.sort((a, b) => a.hora.localeCompare(b.hora));
 
+  // Validação estrita da Regra de Ouro: Nenhuma saída gravada pode ultrapassar a próxima entrada
+  entradas.forEach((ent, idx) => {
+    const proximaEntrada = entradas[idx + 1];
+    if (proximaEntrada && ent.saidaId) {
+      const sai = saidas.find((s) => s.id === ent.saidaId);
+      if (sai && sai.hora > proximaEntrada.hora && !sai.dataOriginal) {
+        // Violação da Regra de Ouro: desvincula a saída inválida que transpassa a próxima entrada
+        sai.pareadoCom = null;
+        ent.saidaId = null;
+        ent.auditado = false;
+      }
+    }
+  });
+
   entradas.forEach((ent, idx) => {
     const proximaEntrada = entradas[idx + 1];
 
