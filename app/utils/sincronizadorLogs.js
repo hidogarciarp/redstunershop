@@ -125,7 +125,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
     const { data: tunagensNovas, error: errTun } = await rawClient
       .from("discord_log_messages")
       .select("id, content, channel_id, mechanic_id, created_at")
-      .eq("log_type", "tunagem")
+      .in("log_type", ["tunagem", "servicos"])
       .gte("created_at", dataLimiteISO);
 
     if (!errTun && tunagensNovas && tunagensNovas.length > 0) {
@@ -359,7 +359,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
   try {
     const { data: sessoesExistentes } = await supabase
       .from("log_ponto")
-      .select("id, uuid_entrada, tipo_fechamento")
+      .select("id, uuid_entrada, uuid_saida, tipo_fechamento, observacao")
       .gte("entrada", dataLimiteISO);
 
     const mapaExistentes = new Map();
@@ -566,6 +566,28 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
       }
     }
 
+    // Garantir Regra de Ouro: Saída de uma sessão nunca pode ultrapassar a entrada da sessão seguinte
+    const porUsuarioUpsert = new Map();
+    for (const sess of sessoesParaUpsert) {
+      const chave = `${sess.mecanica_id}_${sess.usuario_id}`;
+      if (!porUsuarioUpsert.has(chave)) porUsuarioUpsert.set(chave, []);
+      porUsuarioUpsert.get(chave).push(sess);
+    }
+    for (const lista of porUsuarioUpsert.values()) {
+      lista.sort((a, b) => new Date(a.entrada).getTime() - new Date(b.entrada).getTime());
+      for (let k = 0; k < lista.length - 1; k++) {
+        const atual = lista[k];
+        const prox = lista[k + 1];
+        if (atual.saida && prox.entrada && new Date(atual.saida) > new Date(prox.entrada)) {
+          atual.saida = prox.entrada;
+          const diffSeg = Math.max(0, Math.round((new Date(atual.saida).getTime() - new Date(atual.entrada).getTime()) / 1000));
+          atual.total_segundos = diffSeg;
+          atual.total_minutos = Math.round(diffSeg / 60);
+          atual.observacao = (atual.observacao || '') + ' (Ajustado pela Regra de Ouro: limitado pela próxima entrada)';
+        }
+      }
+    }
+
     const novos = sessoesParaUpsert.filter((s) => !s.id);
     const updates = sessoesParaUpsert.filter((s) => s.id);
 
@@ -612,7 +634,12 @@ function adicionarSessao(
 ) {
   const existente = mapaExistentes.get(sessaoAberta.uuid);
 
-  if (existente && existente.tipo_fechamento === "AJUSTE_MANUAL") {
+  if (
+    existente &&
+    (existente.tipo_fechamento === "AJUSTE_MANUAL" ||
+      existente.uuid_saida?.startsWith("concil-") ||
+      existente.observacao?.includes("Conciliador"))
+  ) {
     relatorio.ajustesPreservados++;
     return;
   }
