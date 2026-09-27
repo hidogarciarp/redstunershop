@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useState } from "react";
+import ModalNotificacao from "../ModalNotificacao";
 
 export default function NotificacoesPage({
   usuarioLogado = null,
@@ -43,7 +44,10 @@ export default function NotificacoesPage({
   apagarNotificacao,
   AppHeaderBar,
   AppModalNotificacao,
+  isDarkMode = true,
+  renderMensagemComLinks,
 }) {
+  const [notificacaoModal, setNotificacaoModal] = useState(null);
   if (!usuarioLogado || !userPodeNotificar)
     return (
       <div style={styles.dashContainer}>
@@ -329,7 +333,19 @@ export default function NotificacoesPage({
                 </thead>
                 <tbody>
                   {notificacoesFiltradas.map((n) => (
-                    <tr key={n.id} style={{ borderBottom: `1px solid ${theme.border}`, background: n.lido_em ? "transparent" : "#f9731608" }}>
+                    <tr
+                      key={n.id}
+                      onClick={() => setNotificacaoModal(n)}
+                      style={{
+                        borderBottom: `1px solid ${theme.border}`,
+                        background: n.lido_em ? "transparent" : "#f9731608",
+                        cursor: "pointer",
+                        transition: "background 0.15s ease"
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = isDarkMode ? "#252528" : "#f1f5f9")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = n.lido_em ? "transparent" : "#f9731608")}
+                      title="Clique para visualizar esta notificação na íntegra"
+                    >
                       {userPodeVerRemetente && (
                         <td style={{ padding: "10px 12px", fontWeight: "600", color: theme.text }}>{n.anonimo ? <span style={{ color: "#f59e0b" }}>🎭 Anônimo</span> : n.admin_nome}</td>
                       )}
@@ -340,10 +356,45 @@ export default function NotificacoesPage({
                         <div>{n.funcionario_nome}</div>
                         <div style={{ fontSize: "11px", color: theme.subtext }}>ID: {n.funcionario_id}</div>
                       </td>
-                      <td style={{ padding: "10px 12px", color: theme.text, maxWidth: "260px" }}>
-                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "260px" }} title={n.mensagem}>
-                          {n.mensagem}
-                        </div>
+                      <td style={{ padding: "10px 12px", color: theme.text, maxWidth: "280px" }}>
+                        {n.mensagem?.startsWith("[FEEDBACK_AUDITORIA]") ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                            <span style={{ background: "rgba(2, 132, 199, 0.15)", border: "1px solid rgba(2, 132, 199, 0.4)", color: "#38bdf8", padding: "2px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: "800", width: "fit-content" }}>
+                              💬 Feedback Tunagem
+                            </span>
+                            <span style={{ fontSize: "12px", color: theme.subtext, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "260px" }}>
+                              {(() => {
+                                try {
+                                  return JSON.parse(n.mensagem.replace("[FEEDBACK_AUDITORIA]", "").trim())?.feedback || "Orientação de auditoria";
+                                } catch (_) {
+                                  return "Feedback de auditoria";
+                                }
+                              })()}
+                            </span>
+                          </div>
+                        ) : n.mensagem?.startsWith("[AUDITORIA_ESTAGIARIO]") ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                            <span style={{ background: "rgba(245, 158, 11, 0.15)", border: "1px solid rgba(245, 158, 11, 0.4)", color: "#f59e0b", padding: "2px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: "800", width: "fit-content" }}>
+                              📋 Auditoria de Estagiário
+                            </span>
+                            <span style={{ fontSize: "12px", color: theme.subtext }}>
+                              Tunagem de Performance liberada
+                            </span>
+                          </div>
+                        ) : n.mensagem?.includes("🚨 ALERTA DE SEGURANÇA") ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                            <span style={{ background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#ef4444", padding: "2px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: "800", width: "fit-content" }}>
+                              🚨 Alerta de Segurança
+                            </span>
+                            <span style={{ fontSize: "12px", color: theme.subtext, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "260px" }} title={n.mensagem?.replace(/\[ALERTA_GRUPO:[^\]]+\]\s*/g, "")}>
+                              {n.mensagem?.replace(/\[ALERTA_GRUPO:[^\]]+\]\s*/g, "")}
+                            </span>
+                          </div>
+                        ) : (
+                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "260px" }} title={n.mensagem?.replace(/\[ALERTA_GRUPO:[^\]]+\]\s*/g, "")}>
+                            {n.mensagem?.replace(/\[ALERTA_GRUPO:[^\]]+\]\s*/g, "")}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: "10px 12px", color: theme.subtext, fontSize: "12px", whiteSpace: "nowrap" }}>{formatarDataHora(n.criado_em)}</td>
                       <td style={{ padding: "10px 12px" }}>
@@ -353,10 +404,25 @@ export default function NotificacoesPage({
                           <span style={{ background: "#f9731620", color: "#f97316", padding: "3px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: "700" }}>⏳ Pendente</span>
                         )}
                       </td>
-                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                      <td style={{ padding: "10px 12px", textAlign: "center", whiteSpace: "nowrap" }}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setNotificacaoModal(n);
+                          }}
+                          style={{ background: "none", border: "none", cursor: "pointer", fontSize: "15px", opacity: 0.7, marginRight: "8px", transition: "opacity 0.2s" }}
+                          onMouseOver={(e) => (e.currentTarget.style.opacity = 1)}
+                          onMouseOut={(e) => (e.currentTarget.style.opacity = 0.7)}
+                          title="Visualizar notificação completa"
+                        >
+                          👁️
+                        </button>
                         {(userIsAdmin || n.admin_id_real === usuarioLogado?.id || n.admin_id === usuarioLogado?.id) && (
                           <button 
-                            onClick={() => apagarNotificacao(n.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              apagarNotificacao(n.id);
+                            }}
                             style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", opacity: 0.6, transition: "opacity 0.2s" }}
                             onMouseOver={(e) => e.currentTarget.style.opacity = 1}
                             onMouseOut={(e) => e.currentTarget.style.opacity = 0.6}
@@ -374,6 +440,18 @@ export default function NotificacoesPage({
           )}
         </div>
       </div>
+
+      {/* MODAL PARA RE-LER NOTIFICAÇÃO */}
+      {notificacaoModal && (
+        <ModalNotificacao
+          notificacaoPendente={notificacaoModal}
+          isDarkMode={isDarkMode}
+          theme={theme}
+          formatarDataHora={formatarDataHora}
+          renderMensagemComLinks={renderMensagemComLinks}
+          onFechar={() => setNotificacaoModal(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import ModalNotificacao from "../ModalNotificacao";
 
 function obterDataInicioSemana(obs) {
   if (!obs) return 0;
@@ -68,7 +69,10 @@ export default function MinhaContaPage({
   setLayoutPreferido,
   AppHeaderBar,
   AppModalNotificacao,
+  isDarkMode = true,
+  renderMensagemComLinks,
 }) {
+  const [notificacaoSelecionada, setNotificacaoSelecionada] = useState(null);
   const vencimento = usuarioLogado?.data_vencimento;
   const valorSemanal = usuarioLogado?.valor_semanal;
   const bloqueado = usuarioLogado?.bloqueado_financeiro;
@@ -1113,27 +1117,103 @@ export default function MinhaContaPage({
                     <th style={{ padding: "8px 12px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", fontWeight: "700", color: theme.subtext }}>Mensagem</th>
                     <th style={{ padding: "8px 12px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", fontWeight: "700", color: theme.subtext }}>Recebida em</th>
                     <th style={{ padding: "8px 12px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", fontWeight: "700", color: theme.subtext }}>Status</th>
+                    <th style={{ padding: "8px 12px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", fontWeight: "700", color: theme.subtext, textAlign: "center" }}>Ação</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {minhasNotificacoes.map((n) => (
-                    <tr key={n.id} style={{ borderBottom: `1px solid ${theme.border}`, background: n.lido_em ? "transparent" : "#f9731608" }}>
-                      <td style={{ padding: "8px 12px", fontWeight: "600", color: theme.text }}>
-                        {n.anonimo ? <span style={{ color: "#f59e0b" }}>🎭 Anônimo</span> : n.admin_nome}
-                      </td>
-                      <td style={{ padding: "8px 12px", color: theme.text, maxWidth: "320px" }}>
-                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "320px" }} title={n.mensagem}>{n.mensagem}</div>
-                      </td>
-                      <td style={{ padding: "8px 12px", color: theme.subtext, fontSize: "12px", whiteSpace: "nowrap" }}>{formatarDataHora(n.criado_em)}</td>
-                      <td style={{ padding: "8px 12px" }}>
-                        {n.lido_em ? (
-                          <span style={{ background: "#16a34a20", color: "#22c55e", padding: "3px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: "700" }}>✅ Lida</span>
-                        ) : (
-                          <span style={{ background: "#f9731620", color: "#f97316", padding: "3px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: "700" }}>⏳ Pendente</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {minhasNotificacoes.map((n) => {
+                    let previewMensagem = n.mensagem || "";
+                    let tagEspecial = null;
+                    if (n.mensagem?.startsWith("[FEEDBACK_AUDITORIA]")) {
+                      try {
+                        const parsed = JSON.parse(n.mensagem.replace("[FEEDBACK_AUDITORIA]", "").trim());
+                        tagEspecial = (
+                          <span style={{ background: "rgba(2, 132, 199, 0.15)", border: "1px solid rgba(2, 132, 199, 0.4)", color: "#38bdf8", padding: "2px 8px", borderRadius: "6px", fontSize: "10.5px", fontWeight: "800", whiteSpace: "nowrap" }}>
+                            💬 Feedback Tunagem
+                          </span>
+                        );
+                        previewMensagem = parsed.feedback || "Orientação do autorizador";
+                      } catch (_) {
+                        previewMensagem = "Feedback de Auditoria";
+                      }
+                    } else if (n.mensagem?.startsWith("[AUDITORIA_ESTAGIARIO]")) {
+                      tagEspecial = (
+                        <span style={{ background: "rgba(245, 158, 11, 0.15)", border: "1px solid rgba(245, 158, 11, 0.4)", color: "#f59e0b", padding: "2px 8px", borderRadius: "6px", fontSize: "10.5px", fontWeight: "800", whiteSpace: "nowrap" }}>
+                          📋 Auditoria
+                        </span>
+                      );
+                      previewMensagem = "Tunagem de Performance realizada";
+                    } else if (n.mensagem?.includes("🚨 ALERTA DE SEGURANÇA")) {
+                      tagEspecial = (
+                        <span style={{ background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#ef4444", padding: "2px 8px", borderRadius: "6px", fontSize: "10.5px", fontWeight: "800", whiteSpace: "nowrap" }}>
+                          🚨 Alerta de Segurança
+                        </span>
+                      );
+                      previewMensagem = previewMensagem.replace(/\[ALERTA_GRUPO:[^\]]+\]\s*/g, "");
+                    } else {
+                      previewMensagem = previewMensagem.replace(/\[ALERTA_GRUPO:[^\]]+\]\s*/g, "");
+                    }
+
+                    return (
+                      <tr
+                        key={n.id}
+                        onClick={() => setNotificacaoSelecionada(n)}
+                        style={{
+                          borderBottom: `1px solid ${theme.border}`,
+                          background: n.lido_em ? "transparent" : "#f9731608",
+                          cursor: "pointer",
+                          transition: "background 0.15s ease"
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = isDarkMode ? "#252528" : "#f1f5f9")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = n.lido_em ? "transparent" : "#f9731608")}
+                        title="Clique para re-ler esta notificação na íntegra"
+                      >
+                        <td style={{ padding: "8px 12px", fontWeight: "600", color: theme.text }}>
+                          {n.anonimo ? <span style={{ color: "#f59e0b" }}>🎭 Anônimo</span> : n.admin_nome}
+                        </td>
+                        <td style={{ padding: "8px 12px", color: theme.text, maxWidth: "340px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            {tagEspecial}
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: tagEspecial ? "220px" : "320px" }} title={previewMensagem}>
+                              {previewMensagem}
+                            </span>
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 12px", color: theme.subtext, fontSize: "12px", whiteSpace: "nowrap" }}>{formatarDataHora(n.criado_em)}</td>
+                        <td style={{ padding: "8px 12px" }}>
+                          {n.lido_em ? (
+                            <span style={{ background: "#16a34a20", color: "#22c55e", padding: "3px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: "700" }}>✅ Lida</span>
+                          ) : (
+                            <span style={{ background: "#f9731620", color: "#f97316", padding: "3px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: "700" }}>⏳ Pendente</span>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px 12px", textAlign: "center" }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setNotificacaoSelecionada(n);
+                            }}
+                            style={{
+                              background: "rgba(249, 115, 22, 0.12)",
+                              border: "1px solid rgba(249, 115, 22, 0.35)",
+                              color: "#f97316",
+                              padding: "4px 10px",
+                              borderRadius: "8px",
+                              fontSize: "11.5px",
+                              fontWeight: "700",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px"
+                            }}
+                            title="Re-ler notificação completa"
+                          >
+                            👁️ Re-ler
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1359,6 +1439,25 @@ export default function MinhaContaPage({
             </div>
           </div>
         </div>
+      )}
+
+      {/* MODAL PARA RE-LER NOTIFICAÇÃO DO HISTÓRICO */}
+      {notificacaoSelecionada && (
+        <ModalNotificacao
+          notificacaoPendente={notificacaoSelecionada}
+          isDarkMode={isDarkMode}
+          theme={theme}
+          formatarDataHora={formatarDataHora}
+          renderMensagemComLinks={renderMensagemComLinks}
+          onFechar={() => setNotificacaoSelecionada(null)}
+          confirmarLeituraNotificacao={async () => {
+            if (!notificacaoSelecionada.lido_em) {
+              await supabase.from("notificacoes").update({ lido_em: new Date().toISOString() }).eq("id", notificacaoSelecionada.id);
+              if (typeof buscarMinhasNotificacoes === "function") buscarMinhasNotificacoes();
+            }
+            setNotificacaoSelecionada(null);
+          }}
+        />
       )}
     </div>
   );

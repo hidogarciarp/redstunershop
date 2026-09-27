@@ -62,8 +62,46 @@ export default function AdminPage({
   setPeriodoRankingClientes,
   rankingClientes,
   SeletorPeriodo,
+  configAutorizadores,
+  salvarConfigAutorizadores,
 }) {
   const [logsUsuario, setLogsUsuario] = useState(null);
+  const [cargosAutorizadores, setCargosAutorizadores] = useState(
+    () => configAutorizadores?.cargos || ["mecanico_senior", "supervisor", "gerente", "gerente_rh", "gerente_geral", "dono", "admin"]
+  );
+  const [atribuicoesAutorizadoras, setAtribuicoesAutorizadoras] = useState(
+    () => configAutorizadores?.atribuicoes || ["resp_tunagem"]
+  );
+  const [salvandoConfig, setSalvandoConfig] = useState(false);
+
+  React.useEffect(() => {
+    if (configAutorizadores) {
+      if (Array.isArray(configAutorizadores.cargos)) setCargosAutorizadores(configAutorizadores.cargos);
+      if (Array.isArray(configAutorizadores.atribuicoes)) setAtribuicoesAutorizadoras(configAutorizadores.atribuicoes);
+    }
+  }, [configAutorizadores]);
+
+  const toggleCargoAutorizador = (cargoVal) => {
+    setCargosAutorizadores((prev) =>
+      prev.includes(cargoVal) ? prev.filter((c) => c !== cargoVal) : [...prev, cargoVal]
+    );
+  };
+
+  const toggleAtribuicaoAutorizadora = (atribVal) => {
+    setAtribuicoesAutorizadoras((prev) =>
+      prev.includes(atribVal) ? prev.filter((a) => a !== atribVal) : [...prev, atribVal]
+    );
+  };
+
+  const handleSalvarPermissoes = async () => {
+    if (typeof salvarConfigAutorizadores !== "function") return;
+    setSalvandoConfig(true);
+    await salvarConfigAutorizadores({
+      cargos: cargosAutorizadores,
+      atribuicoes: atribuicoesAutorizadoras,
+    });
+    setSalvandoConfig(false);
+  };
 
   if (!userIsAdmin) return null;
 
@@ -73,6 +111,116 @@ export default function AdminPage({
   return (
     <div style={{ padding: "30px 40px", maxWidth: "1400px", margin: "0 auto" }}>
       <h2 style={{ color: theme.text, margin: "0 0 24px", fontWeight: "800" }}>⚙️ Painel Administrativo</h2>
+
+      {/* CONFIGURAÇÃO DE AUTORIZADORES DE ESTAGIÁRIOS (EXCLUSIVO DONOS/ADMINS) */}
+      {isAdminOuDono(userRole) && (
+        <div style={{ ...styles.whiteCard, marginBottom: "24px", border: "1px solid rgba(245, 158, 11, 0.4)", boxShadow: "0 8px 30px rgba(245, 158, 11, 0.08)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+            <div style={styles.cardHeader}>
+              <span style={{ ...styles.dot, background: "#f59e0b" }}></span>
+              <span style={{ color: "#f59e0b", fontSize: "16px", fontWeight: "800" }}>
+                ⚙️ Permissões para Autorizar Estagiários (Tunagem de Performance)
+              </span>
+            </div>
+            <button
+              onClick={handleSalvarPermissoes}
+              disabled={salvandoConfig}
+              style={{
+                ...styles.btnPrimary,
+                width: "auto",
+                marginTop: 0,
+                padding: "8px 20px",
+                fontSize: "13px",
+                background: "linear-gradient(135deg, #d97706, #f59e0b)",
+                opacity: salvandoConfig ? 0.7 : 1,
+                cursor: salvandoConfig ? "not-allowed" : "pointer"
+              }}
+            >
+              {salvandoConfig ? "💾 Salvando..." : "💾 Salvar Permissões"}
+            </button>
+          </div>
+          <p style={{ color: theme.subtext, fontSize: "13px", marginTop: "-6px", marginBottom: "16px", lineHeight: "1.5" }}>
+            Defina quais níveis hierárquicos e atribuições especiais têm autorização para liberar serviços de <strong>Performance e Motor</strong> quando solicitados por <strong>Estagiários e Jovens Aprendizes</strong>. Mecânicos com ao menos uma opção marcada aparecerão no seletor de autorizadores.
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
+            {/* CARGOS HIERÁRQUICOS */}
+            <div style={{ background: theme.card2, padding: "16px", borderRadius: "12px", border: `1px solid ${theme.border}` }}>
+              <div style={{ fontSize: "12px", fontWeight: "800", color: "#f59e0b", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                🏛️ Por Nível Hierárquico
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {CARGOS_HIERARQUIA.map((c) => {
+                  const marcado = cargosAutorizadores.includes(c.value);
+                  return (
+                    <label
+                      key={c.value}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        cursor: "pointer",
+                        fontSize: "13px",
+                        padding: "8px 12px",
+                        borderRadius: "8px",
+                        background: marcado ? "rgba(245, 158, 11, 0.12)" : "transparent",
+                        border: `1px solid ${marcado ? "#f59e0b" : theme.border}`,
+                        color: theme.text,
+                        transition: "all 0.2s ease"
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={marcado}
+                        onChange={() => toggleCargoAutorizador(c.value)}
+                      />
+                      <span style={{ fontWeight: marcado ? "700" : "400" }}>{c.label}</span>
+                      <span style={{ fontSize: "11px", color: theme.subtext, marginLeft: "auto" }}>Nível {c.nivel}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ATRIBUIÇÕES ESPECIAIS */}
+            <div style={{ background: theme.card2, padding: "16px", borderRadius: "12px", border: `1px solid ${theme.border}` }}>
+              <div style={{ fontSize: "12px", fontWeight: "800", color: "#f59e0b", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                ⭐ Por Cargo Administrativo (Atribuições)
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {ATRIBUICOES_DISPONIVEIS.map((a) => {
+                  const marcado = atribuicoesAutorizadoras.includes(a.value);
+                  return (
+                    <label
+                      key={a.value}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        cursor: "pointer",
+                        fontSize: "13px",
+                        padding: "8px 12px",
+                        borderRadius: "8px",
+                        background: marcado ? "rgba(245, 158, 11, 0.12)" : "transparent",
+                        border: `1px solid ${marcado ? "#f59e0b" : theme.border}`,
+                        color: theme.text,
+                        transition: "all 0.2s ease"
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={marcado}
+                        onChange={() => toggleAtribuicaoAutorizadora(a.value)}
+                      />
+                      <span style={{ fontWeight: marcado ? "700" : "400" }}>{a.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: podeContratar ? "1fr 1fr" : "1fr", gap: "24px", marginBottom: "24px" }}>
         {/* AUTORIZAR MECÂNICO */}

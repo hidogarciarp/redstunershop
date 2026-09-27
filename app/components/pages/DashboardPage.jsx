@@ -80,11 +80,23 @@ export default function DashboardPage({
   tunagemRealtimeGlobal,
   logSelecionadoUuid: propLogSelecionadoUuid,
   setLogSelecionadoUuid: propSetLogSelecionadoUuid,
+  mecanicosAutorizadores = [],
+  autorizadorId = "",
+  setAutorizadorId = () => {},
+  tunagensEstagiarioAbertasCount = 0,
+  setPaginaAtual,
+  getLabelCargo,
 }) {
   const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
   const isBanido = !!banInfo;
   const avisoTopo = listaAvisos?.[0];
   const [avisoTopoOculto, setAvisoTopoOculto] = useState(false);
+
+  const roleBase = String(usuarioLogado?.role || "").split("|")[0].toLowerCase().trim();
+  const isEstagiario = roleBase === "estagiario" || roleBase === "jovem_aprendiz";
+  const temPerformance = Object.keys(servicosSelecionados || {}).some(
+    (id) => servicosSelecionados[id] && id !== "n1" && id !== "d1" && id !== "rd1"
+  );
 
   useEffect(() => {
     setAvisoTopoOculto(false);
@@ -639,6 +651,53 @@ export default function DashboardPage({
             )}
           </div>
 
+          {/* AVISO DE TUNAGENS EM ABERTO PARA ESTAGIÁRIOS */}
+          {tunagensEstagiarioAbertasCount > 0 && (
+            <div
+              style={{
+                background: "linear-gradient(135deg, rgba(234, 88, 12, 0.15), rgba(245, 158, 11, 0.12))",
+                border: "1px solid rgba(249, 115, 22, 0.5)",
+                borderRadius: "14px",
+                padding: "16px 20px",
+                marginBottom: "16px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "14px",
+                flexWrap: "wrap",
+                boxShadow: "0 8px 24px rgba(234, 88, 12, 0.12)"
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <span style={{ fontSize: "28px" }}>⚠️</span>
+                <div>
+                  <div style={{ fontWeight: "800", color: "#f97316", fontSize: "14px" }}>
+                    Você possui {tunagensEstagiarioAbertasCount} tunagem(ns) em veículo(s) de cliente pendente(s) de registro com foto!
+                  </div>
+                  <div style={{ fontSize: "12px", color: theme.subtext, marginTop: "2px" }}>
+                    Todo serviço em carro de cliente deve ter a ficha registrada e o comprovante anexado para resguardo do seguro da oficina.
+                  </div>
+                </div>
+              </div>
+              {typeof setPaginaAtual === "function" && (
+                <button
+                  onClick={() => setPaginaAtual("tunagens")}
+                  style={{
+                    ...styles.btnPrimary,
+                    width: "auto",
+                    marginTop: 0,
+                    padding: "8px 18px",
+                    fontSize: "12px",
+                    background: "linear-gradient(135deg, #d97706, #f59e0b)",
+                    whiteSpace: "nowrap"
+                  }}
+                >
+                  🔍 Ver Pendências
+                </button>
+              )}
+            </div>
+          )}
+
           {/* INFORMAÇÕES DO CLIENTE */}
           <div style={styles.whiteCard}>
             <div style={styles.cardHeader}>
@@ -737,13 +796,52 @@ export default function DashboardPage({
                 <input style={{ ...styles.input, opacity: 0.7 }} value={nomeMecanico} readOnly />
               </div>
               <div>
-                <label style={styles.miniLabel}>Autorizado Por</label>
-                <input
-                  style={styles.input}
-                  placeholder="(Opcional)"
-                  value={autorizadoPor}
-                  onChange={(e) => setAutorizadoPor(e.target.value)}
-                />
+                <label style={styles.miniLabel}>
+                  Autorizado Por {isEstagiario && temPerformance && <span style={{ color: "#ef4444" }}>*</span>}
+                </label>
+                {isEstagiario ? (
+                  <div>
+                    <select
+                      style={{
+                        ...styles.select,
+                        border: temPerformance && !autorizadoPor ? "1px solid #f97316" : styles.select.border,
+                        background: theme.card2,
+                        color: autorizadoPor ? theme.text : theme.subtext,
+                        width: "100%"
+                      }}
+                      value={autorizadorId}
+                      onChange={(e) => {
+                        const selId = e.target.value;
+                        setAutorizadorId(selId);
+                        const mec = (mecanicosAutorizadores || []).find((m) => String(m.id) === String(selId));
+                        if (mec) {
+                          setAutorizadoPor(`${mec.nome} (${mec.id})`);
+                        } else {
+                          setAutorizadoPor("");
+                        }
+                      }}
+                    >
+                      <option value="">Selecione o autorizador...</option>
+                      {(mecanicosAutorizadores || []).map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.nome} (ID: {m.id}) {typeof getLabelCargo === "function" ? `— ${getLabelCargo(m.role)}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {temPerformance && !autorizadoPor && (
+                      <span style={{ fontSize: "11px", color: "#f97316", display: "block", marginTop: "4px" }}>
+                        ⚠️ Obrigatório selecionar o autorizador para performance.
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <input
+                    style={styles.input}
+                    placeholder="(Opcional)"
+                    value={autorizadoPor}
+                    onChange={(e) => setAutorizadoPor(e.target.value)}
+                  />
+                )}
               </div>
             </div>
           </div>

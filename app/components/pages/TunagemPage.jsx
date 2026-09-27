@@ -65,21 +65,85 @@ export default function TunagemPage({
   toggleNotificarTodasTunagens,
   isAdminOuDono,
   logTunagemParaAbrir,
-  setLogTunagemParaAbrir
+  setLogTunagemParaAbrir,
+  listaFuncionarios = [],
 }) {
   const rolePrincipal = String(usuarioLogado?.role || "").split("|")[0].toLowerCase().trim();
   const acessoTotalCentral = ["gerente_rh", "gerente_geral", "dono", "admin"].includes(rolePrincipal);
+  const isEstagiario = rolePrincipal === "estagiario" || rolePrincipal === "jovem_aprendiz";
   const usuarioId = String(usuarioLogado?.id ?? "").trim();
   const isLogDoUsuario = (log) => usuarioId !== "" && String(log?.tecnico_id ?? "").trim() === usuarioId;
 
-  const [abaAtiva, setAbaAtiva] = useState(() => acessoTotalCentral ? "relatorio" : "logs"); // 'relatorio' | 'logs' | 'quadros' | 'importar'
+  const [abaAtiva, setAbaAtiva] = useState(() => acessoTotalCentral ? "relatorio" : "logs"); // 'relatorio' | 'logs' | 'quadros' | 'importar' | 'estagiarios_abertos'
   const [mecanicas, setMecanicas] = useState([]);
   const [vinculos, setVinculos] = useState([]);
   const [logsTunagem, setLogsTunagem] = useState([]);
   const [loading, setLoading] = useState(false);
 
+  // Lista de tunagens realizadas por estagiários em veículos de clientes que estão sem cobrança/foto registrada
+  const estagiariosAbertos = useMemo(() => {
+    if (!Array.isArray(logsTunagem) || logsTunagem.length === 0) return [];
+    
+    const idsEstagiarios = new Set(
+      (listaFuncionarios || [])
+        .filter((f) => {
+          const status = String(f.status || "ativo").toLowerCase();
+          if (status === "inativo" || status === "demitido" || status === "outros") return false;
+          if (f.oculto_hierarquia) return false;
+          const r = String(f.role || "").toLowerCase();
+          return r.includes("estagiario") || r.includes("jovem_aprendiz");
+        })
+        .map((f) => String(f.id))
+    );
+
+    return logsTunagem.filter((l) => {
+      const tecId = String(l.tecnico_id || "").trim();
+      const isTecEstagiario = idsEstagiarios.has(tecId) || (l.tecnico_nome && l.tecnico_nome.toLowerCase().includes("estagi"));
+      if (!isTecEstagiario) return false;
+
+      // Se o usuário logado for o próprio estagiário e não tiver acesso central, só vê os seus próprios
+      if (isEstagiario && !acessoTotalCentral && tecId !== usuarioId) return false;
+
+      // Veículo é de cliente (dono_id !== tecnico_id)
+      const donoId = String(l.dono_id || "").trim();
+      if (donoId && donoId === tecId) return false;
+
+      // Sem comprovante ou cobrado = false
+      const estaCobrado = Boolean(l.cobrado || l.foto_url);
+      return !estaCobrado;
+    });
+  }, [logsTunagem, listaFuncionarios, isEstagiario, acessoTotalCentral, usuarioId]);
+
+  const handleCobrarEstagiario = async (log) => {
+    const tecId = log.tecnico_id;
+    const tecNome = log.tecnico_nome || "Estagiário";
+    const veic = log.veiculo_nome || log.veiculo_modelo || "veículo";
+    const cliente = log.dono_nome || "cliente";
+    
+    const msg = `⚠️ Olá ${tecNome}, identificamos que você realizou um serviço de tunagem no veículo ${veic} do cliente ${cliente} e ainda não anexou o comprovante com foto no site. Por favor, registre o serviço para garantir o resguardo do seguro da mecânica!`;
+
+    const confirmar = window.confirm(`Deseja enviar uma notificação de cobrança para ${tecNome} (ID: ${tecId})?\n\n"${msg}"`);
+    if (!confirmar) return;
+
+    try {
+      await supabase.from("notificacoes").insert({
+        admin_id: usuarioLogado?.id || 1,
+        admin_nome: usuarioLogado?.nome || "Diretoria",
+        admin_id_real: usuarioLogado?.id || 1,
+        anonimo: false,
+        funcionario_id: Number(tecId),
+        funcionario_nome: tecNome,
+        mensagem: msg,
+        criado_em: new Date().toISOString()
+      });
+      alert(`✅ Notificação de cobrança enviada com sucesso para ${tecNome}!`);
+    } catch (e) {
+      alert("❌ Erro ao enviar notificação: " + e.message);
+    }
+  };
+
   useEffect(() => {
-    if (!acessoTotalCentral && abaAtiva !== "logs") setAbaAtiva("logs");
+    if (!acessoTotalCentral && abaAtiva !== "logs" && abaAtiva !== "estagiarios_abertos") setAbaAtiva("logs");
   }, [acessoTotalCentral, abaAtiva]);
 
   // Notificação Realtime de Nova Tunagem
@@ -458,9 +522,10 @@ export default function TunagemPage({
           { id: "relatorio", label: "📊 Relatório & Repasses", cor: "#ec4899" },
           { id: "ficha", label: "⚡ Ficha Rápida / Orçamento", cor: "#f59e0b" },
           { id: "logs", label: `🚗 Logs de Tunagem (${logsTunagem.length})`, cor: "#8b5cf6" },
+          { id: "estagiarios_abertos", label: `⚠️ Estagiários em Aberto (${estagiariosAbertos.length})`, cor: "#f97316" },
           { id: "quadros", label: `👥 Quadros de Mecânicos (${vinculos.filter((v) => !v.data_fim).length} ativos)`, cor: "#3b82f6" },
           { id: "importar", label: "📥 Importar JSON / Discord", cor: "#10b981" }
-        ].filter((aba) => acessoTotalCentral || aba.id === "logs").map((aba) => {
+        ].filter((aba) => acessoTotalCentral || aba.id === "logs" || (aba.id === "estagiarios_abertos" && isEstagiario)).map((aba) => {
           const ativo = abaAtiva === aba.id;
           return (
             <button
@@ -927,6 +992,124 @@ export default function TunagemPage({
                   })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* ABA: ESTAGIÁRIOS EM ABERTO */}
+      {/* ========================================================================= */}
+      {abaAtiva === "estagiarios_abertos" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* Banner Explicativo */}
+          <div style={{ background: theme.card, border: `1px solid rgba(249, 115, 22, 0.4)`, borderRadius: "16px", padding: "18px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", flexWrap: "wrap", boxShadow: "0 8px 30px rgba(249, 115, 22, 0.08)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+              <span style={{ fontSize: "32px" }}>⚠️</span>
+              <div>
+                <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: "800", color: "#f97316" }}>
+                  Serviços de Estagiários sem Registro Fotográfico ({estagiariosAbertos.length})
+                </h3>
+                <p style={{ margin: 0, fontSize: "13px", color: theme.subtext, lineHeight: "1.4" }}>
+                  Estes serviços foram realizados in-game em <strong>veículos de clientes</strong> por estagiários, mas ainda <strong>não possuem o comprovante com foto</strong> enviado no site.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Tabela de Pendências */}
+          <div style={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: "16px", padding: "16px", overflowX: "auto" }}>
+            {estagiariosAbertos.length === 0 ? (
+              <div style={{ padding: "40px", textAlign: "center", color: theme.subtext }}>
+                <span style={{ fontSize: "40px", display: "block", marginBottom: "10px" }}>🎉</span>
+                <strong style={{ color: "#22c55e", fontSize: "16px", display: "block" }}>Tudo em dia!</strong>
+                Nenhum serviço de estagiário pendente de foto ou cobrança no momento.
+              </div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr style={{ background: theme.card2, color: theme.subtext, textAlign: "left" }}>
+                    <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontWeight: "700" }}>DATA / HORA</th>
+                    <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontWeight: "700" }}>ESTAGIÁRIO</th>
+                    <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontWeight: "700" }}>CLIENTE</th>
+                    <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontWeight: "700" }}>VEÍCULO</th>
+                    <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontWeight: "700" }}>CUSTO PAINEL</th>
+                    <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontWeight: "700", textAlign: "center" }}>AÇÕES</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {estagiariosAbertos.map((log, idx) => {
+                    const tecNome = log.tecnico_nome || "Estagiário";
+                    const tecId = log.tecnico_id;
+                    const donoNome = log.dono_nome || "Cliente";
+                    const donoId = log.dono_id;
+                    const veic = log.veiculo_nome || log.veiculo_modelo || "Veículo";
+                    const placa = log.placa || "S/ Placa";
+                    const valorPago = Number(log.valor_pago || 0);
+
+                    return (
+                      <tr key={log.uuid || idx} style={{ borderBottom: `1px solid ${theme.border}`, background: idx % 2 === 0 ? "transparent" : theme.card2 }}>
+                        <td style={{ padding: "12px 14px", color: theme.text, whiteSpace: "nowrap" }}>
+                          <div>{log.data || "—"}</div>
+                          <div style={{ fontSize: "11px", color: theme.subtext }}>{log.hora || ""}</div>
+                        </td>
+                        <td style={{ padding: "12px 14px", color: theme.text }}>
+                          <strong style={{ color: "#f59e0b" }}>{tecNome}</strong>
+                          <div style={{ fontSize: "11px", color: theme.subtext }}>ID: {tecId}</div>
+                        </td>
+                        <td style={{ padding: "12px 14px", color: theme.text }}>
+                          <div>{donoNome}</div>
+                          <div style={{ fontSize: "11px", color: theme.subtext }}>ID: {donoId}</div>
+                        </td>
+                        <td style={{ padding: "12px 14px", color: theme.text }}>
+                          <strong>{veic}</strong>
+                          <div style={{ fontSize: "11px", color: theme.subtext }}>Placa: {placa}</div>
+                        </td>
+                        <td style={{ padding: "12px 14px", color: "#22c55e", fontWeight: "700" }}>
+                          R$ {valorPago.toLocaleString("pt-BR")}
+                        </td>
+                        <td style={{ padding: "12px 14px", textAlign: "center" }}>
+                          <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
+                            {acessoTotalCentral && (
+                              <button
+                                onClick={() => handleCobrarEstagiario(log)}
+                                style={{
+                                  background: "linear-gradient(135deg, #d97706, #f59e0b)",
+                                  color: "#fff",
+                                  border: "none",
+                                  padding: "6px 12px",
+                                  borderRadius: "8px",
+                                  fontSize: "11px",
+                                  fontWeight: "700",
+                                  cursor: "pointer"
+                                }}
+                                title="Enviar notificação cobrando o comprovante com foto"
+                              >
+                                🔔 Cobrar Registro
+                              </button>
+                            )}
+                            <button
+                              onClick={() => setModalLogDetalhe(log)}
+                              style={{
+                                background: theme.card2,
+                                border: `1px solid ${theme.border}`,
+                                color: theme.text,
+                                padding: "6px 12px",
+                                borderRadius: "8px",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                cursor: "pointer"
+                              }}
+                            >
+                              🔍 Ver Detalhes
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       )}

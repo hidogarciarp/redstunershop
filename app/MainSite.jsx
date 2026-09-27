@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { supabase } from "./utils/supabaseClient";
 import { CARGOS_HIERARQUIA, ATRIBUICOES_DISPONIVEIS, TABELA_PRECOS, REGRAS_PRECOS, CURSOS_OBRIGATORIOS } from "./utils/constants";
 import {
@@ -220,6 +220,12 @@ export function MainSite({ isV2 = true } = {}) {
   const [passaporte, setPassaporte] = useState("");
   const [nomeMecanico, setNomeMecanico] = useState("");
   const [autorizadoPor, setAutorizadoPor] = useState("");
+  const [autorizadorId, setAutorizadorId] = useState("");
+  const [configAutorizadores, setConfigAutorizadores] = useState({
+    cargos: ["mecanico_senior", "supervisor", "gerente", "gerente_rh", "gerente_geral", "dono", "admin"],
+    atribuicoes: ["resp_tunagem"]
+  });
+  const [tunagensEstagiarioAbertasCount, setTunagensEstagiarioAbertasCount] = useState(0);
   const [gastoCliente, setGastoCliente] = useState(0);
   const [valorDigitadoEstetica, setValorDigitadoEstetica] = useState(0);
   const [arquivoImagem, setArquivoImagem] = useState(null);
@@ -720,6 +726,7 @@ export function MainSite({ isV2 = true } = {}) {
     setCliente("");
     setPassaporte("");
     setAutorizadoPor("");
+    setAutorizadorId("");
     setValorDigitadoEstetica(0);
     setArquivoImagem(null);
     setImagemPreview(null);
@@ -924,6 +931,196 @@ export function MainSite({ isV2 = true } = {}) {
     const novaLista = listaAvisos.map(q => q.id === avisoSendoEditado.id ? avisoSendoEditado : q);
     salvarQuadroAvisos(novaLista);
     setAvisoSendoEditado(null);
+  };
+
+  const carregarConfigAutorizadores = async () => {
+    try {
+      const { data, error } = await supabase.from("configuracoes").select("canais_bot").eq("id", 1).maybeSingle();
+      if (error) return;
+      if (data && Array.isArray(data.canais_bot)) {
+        const item = data.canais_bot.find((c) => c && c.id === "autorizadores_estagiario");
+        if (item) {
+          setConfigAutorizadores({
+            cargos: Array.isArray(item.cargos) ? item.cargos : ["mecanico_senior", "supervisor", "gerente", "gerente_rh", "gerente_geral", "dono", "admin"],
+            atribuicoes: Array.isArray(item.atribuicoes) ? item.atribuicoes : ["resp_tunagem"]
+          });
+        }
+      }
+    } catch (err) {
+      console.warn("Erro ao carregar configAutorizadores:", err);
+    }
+  };
+
+  const salvarConfigAutorizadores = async (novaConfig) => {
+    try {
+      const { data } = await supabase.from("configuracoes").select("canais_bot").eq("id", 1).maybeSingle();
+      let canaisAtuais = (data && Array.isArray(data.canais_bot)) ? data.canais_bot : [];
+      const outrosCanais = canaisAtuais.filter((c) => c && c.id !== "autorizadores_estagiario");
+      const canaisAtualizados = [
+        ...outrosCanais,
+        {
+          id: "autorizadores_estagiario",
+          cargos: novaConfig.cargos,
+          atribuicoes: novaConfig.atribuicoes
+        }
+      ];
+
+      const { error } = await supabase.from("configuracoes").upsert({ id: 1, canais_bot: canaisAtualizados });
+      if (error) {
+        alert("❌ Erro ao salvar permissões de autorizadores: " + error.message);
+      } else {
+        setConfigAutorizadores(novaConfig);
+        alert("✅ Permissões de autorização salvas com sucesso!");
+      }
+    } catch (err) {
+      console.error("Erro ao salvar configAutorizadores:", err);
+      alert("❌ Erro inesperado ao salvar: " + err.message);
+    }
+  };
+
+  const mecanicosAutorizadores = useMemo(() => {
+    if (!listaFuncionarios || !Array.isArray(listaFuncionarios)) return [];
+    const cargosPermitidos = configAutorizadores?.cargos || ["mecanico_senior", "supervisor", "gerente", "gerente_rh", "gerente_geral", "dono", "admin"];
+    const atribuicoesPermitidas = configAutorizadores?.atribuicoes || ["resp_tunagem"];
+
+    return listaFuncionarios.filter((func) => {
+      // Ignora usuários inativos, demitidos, outros (staff, testes, etc.) e ocultos na hierarquia
+      const status = String(func.status || "ativo").toLowerCase();
+      if (status === "inativo" || status === "demitido" || status === "outros") return false;
+      if (func.oculto_hierarquia) return false;
+
+      const roleBase = getPrimaryRole(func.role);
+      const atribs = getAtribuicoes(func.role);
+      const temCargo = cargosPermitidos.includes(roleBase);
+      const temAtrib = atribs.some((a) => atribuicoesPermitidas.includes(a));
+      const isMaster = isAdminOuDono(func.role);
+      return temCargo || temAtrib || isMaster;
+    });
+  }, [listaFuncionarios, configAutorizadores]);
+
+  const buscarTunagensEstagiarioAbertas = async () => {
+    if (!usuarioLogado?.id) return;
+    const roleBase = String(usuarioLogado.role || "").split("|")[0].toLowerCase().trim();
+    if (roleBase !== "estagiario" && roleBase !== "jovem_aprendiz") {
+      setTunagensEstagiarioAbertasCount(0);
+      return;
+    }
+    try {
+      const uid = String(usuarioLogado.id).trim();
+      let { data, error } = await supabase
+        .from("logs_tunagem_reds")
+        .select("dono_id, tecnico_id, cobrado, foto_url")
+        .eq("tecnico_id", uid)
+        .eq("cobrado", false)
+        .is("foto_url", null)
+        .limit(200);
+
+      if (error || !data || data.length === 0) {
+        const resFallback = await supabase
+          .from("logs_tunagem")
+          .select("dono_id, tecnico_id, cobrado, foto_url")
+          .eq("mechanic_id", "reds")
+          .eq("tecnico_id", uid)
+          .eq("cobrado", false)
+          .is("foto_url", null)
+          .limit(200);
+        if (resFallback.data) data = resFallback.data;
+      }
+
+      if (data && Array.isArray(data)) {
+        const pendentes = data.filter((item) => String(item.dono_id ?? "").trim() !== uid);
+        setTunagensEstagiarioAbertasCount(pendentes.length);
+      } else {
+        setTunagensEstagiarioAbertasCount(0);
+      }
+    } catch (e) {
+      console.warn("Erro ao buscar tunagens abertas do estagiário:", e);
+      setTunagensEstagiarioAbertasCount(0);
+    }
+  };
+
+  const handleEnviarFeedbackAuditoria = async (estagiarioId, estagiarioNome, texto, auditData) => {
+    try {
+      if (!estagiarioId || !texto?.trim()) return;
+
+      const feedbackPayload = {
+        autorizador_id: usuarioLogado?.id,
+        autorizador_nome: usuarioLogado?.nome,
+        feedback: texto.trim(),
+        servico: {
+          veiculo: auditData?.veiculo || "Veículo de Cliente",
+          cliente_nome: auditData?.cliente_nome || "Não informado",
+          cliente_id: auditData?.cliente_id || "N/A",
+          pecas: auditData?.pecas || "Performance / Motor",
+          valor_total: auditData?.valor_total || 0,
+          foto_url: auditData?.foto_url || null,
+          link_discord: auditData?.link_discord || null,
+          detalhes: auditData?.detalhes || "",
+          data_hora: auditData?.data_hora || new Date().toISOString()
+        }
+      };
+
+      const { error } = await supabase.from("notificacoes").insert({
+        admin_id: usuarioLogado?.id,
+        admin_nome: usuarioLogado?.nome,
+        admin_id_real: usuarioLogado?.id,
+        anonimo: false,
+        funcionario_id: estagiarioId,
+        funcionario_nome: estagiarioNome || "Estagiário",
+        mensagem: "[FEEDBACK_AUDITORIA] " + JSON.stringify(feedbackPayload),
+        criado_em: new Date().toISOString(),
+      });
+      if (error) {
+        alert("❌ Erro ao enviar feedback: " + error.message);
+      } else {
+        alert("✅ Feedback de orientação enviado diretamente para o estagiário!");
+      }
+    } catch (err) {
+      console.error("Erro ao enviar feedback de auditoria:", err);
+      alert("❌ Erro ao enviar feedback.");
+    }
+  };
+
+  const handleNaoAutorizeiAuditoria = async (auditData) => {
+    try {
+      if (!auditData) return;
+      const donosEAdmins = (listaFuncionarios || []).filter((f) => {
+        const status = String(f.status || "ativo").toLowerCase();
+        if (status === "inativo" || status === "demitido" || status === "outros") return false;
+        if (f.oculto_hierarquia) return false;
+        return isAdminOuDono(f.role) || getNivel(f.role) >= 7;
+      });
+
+      const grupoId = `grupo_auditoria_${Date.now()}_${auditData.estagiario_id || "s"}`;
+      const corpoAlerta = `🚨 ALERTA DE SEGURANÇA (AUDITORIA DE TUNAGEM)\n\nO mecânico ${usuarioLogado?.nome} (ID: ${usuarioLogado?.id}) DECLAROU QUE NÃO AUTORIZOU o seguinte serviço realizado pelo estagiário ${auditData.estagiario_nome} (ID: ${auditData.estagiario_id}):\n\n• Veículo: ${auditData.veiculo || "Não informado"}\n• Cliente: ${auditData.cliente_nome || "Cliente"} (ID: ${auditData.cliente_id || "N/A"})\n• Peças: ${auditData.pecas || "Performance"}\n• Valor: R$ ${Number(auditData.valor_total || 0).toLocaleString("pt-BR")}\n• Foto Comprovante: ${auditData.foto_url || "Nenhuma foto anexada"}\n• Data: ${auditData.data_hora ? new Date(auditData.data_hora).toLocaleString("pt-BR") : new Date().toLocaleString("pt-BR")}`;
+      const mensagemAlerta = `[ALERTA_GRUPO:${grupoId}] ` + corpoAlerta;
+
+      const registros = donosEAdmins.map((dono) => ({
+        admin_id: usuarioLogado?.id,
+        admin_nome: "🚨 ALERTA DO SISTEMA",
+        admin_id_real: usuarioLogado?.id,
+        anonimo: false,
+        funcionario_id: dono.id,
+        funcionario_nome: dono.nome,
+        mensagem: mensagemAlerta,
+        criado_em: new Date().toISOString(),
+      }));
+
+      if (registros.length > 0) {
+        const { error } = await supabase.from("notificacoes").insert(registros);
+        if (error) {
+          console.error("Erro ao notificar donos:", error);
+          alert("❌ Erro ao alertar a diretoria: " + error.message);
+        } else {
+          alert("🚨 Alerta de não autorização enviado com sucesso para a diretoria/donos!");
+        }
+      } else {
+        alert("🚨 Alerta registrado, mas nenhum dono ativo foi encontrado para receber a notificação.");
+      }
+    } catch (err) {
+      console.error("Erro ao registrar não autorização:", err);
+      alert("❌ Erro ao enviar alerta para a diretoria.");
+    }
   };
 
   const buscarUsuarios = async () => {
@@ -1719,8 +1916,54 @@ export function MainSite({ isV2 = true } = {}) {
         .order("criado_em", { ascending: true })
         .limit(1)
         .maybeSingle();
+
+      if (!error && data) {
+        // Se for um alerta de segurança broadcast enviado para os donos
+        const msg = data.mensagem || "";
+        const isAlertaSeguranca = msg.includes("🚨 ALERTA DE SEGURANÇA") || msg.includes("[ALERTA_GRUPO:");
+        if (isAlertaSeguranca) {
+          let jaLido = null;
+          const matchGrupo = msg.match(/\[ALERTA_GRUPO:([^\]]+)\]/);
+          if (matchGrupo && matchGrupo[1]) {
+            const { data: checkGrupo } = await supabase
+              .from("notificacoes")
+              .select("id, lido_em")
+              .ilike("mensagem", `%[ALERTA_GRUPO:${matchGrupo[1]}]%`)
+              .not("lido_em", "is", null)
+              .limit(1);
+            if (checkGrupo && checkGrupo.length > 0) jaLido = checkGrupo[0];
+          }
+
+          if (!jaLido) {
+            const { data: checkMsg } = await supabase
+              .from("notificacoes")
+              .select("id, lido_em")
+              .eq("mensagem", msg)
+              .not("lido_em", "is", null)
+              .limit(1);
+            if (checkMsg && checkMsg.length > 0) jaLido = checkMsg[0];
+          }
+
+          // Se qualquer outro dono/diretor já confirmou este alerta, dá baixa automática e não abre o modal na tela deste usuário!
+          if (jaLido) {
+            await supabase
+              .from("notificacoes")
+              .update({ lido_em: jaLido.lido_em || new Date().toISOString() })
+              .eq("id", data.id);
+            return buscarNotificacaoPendente();
+          }
+        }
+      }
+
       if (!error) {
-        setNotificacaoPendente(data || null);
+        setNotificacaoPendente((prev) => {
+          if (!data && !prev) return null;
+          if (!data && prev) return null;
+          if (data && prev && data.id === prev.id && data.lido_em === prev.lido_em && data.mensagem === prev.mensagem) {
+            return prev;
+          }
+          return data || null;
+        });
       }
     } catch (err) {
       console.error("Erro ao buscar notificacao pendente:", err);
@@ -1729,7 +1972,31 @@ export function MainSite({ isV2 = true } = {}) {
 
   const confirmarLeituraNotificacao = async () => {
     if (!notificacaoPendente) return;
-    await supabase.from("notificacoes").update({ lido_em: new Date().toISOString() }).eq("id", notificacaoPendente.id);
+    const nowIso = new Date().toISOString();
+    await supabase.from("notificacoes").update({ lido_em: nowIso }).eq("id", notificacaoPendente.id);
+
+    // Se for alerta de segurança/rejeição enviado em grupo, uma única confirmação encerra o alerta para todos os outros donos
+    const msg = notificacaoPendente.mensagem || "";
+    if (msg.includes("🚨 ALERTA DE SEGURANÇA") || msg.includes("[ALERTA_GRUPO:")) {
+      try {
+        const matchGrupo = msg.match(/\[ALERTA_GRUPO:([^\]]+)\]/);
+        if (matchGrupo && matchGrupo[1]) {
+          await supabase
+            .from("notificacoes")
+            .update({ lido_em: nowIso })
+            .ilike("mensagem", `%[ALERTA_GRUPO:${matchGrupo[1]}]%`)
+            .is("lido_em", null);
+        }
+        await supabase
+          .from("notificacoes")
+          .update({ lido_em: nowIso })
+          .eq("mensagem", msg)
+          .is("lido_em", null);
+      } catch (errSync) {
+        console.error("Erro ao sincronizar baixa do alerta com outros donos:", errSync);
+      }
+    }
+
     setNotificacaoPendente(null);
     setTimeout(() => buscarNotificacaoPendente(), 500);
   };
@@ -3276,15 +3543,15 @@ export function MainSite({ isV2 = true } = {}) {
       const temEstetica = Number(valorDigitadoEstetica) > 0 || camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca;
       const temAlgumaPeca = Object.values(servicosSelecionados).some((v) => v === true);
       const total = calcularTotal();
-      if (cliente && passaporte) await salvarCliente(total);
+
 
       const soGuincho = temGuincho && !temEstetica && !temAlgumaPeca;
       const temItensVenda = servicosSelecionados["n1"] || servicosSelecionados["d1"] || servicosSelecionados["rd1"];
       const temPerformance = Object.keys(servicosSelecionados).some((id) => servicosSelecionados[id] && id !== "n1" && id !== "d1" && id !== "rd1");
 
       const roleBase = usuarioLogado?.role?.split("|")[0]?.toLowerCase()?.trim();
-      if ((roleBase === "estagiario" || roleBase === "jovem_aprendiz") && temPerformance && !autorizadoPor.trim()) {
-        alert("⚠️ Estagiários e Jovens Aprendizes precisam preencher quem liberou a tunagem de Performance no campo 'Autorizado Por'!");
+      if ((roleBase === "estagiario" || roleBase === "jovem_aprendiz") && temPerformance && (!autorizadoPor.trim() || !autorizadorId)) {
+        alert("⚠️ Estagiários e Jovens Aprendizes precisam selecionar quem autorizou a tunagem de Performance no campo 'Autorizado Por'!");
         return;
       }
 
@@ -3402,6 +3669,7 @@ export function MainSite({ isV2 = true } = {}) {
 
       let response = { ok: true };
       let linkDiscord = (imagemPreview && String(imagemPreview).startsWith("http")) ? imagemPreview : "";
+      let urlImagemDiretaFinal = (imagemPreview && String(imagemPreview).startsWith("http")) ? imagemPreview : null;
 
       if (webhookDestino) {
         const separador = webhookDestino.includes("?") ? "&" : "?";
@@ -3414,7 +3682,13 @@ export function MainSite({ isV2 = true } = {}) {
             const chanId = data.channel_id || (webhookDestino.includes("/webhooks/") ? webhookDestino.split("/webhooks/")[1]?.split("/")[0] : null);
             const gldId = data.guild_id || "1486119705814106307";
 
-            const urlImagemDireta = data.embeds?.[0]?.image?.url || data.attachments?.[0]?.url || (imagemPreview && String(imagemPreview).startsWith("http") ? imagemPreview : null);
+            const attachUrl = data.attachments?.[0]?.url || data.attachments?.[0]?.proxy_url;
+            const embedImg = data.embeds?.[0]?.image?.url;
+            const validEmbedImg = (embedImg && !embedImg.startsWith("attachment://")) ? embedImg : null;
+            const urlImagemDireta = attachUrl || validEmbedImg || (imagemPreview && String(imagemPreview).startsWith("http") ? imagemPreview : null);
+            if (urlImagemDireta) {
+              urlImagemDiretaFinal = urlImagemDireta;
+            }
 
             if (msgId && chanId) {
               linkDiscord = `https://discord.com/channels/${gldId}/${chanId}/${msgId}`;
@@ -3422,11 +3696,29 @@ export function MainSite({ isV2 = true } = {}) {
               linkDiscord = urlImagemDireta;
             }
 
-            // Atualiza foto_url no log de tunagem caso este serviço tenha sido pré-preenchido
-            if (logSelecionadoUuid && urlImagemDireta) {
+            // Atualiza foto_url no log de tunagem caso tenha sido pré-preenchido OU por auto-match recente do mesmo mecânico/cliente
+            let targetUuid = logSelecionadoUuid;
+            if (!targetUuid && passaporte && usuarioLogado?.id) {
               try {
-                await supabase.from("logs_tunagem_reds").update({ foto_url: urlImagemDireta, cobrado: true }).eq("uuid", logSelecionadoUuid);
-                await supabase.from("logs_tunagem").update({ foto_url: urlImagemDireta, cobrado: true }).eq("uuid", logSelecionadoUuid);
+                const { data: matchLog } = await supabase
+                  .from("logs_tunagem_reds")
+                  .select("uuid")
+                  .eq("tecnico_id", String(usuarioLogado.id))
+                  .eq("dono_id", String(passaporte))
+                  .eq("cobrado", false)
+                  .order("timestampz", { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                if (matchLog?.uuid) {
+                  targetUuid = matchLog.uuid;
+                }
+              } catch (_) {}
+            }
+
+            if (targetUuid && urlImagemDireta) {
+              try {
+                await supabase.from("logs_tunagem_reds").update({ foto_url: urlImagemDireta, cobrado: true }).eq("uuid", targetUuid);
+                await supabase.from("logs_tunagem").update({ foto_url: urlImagemDireta, cobrado: true }).eq("uuid", targetUuid);
               } catch (errFoto) {
                 console.warn("Aviso ao vincular foto_url ao log de tunagem:", errFoto);
               }
@@ -3470,6 +3762,8 @@ export function MainSite({ isV2 = true } = {}) {
           detalhesServico = det.length > 0 ? det.join(", ") : (temPerformance ? "Performance" : "Estética Visual");
         }
 
+        if (cliente && passaporte) await salvarCliente(total);
+
         if (soGuincho) await salvarServico("guincho", total, linkDiscord, detalhesServico);
         else if (temPerformance) await salvarServico("tunagem", total, linkDiscord, detalhesServico);
         else if (temEstetica) await salvarServico("estetica", total, linkDiscord, detalhesServico);
@@ -3480,9 +3774,51 @@ export function MainSite({ isV2 = true } = {}) {
           await salvarVendaNitro(passaporte, cliente, total);
         }
 
+        // Se for estagiário realizando performance e apontou autorizador, gerar notificação interativa de auditoria
+        if ((roleBase === "estagiario" || roleBase === "jovem_aprendiz") && temPerformance && autorizadorId) {
+          try {
+            let veiculoIdentificado = "Veículo de Cliente";
+            if (logSelecionadoUuid) {
+              const { data: logCar } = await supabase.from("logs_tunagem_reds").select("veiculo_nome, veiculo_modelo, placa").eq("uuid", logSelecionadoUuid).maybeSingle();
+              if (logCar) {
+                veiculoIdentificado = `${logCar.veiculo_nome || logCar.veiculo_modelo || "Veículo"} (Placa: ${logCar.placa || "S/ Placa"})`;
+              }
+            }
+            const auditPayload = {
+              estagiario_id: usuarioLogado?.id,
+              estagiario_nome: usuarioLogado?.nome,
+              veiculo: veiculoIdentificado,
+              cliente_nome: cliente || "Não informado",
+              cliente_id: passaporte || "N/A",
+              pecas: nomesServicos || "Performance / Motor",
+              valor_total: total,
+              foto_url: urlImagemDiretaFinal || null,
+              link_discord: linkDiscord || null,
+              detalhes: detalhesServico,
+              data_hora: new Date().toISOString()
+            };
+
+            const nomeAutorizador = (mecanicosAutorizadores || []).find((m) => String(m.id) === String(autorizadorId))?.nome || "Autorizador";
+
+            await supabase.from("notificacoes").insert({
+              admin_id: usuarioLogado?.id,
+              admin_nome: usuarioLogado?.nome,
+              admin_id_real: usuarioLogado?.id,
+              anonimo: false,
+              funcionario_id: autorizadorId,
+              funcionario_nome: nomeAutorizador,
+              mensagem: "[AUDITORIA_ESTAGIARIO] " + JSON.stringify(auditPayload),
+              criado_em: new Date().toISOString(),
+            });
+          } catch (errAuditoria) {
+            console.error("Erro ao enviar auditoria para autorizador:", errAuditoria);
+          }
+        }
+
+        limparFormulario();
+        setSalvandoServico(false);
         buscarNotificacaoPendente();
         alert(temReboque ? "✅ Apreensão / Reboque registrado com sucesso!" : "✅ Serviço registrado com sucesso!");
-        limparFormulario();
       }
 
       if (temItensVenda && WEBHOOK_VENDAS) {
@@ -3511,6 +3847,7 @@ export function MainSite({ isV2 = true } = {}) {
     }
 
     buscarQuadroAvisos();
+    carregarConfigAutorizadores();
     const restaurarSessao = async () => {
       const salvo = localStorage.getItem("reds_session_user");
       const pag = localStorage.getItem("reds_session_page");
@@ -3702,12 +4039,15 @@ export function MainSite({ isV2 = true } = {}) {
   useEffect(() => {
     if (usuarioLogado && paginaAtual !== "login") {
       buscarNotificacaoPendente();
+      buscarTunagensEstagiarioAbertas();
     }
   }, [paginaAtual]);
 
   useEffect(() => {
     if (usuarioLogado) {
       buscarTotalHoras(); buscarHistoricoPonto(); verificarPontoAtivo(); buscarRanking(); buscarEmServico(); buscarNotificacaoPendente();
+      buscarListaFuncionarios();
+      buscarTunagensEstagiarioAbertas();
     }
   }, [usuarioLogado]);
 
@@ -3808,28 +4148,34 @@ export function MainSite({ isV2 = true } = {}) {
       .channel(canalNome)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "notificacoes" },
+        { event: "*", schema: "public", table: "notificacoes" },
         (payload) => {
-          const nova = payload.new;
-          if (!nova) return;
-          if (String(nova.funcionario_id).trim() === uidStr && !nova.lido_em) {
-            setNotificacaoPendente(nova);
-            try {
-              const AudioCtx = window.AudioContext || window.webkitAudioContext;
-              if (AudioCtx) {
-                const ctx = new AudioCtx();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.frequency.setValueAtTime(587.33, ctx.currentTime);
-                osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
-                gain.gain.setValueAtTime(0.25, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
-                osc.start();
-                osc.stop(ctx.currentTime + 0.35);
-              }
-            } catch (_) {}
+          const reg = payload.new;
+          if (!reg) return;
+
+          if (payload.eventType === "INSERT") {
+            if (String(reg.funcionario_id).trim() === uidStr && !reg.lido_em) {
+              try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (AudioCtx) {
+                  const ctx = new AudioCtx();
+                  const osc = ctx.createOscillator();
+                  const gain = ctx.createGain();
+                  osc.connect(gain);
+                  gain.connect(ctx.destination);
+                  osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                  osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+                  gain.gain.setValueAtTime(0.25, ctx.currentTime);
+                  gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+                  osc.start();
+                  osc.stop(ctx.currentTime + 0.35);
+                }
+              } catch (_) {}
+              buscarNotificacaoPendente();
+            }
+          } else if (payload.eventType === "UPDATE") {
+            // Se qualquer notificação foi atualizada/lida, recalcula pendências para fechar modal instantaneamente em outras telas
+            buscarNotificacaoPendente();
           }
         }
       )
@@ -5319,6 +5665,8 @@ export function MainSite({ isV2 = true } = {}) {
       formatarDataHora={formatarDataHora}
       renderMensagemComLinks={renderMensagemComLinks}
       confirmarLeituraNotificacao={confirmarLeituraNotificacao}
+      onEnviarFeedback={handleEnviarFeedbackAuditoria}
+      onNaoAutorizei={handleNaoAutorizeiAuditoria}
     />
   );
 
@@ -5781,6 +6129,8 @@ export function MainSite({ isV2 = true } = {}) {
         atualizarComprovanteDossie={atualizarComprovanteDossie}
         AppHeaderBar={AppHeaderBar}
         AppModalNotificacao={AppModalNotificacao}
+        isDarkMode={isDarkMode}
+        renderMensagemComLinks={renderMensagemComLinks}
       />
     );
   }
@@ -5831,6 +6181,8 @@ export function MainSite({ isV2 = true } = {}) {
         apagarNotificacao={apagarNotificacao}
         AppHeaderBar={AppHeaderBar}
         AppModalNotificacao={AppModalNotificacao}
+        isDarkMode={isDarkMode}
+        renderMensagemComLinks={renderMensagemComLinks}
       />
     );
   }
@@ -5925,6 +6277,7 @@ export function MainSite({ isV2 = true } = {}) {
             isAdminOuDono={isAdminOuDono}
             logTunagemParaAbrir={logTunagemParaAbrir}
             setLogTunagemParaAbrir={setLogTunagemParaAbrir}
+            listaFuncionarios={listaFuncionarios}
           />
         </main>
       </div>
@@ -6301,6 +6654,8 @@ export function MainSite({ isV2 = true } = {}) {
               setPeriodoRankingClientes={setPeriodoRankingClientes}
               rankingClientes={rankingClientes}
               SeletorPeriodo={SeletorPeriodo}
+              configAutorizadores={configAutorizadores}
+              salvarConfigAutorizadores={salvarConfigAutorizadores}
             />
           ) : (
             <div style={{ padding: "40px", textAlign: "center", color: theme.text }}>
@@ -6320,6 +6675,12 @@ export function MainSite({ isV2 = true } = {}) {
             setNomeMecanico={setNomeMecanico}
             autorizadoPor={autorizadoPor}
             setAutorizadoPor={setAutorizadoPor}
+            mecanicosAutorizadores={mecanicosAutorizadores}
+            autorizadorId={autorizadorId}
+            setAutorizadorId={setAutorizadorId}
+            tunagensEstagiarioAbertasCount={tunagensEstagiarioAbertasCount}
+            setPaginaAtual={setPaginaAtual}
+            getLabelCargo={getLabelCargo}
             camaleao1={camaleao1}
             setCamaleao1={setCamaleao1}
             camaleao2={camaleao2}
