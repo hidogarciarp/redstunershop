@@ -1088,6 +1088,7 @@ export function MainSite({ isV2 = true } = {}) {
         const status = String(f.status || "ativo").toLowerCase();
         if (status === "inativo" || status === "demitido" || status === "outros") return false;
         if (f.oculto_hierarquia) return false;
+        if (String(f.id).trim() === String(usuarioLogado?.id).trim()) return false;
         return isAdminOuDono(f.role) || getNivel(f.role) >= 7;
       });
 
@@ -4689,7 +4690,7 @@ export function MainSite({ isV2 = true } = {}) {
 
     return (
       <div style={styles.dashContainer}>
-        <ModalNotificacao /><AppHeaderBar />
+        <AppModalNotificacao /><AppHeaderBar />
         <div style={{ padding: "30px 40px" }}>
           <div style={styles.whiteCard}>
             <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "24px" }}>
@@ -5161,7 +5162,7 @@ export function MainSite({ isV2 = true } = {}) {
 
     return (
       <div style={styles.dashContainer}>
-        <ModalNotificacao /><AppHeaderBar />
+        <AppModalNotificacao /><AppHeaderBar />
         <div style={{ padding: "30px 40px" }}>
           <div style={styles.whiteCard}>
             <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "24px", flexWrap: "wrap" }}>
@@ -6528,7 +6529,7 @@ export function MainSite({ isV2 = true } = {}) {
   return (
     <div style={styles.dashContainer}>
 
-      <ModalNotificacao />
+      <AppModalNotificacao />
 
       <AppHeaderBar />
 
