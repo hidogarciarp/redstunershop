@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 
 function calcularDuracao(hIni, hFim) {
@@ -19,6 +19,90 @@ function formatarMinutos(totalMin) {
   const m = totalMin % 60;
   if (h === 0) return `${m}m`;
   return `${h}h ${m}m`;
+}
+
+function formatarTempoXHXM(minutos) {
+  const m = Math.max(0, Math.round(minutos || 0));
+  const h = Math.floor(m / 60);
+  const restM = m % 60;
+  return `+${h}H${String(restM).padStart(2, "0")}M`;
+}
+
+function isLogSaidaDiscord(saida, entrada) {
+  if (!saida) return false;
+  if (saida.geradoPorLog) return false;
+  const uuid = String(saida.uuid || "");
+  if (uuid.startsWith("CRASH_") || uuid.startsWith("AUTO_") || uuid.startsWith("concil-sai-")) {
+    return false;
+  }
+  const origem = String(saida.origem || "").toLowerCase();
+  if (origem.includes("crash") || origem.includes("âncora") || origem.includes("ancora") || origem.includes("1 minuto")) {
+    return false;
+  }
+  if (origem === "sessão gravada em banco" || origem === "validado por responsável" || origem === "âncora de atividade / crash") {
+    return false;
+  }
+  const idStr = String(saida.id || "");
+  if (idStr.startsWith("sai-rec-") && !origem.includes("discord")) {
+    return false;
+  }
+  const raw = String(saida.raw || "");
+  if (origem.includes("discord") || raw.includes("SAIU DE SERVIÇO")) {
+    return true;
+  }
+  return false;
+}
+
+function isAncoraAutomatica(saida) {
+  if (!saida) return false;
+  if (saida.geradoPorLog) return true;
+  const idStr = String(saida.id || "");
+  if (idStr.startsWith("sai-auto-") || idStr.startsWith("sai-1min-") || idStr.startsWith("concil-sai-")) {
+    return true;
+  }
+  const tipoFechamento = String(saida.tipoFechamento || "");
+  if (tipoFechamento.includes("CRASH")) return true;
+  const origem = String(saida.origem || "").toLowerCase();
+  if (origem.includes("crash") || origem.includes("âncora") || origem.includes("ancora") || origem.includes("1 minuto")) {
+    return true;
+  }
+  return !isLogSaidaDiscord(saida);
+}
+
+function getRealDate(item, fallbackDate = "") {
+  if (item?.dataOriginal) return item.dataOriginal;
+  if (item?.timestampz) {
+    const d = new Date(item.timestampz);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    }
+  }
+  const baseData = item?.data || fallbackDate;
+  if (baseData && item?.hora && item.hora < "09:00:00") {
+    const [a, m, d] = baseData.split("-").map(Number);
+    const dProx = new Date(a, m - 1, d + 1);
+    return `${dProx.getFullYear()}-${String(dProx.getMonth() + 1).padStart(2, "0")}-${String(dProx.getDate()).padStart(2, "0")}`;
+  }
+  return baseData;
+}
+
+function getTimestampMs(item, fallbackDate = "") {
+  if (!item) return 0;
+  const d = getRealDate(item, fallbackDate);
+  let baseMs = 0;
+  if (d && item.hora) {
+    const t = new Date(`${d}T${item.hora}-03:00`).getTime();
+    if (!isNaN(t)) baseMs = t;
+  }
+  if (!baseMs && item.timestampz) {
+    const t = new Date(item.timestampz).getTime();
+    if (!isNaN(t)) baseMs = t;
+  }
+  if (baseMs && item.timestampz) {
+    const ms = new Date(item.timestampz).getMilliseconds();
+    if (!isNaN(ms)) baseMs += ms;
+  }
+  return baseMs;
 }
 
 function calcularSemanaOffset(offset = 0) {
@@ -63,14 +147,14 @@ export default function ConciliadorPontoPage() {
   const [atividadesGerais, setAtividadesGerais] = useState([]);
   const [sessoesExistentes, setSessoesExistentes] = useState([]);
 
-  const [draggedSaidaId, setDraggedSaidaId] = useState(null);
-  const [dragOverEntradaId, setDragOverEntradaId] = useState(null);
   const [mensagem, setMensagem] = useState(null);
-  const [atividadesExpandidas, setAtividadesExpandidas] = useState({});
-  const [ocultarVinculadas, setOcultarVinculadas] = useState(true);
-  const [saidaSelecionadaId, setSaidaSelecionadaId] = useState(null);
+  const [entradaSelecionadaId, setEntradaSelecionadaId] = useState(null);
+  const [janelaOperacional, setJanelaOperacional] = useState(null);
   const [saidaDetalhesModal, setSaidaDetalhesModal] = useState(null);
   const [copiadoUuid, setCopiadoUuid] = useState(false);
+  const [equipePeriodo, setEquipePeriodo] = useState([]);
+  const [filtroStatusEquipe, setFiltroStatusEquipe] = useState("todos"); // "todos" | "pendente" | "avaliado"
+  const [buscaEquipe, setBuscaEquipe] = useState("");
 
   const copiarParaClipboard = (texto) => {
     if (!texto) return;
@@ -78,9 +162,6 @@ export default function ConciliadorPontoPage() {
     setCopiadoUuid(true);
     setTimeout(() => setCopiadoUuid(false), 2000);
   };
-
-  const toggleExpandirAtividades = (id) =>
-    setAtividadesExpandidas((prev) => ({ ...prev, [id]: !prev[id] }));
 
   const semanaInfo = calcularSemanaOffset(semanaOffset);
 
@@ -101,9 +182,14 @@ export default function ConciliadorPontoPage() {
       const json = await res.json();
       if (json.ok) {
         setUsuarios(json.usuarios || []);
+        if (json.equipePeriodo) {
+          setEquipePeriodo(json.equipePeriodo);
+        }
         setDiasDaSemana(json.diasDaSemana || []);
         setResumoSemanal(json.resumoSemanal || null);
         setSessoesExistentes(json.sessoesExistentes || []);
+        setAtividadesGerais(json.atividades || []);
+        setJanelaOperacional(json.janelaOperacional || null);
 
         if (md === "semana") {
           const todasEnts = (json.diasDaSemana || []).flatMap((d) => d.entradas || []);
@@ -120,11 +206,11 @@ export default function ConciliadorPontoPage() {
               }
             }
           });
-          setEntradas(todasEnts);
-          setSaidas(Array.from(saisMap.values()));
+          setEntradas(todasEnts.sort((a, b) => getTimestampMs(a) - getTimestampMs(b)));
+          setSaidas(Array.from(saisMap.values()).sort((a, b) => getTimestampMs(a) - getTimestampMs(b)));
         } else {
-          setEntradas(json.entradas || []);
-          setSaidas(json.saidas || []);
+          setEntradas((json.entradas || []).sort((a, b) => getTimestampMs(a) - getTimestampMs(b)));
+          setSaidas((json.saidas || []).sort((a, b) => getTimestampMs(a) - getTimestampMs(b)));
         }
       } else {
         mostrarAviso("⚠️ Erro ao carregar dados: " + json.error, "erro");
@@ -141,6 +227,9 @@ export default function ConciliadorPontoPage() {
   }, [carregarDadosReais]);
 
   const casarPonto = (entradaId, saidaId) => {
+    const ent = entradas.find((e) => e.id === entradaId);
+    const saidaAnteriorId = ent?.saidaId;
+
     setEntradas((prev) =>
       prev.map((e) => {
         if (e.id === entradaId) return { ...e, saidaId, auditado: false };
@@ -148,38 +237,134 @@ export default function ConciliadorPontoPage() {
         return e;
       })
     );
-    setSaidas((prev) =>
-      prev.map((s) => {
+    setSaidas((prev) => {
+      let filtradas = prev;
+      // Se a entrada já possuía uma âncora automática e estamos casando com outra saída, a âncora antiga some!
+      if (saidaAnteriorId && saidaAnteriorId !== saidaId) {
+        filtradas = filtradas.filter((s) => s.id !== saidaAnteriorId || !isAncoraAutomatica(s));
+      }
+      return filtradas.map((s) => {
         if (s.id === saidaId) return { ...s, pareadoCom: entradaId };
         if (s.pareadoCom === entradaId) return { ...s, pareadoCom: null };
         return s;
-      })
-    );
+      });
+    });
     mostrarAviso("🔗 Sessão casada! Lembre-se de gravar para homologar.");
   };
 
   const descasarPonto = (entradaId) => {
     const ent = entradas.find((e) => e.id === entradaId);
-    if (!ent || !ent.saidaId) return;
-    const saidaId = ent.saidaId;
+    if (!ent) return;
+    const saidaId = ent.saidaId || saidas.find((s) => s.pareadoCom === entradaId)?.id;
+    const saidaAlvo = saidas.find((s) => s.id === saidaId);
+    const ehAncora = isAncoraAutomatica(saidaAlvo);
 
     setEntradas((prev) =>
-      prev.map((e) => (e.id === entradaId ? { ...e, saidaId: null, auditado: false } : e))
+      prev.map((e) =>
+        e.id === entradaId || (saidaId && e.saidaId === saidaId)
+          ? { ...e, saidaId: null, auditado: false, tipoFechamento: null }
+          : e
+      )
     );
+    setSaidas((prev) => {
+      if (ehAncora) {
+        // Ao descartar / descasar a âncora automática, ela deve sumir completamente!
+        return prev.filter((s) => s.id !== saidaId);
+      }
+      // Se for saída oficial do Discord, ela volta para o banco de saídas livres
+      return prev.map((s) => (s.id === saidaId || s.pareadoCom === entradaId ? { ...s, pareadoCom: null } : s));
+    });
+    mostrarAviso(
+      ehAncora
+        ? "🗑️ Âncora automática descartada e removida!"
+        : "✂️ Pareamento desfeito. Saída retornou para o banco de saídas livres."
+    );
+  };
+
+  const descasarSaida = (saidaId) => {
+    const sai = saidas.find((s) => s.id === saidaId);
+    if (!sai) return;
+    const ehAncora = isAncoraAutomatica(sai);
+    const entradaId = sai.pareadoCom;
+
+    setEntradas((prev) =>
+      prev.map((e) =>
+        e.id === entradaId || e.saidaId === saidaId
+          ? { ...e, saidaId: null, auditado: false, tipoFechamento: null }
+          : e
+      )
+    );
+    setSaidas((prev) => {
+      if (ehAncora) {
+        return prev.filter((s) => s.id !== saidaId);
+      }
+      return prev.map((s) => (s.id === saidaId ? { ...s, pareadoCom: null } : s));
+    });
+    mostrarAviso(
+      ehAncora
+        ? "🗑️ Âncora automática descartada e removida!"
+        : "✂️ Pareamento desfeito. Saída retornou para o banco de saídas livres."
+    );
+  };
+
+  const descasarTodosPares = () => {
+    if (entradasVisiveis.length === 0) return;
+    const sessoesCasadasCount = entradasVisiveis.filter((e) => e.saidaId).length;
+    if (sessoesCasadasCount === 0) {
+      mostrarAviso("ℹ️ Não há sessões casadas para descasar.", "info");
+      return;
+    }
+
+    if (!window.confirm(`Deseja realmente descasar todos os ${sessoesCasadasCount} turnos em exibição para verificação manual?`)) {
+      return;
+    }
+
+    const idsEntradasVisiveis = new Set(entradasVisiveis.map((e) => e.id));
+    const idsSaidasCasadas = new Set(
+      entradasVisiveis.map((e) => e.saidaId).filter(Boolean)
+    );
+
+    setEntradas((prev) =>
+      prev.map((e) =>
+        idsEntradasVisiveis.has(e.id)
+          ? { ...e, saidaId: null, auditado: false, tipoFechamento: null }
+          : e
+      )
+    );
+
     setSaidas((prev) =>
-      prev.map((s) => (s.id === saidaId ? { ...s, pareadoCom: null } : s))
+      prev
+        .filter((s) => !idsSaidasCasadas.has(s.id) || !isAncoraAutomatica(s))
+        .map((s) =>
+          idsSaidasCasadas.has(s.id) || (s.pareadoCom && idsEntradasVisiveis.has(s.pareadoCom))
+            ? { ...s, pareadoCom: null }
+            : s
+        )
     );
-    mostrarAviso("✂️ Pareamento desfeito. Pronto para re-casar ou gravar.");
+
+    mostrarAviso(`✂️ Todos os ${sessoesCasadasCount} turnos em exibição foram descasados para auditoria manual!`);
+  };
+
+  const descartarAncora = (saidaId) => {
+    setSaidas((prev) => prev.filter((s) => s.id !== saidaId));
+    setEntradas((prev) =>
+      prev.map((e) => (e.saidaId === saidaId ? { ...e, saidaId: null, auditado: false, tipoFechamento: null } : e))
+    );
+    mostrarAviso("🗑️ Âncora descartada e removida!");
   };
 
   const gerarSaidaPorAtividade = (entradaId, atividade) => {
     const ent = entradas.find((e) => e.id === entradaId);
     const dataRef = atividade.data || ent?.data || dataFiltro;
+    const dataOriginal = atividade.dataOriginal || getRealDate(atividade, dataRef) || getRealDate(ent, dataRef);
     const novaSaidaId = `sai-auto-${Date.now()}`;
     const novaSaida = {
       id: novaSaidaId,
+      uuid: novaSaidaId,
       data: dataRef,
+      dataOriginal,
       hora: atividade.hora,
+      timestampz: atividade.timestampz || (dataOriginal && atividade.hora ? new Date(`${dataOriginal}T${atividade.hora}-03:00`).toISOString() : null),
       tipo: "saida",
       origem: `Âncora Automática (${atividade.tipo === "tunagem" ? "Tunagem" : "Bancada"})`,
       pareadoCom: entradaId,
@@ -188,7 +373,14 @@ export default function ConciliadorPontoPage() {
       atividadeRef: atividade.desc,
     };
 
-    setSaidas((prev) => [novaSaida, ...prev]);
+    const saidaAnteriorId = ent?.saidaId;
+
+    setSaidas((prev) => {
+      const filtradas = saidaAnteriorId
+        ? prev.filter((s) => s.id !== saidaAnteriorId || !isAncoraAutomatica(s))
+        : prev;
+      return [novaSaida, ...filtradas];
+    });
     setEntradas((prev) =>
       prev.map((e) => (e.id === entradaId ? { ...e, saidaId: novaSaidaId, auditado: false, tipoFechamento: "CRASH_COM_ATIVIDADE" } : e))
     );
@@ -198,17 +390,34 @@ export default function ConciliadorPontoPage() {
   const criarSaida1Minuto = (entradaId, horaEntrada) => {
     const ent = entradas.find((e) => e.id === entradaId);
     const dataRef = ent?.data || dataFiltro;
+
+    // Garante que a data de calendário real da saída seja idêntica à da entrada (ou D+1 caso vire meia-noite)
+    const dataCalEntrada = getRealDate(ent, dataRef);
     const [h, m, s] = (horaEntrada || "00:00:00").split(":").map(Number);
     let totalS = h * 3600 + (m + 1) * 60 + (s || 0);
-    const nH = String(Math.floor(totalS / 3600) % 24).padStart(2, "0");
+
+    let dataCalSaida = dataCalEntrada;
+    if (totalS >= 24 * 3600) {
+      totalS -= 24 * 3600;
+      const [a, mo, d] = dataCalEntrada.split("-").map(Number);
+      const dProx = new Date(a, mo - 1, d + 1);
+      dataCalSaida = `${dProx.getFullYear()}-${String(dProx.getMonth() + 1).padStart(2, "0")}-${String(dProx.getDate()).padStart(2, "0")}`;
+    }
+
+    const nH = String(Math.floor(totalS / 3600)).padStart(2, "0");
     const nM = String(Math.floor((totalS % 3600) / 60)).padStart(2, "0");
     const nS = String(totalS % 60).padStart(2, "0");
     const horaCalculada = `${nH}:${nM}:${nS}`;
 
     const novaSaidaId = `sai-1min-${Date.now()}`;
+    const isoCalculado = new Date(`${dataCalSaida}T${horaCalculada}-03:00`).toISOString();
+
     const novaSaida = {
       id: novaSaidaId,
+      uuid: novaSaidaId,
       data: dataRef,
+      dataOriginal: dataCalSaida,
+      timestampz: isoCalculado,
       hora: horaCalculada,
       tipo: "saida",
       origem: "Crash sem atividade (1 Minuto)",
@@ -217,7 +426,14 @@ export default function ConciliadorPontoPage() {
       tipoFechamento: "CRASH_SEM_ATIVIDADE",
     };
 
-    setSaidas((prev) => [novaSaida, ...prev]);
+    const saidaAnteriorId = ent?.saidaId;
+
+    setSaidas((prev) => {
+      const filtradas = saidaAnteriorId
+        ? prev.filter((s) => s.id !== saidaAnteriorId || !isAncoraAutomatica(s))
+        : prev;
+      return [novaSaida, ...filtradas];
+    });
     setEntradas((prev) =>
       prev.map((e) => (e.id === entradaId ? { ...e, saidaId: novaSaidaId, auditado: false, tipoFechamento: "CRASH_SEM_ATIVIDADE" } : e))
     );
@@ -239,13 +455,31 @@ export default function ConciliadorPontoPage() {
 
     const sessoesValidadas = entradasParaGravar.map((e) => {
       const sai = saidas.find((s) => s.id === e.saidaId);
+      let qtdTunagens = 0;
+      let qtdBancada = 0;
+      if (sai) {
+        const tIni = e.timestampz ? new Date(e.timestampz).getTime() : new Date(`${e.data || dataFiltro}T${e.hora}-03:00`).getTime();
+        const tSai = sai.timestampz ? new Date(sai.timestampz).getTime() : new Date(`${sai.dataOriginal || sai.data || dataFiltro}T${sai.hora}-03:00`).getTime();
+        const atvs = atividadesDoPeriodo.filter((atv) => {
+          const tAtv = atv.timestampz ? new Date(atv.timestampz).getTime() : new Date(`${atv.data || dataFiltro}T${atv.hora}-03:00`).getTime();
+          return tAtv >= tIni - 5 * 60 * 1000 && tAtv <= tSai + 10 * 60 * 1000;
+        });
+        qtdTunagens = atvs.filter((a) => a.tipo === "tunagem").length;
+        qtdBancada = atvs.filter((a) => a.tipo === "bancada").length;
+      }
+
       return {
         data: e.data || dataFiltro,
         horaEntrada: e.hora,
         horaSaida: sai?.hora || e.hora,
         uuidEntrada: e.uuid,
-        uuidSaida: sai?.uuid,
-        tipoFechamento: sai?.tipoFechamento || (sai?.geradoPorLog ? "CRASH_COM_ATIVIDADE" : "VALIDADO_CONCILIADOR"),
+        uuidSaida: sai?.uuid || sai?.id,
+        qtdTunagens,
+        qtdBancada,
+        totalAtividades: qtdTunagens + qtdBancada,
+        tipoFechamento: isLogSaidaDiscord(sai, e)
+          ? (sai?.tipoFechamento && !sai.tipoFechamento.includes("CRASH") ? sai.tipoFechamento : "NORMAL")
+          : (sai?.tipoFechamento || (sai?.geradoPorLog ? "CRASH_COM_ATIVIDADE" : "VALIDADO_CONCILIADOR")),
       };
     });
 
@@ -289,31 +523,6 @@ export default function ConciliadorPontoPage() {
     setTimeout(() => setMensagem(null), 3500);
   };
 
-  // Drag and Drop
-  const handleDragStart = (e, saidaId) => {
-    e.dataTransfer.setData("text/plain", saidaId);
-    setDraggedSaidaId(saidaId);
-  };
-
-  const handleDragOver = (e, entradaId) => {
-    e.preventDefault();
-    setDragOverEntradaId(entradaId);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverEntradaId(null);
-  };
-
-  const handleDrop = (e, entradaId) => {
-    e.preventDefault();
-    setDragOverEntradaId(null);
-    const saidaId = e.dataTransfer.getData("text/plain") || draggedSaidaId;
-    if (saidaId && entradaId) {
-      casarPonto(entradaId, saidaId);
-    }
-    setDraggedSaidaId(null);
-  };
-
   // Filtragem de entradas e saídas ativas conforme o foco de visualização
   const entradasVisiveis = entradas.filter((e) => {
     if (modo === "semana" && diaAtivoNaSemana !== "todos") {
@@ -323,33 +532,232 @@ export default function ConciliadorPontoPage() {
   });
 
   const saidasDoPeriodo = saidas.filter((s) => {
+    // Âncoras automáticas só existem enquanto estiverem atreladas a uma sessão. Se foi descartada/descasada, ela some!
+    if (isAncoraAutomatica(s) && !s.pareadoCom) {
+      return false;
+    }
     if (modo === "semana" && diaAtivoNaSemana !== "todos") {
       return s.data === diaAtivoNaSemana;
     }
     return true;
   });
 
-  const totalSaidasDoPeriodo = saidasDoPeriodo.length;
-  const totalSaidasLivresDoPeriodo = saidasDoPeriodo.filter((s) => !s.pareadoCom).length;
-  const totalSaidasVinculadasDoPeriodo = totalSaidasDoPeriodo - totalSaidasLivresDoPeriodo;
+  const atividadesDoPeriodo = useMemo(() => {
+    return atividadesGerais.filter((a) => {
+      if (modo === "semana" && diaAtivoNaSemana !== "todos") {
+        return a.data === diaAtivoNaSemana;
+      }
+      return true;
+    });
+  }, [atividadesGerais, modo, diaAtivoNaSemana]);
 
-  const saidasVisiveis = saidasDoPeriodo.filter((s) => {
-    if (ocultarVinculadas && s.pareadoCom) {
-      return false;
-    }
-    return true;
-  });
+  const sessoesCasadasLista = useMemo(() => {
+    const sessoes = [];
+    entradasVisiveis.forEach((ent, idx) => {
+      if (ent.saidaId) {
+        const sai = saidas.find((s) => s.id === ent.saidaId);
+        if (sai) {
+          const tIni = ent.timestampz ? new Date(ent.timestampz).getTime() : new Date(`${ent.data || dataFiltro}T${ent.hora}-03:00`).getTime();
+          const tFim = sai.timestampz ? new Date(sai.timestampz).getTime() : new Date(`${sai.dataOriginal || sai.data || dataFiltro}T${sai.hora}-03:00`).getTime();
+          const duracaoMin = calcularDuracao(ent.hora, sai.hora);
 
-  const saidasDisponiveisDropdown = saidasDoPeriodo.filter((s) => !s.pareadoCom);
-  const saidaSelecionadaObj = saidas.find((s) => s.id === saidaSelecionadaId);
+          const atvsSessao = atividadesDoPeriodo.filter((atv) => {
+            const tAtv = atv.timestampz ? new Date(atv.timestampz).getTime() : new Date(`${atv.data || dataFiltro}T${atv.hora}-03:00`).getTime();
+            return tAtv >= tIni - 5 * 60 * 1000 && tAtv <= tFim + 10 * 60 * 1000;
+          });
+          const qtdServicos = atvsSessao.length;
+          const isDiscord = isLogSaidaDiscord(sai, ent);
+          const isMenor30 = duracaoMin < 30;
+          // Destacar em vermelho apenas quando a saída for por log do Discord! Se for por crash, não deixa em vermelho.
+          const isIrregularGrave = isMenor30 && qtdServicos > 0 && isDiscord;
+          const isIrregularCurto = isMenor30 && qtdServicos === 0 && isDiscord;
 
-  const sessoesExistentesVisiveis = sessoesExistentes.filter((s) => {
-    if (modo === "semana" && diaAtivoNaSemana !== "todos") {
-      const sData = s.data ? String(s.data).slice(0, 10) : "";
-      return sData === diaAtivoNaSemana;
-    }
-    return true;
-  });
+          sessoes.push({
+            sessaoNumero: idx + 1,
+            entradaId: ent.id,
+            saidaId: sai.id,
+            tIni,
+            tFim,
+            duracaoMin,
+            qtdServicos,
+            isMenor30,
+            isIrregularGrave,
+            isIrregularCurto,
+            isDiscord,
+          });
+        }
+      }
+    });
+    return sessoes;
+  }, [entradasVisiveis, saidas, dataFiltro, atividadesDoPeriodo]);
+
+  const eventosLinhaDoTempo = useMemo(() => {
+    const lista = [];
+
+    // 1. Entradas (Coluna 0)
+    entradasVisiveis.forEach((ent) => {
+      const realData = getRealDate(ent, dataFiltro);
+      lista.push({
+        id: `tl-ent-${ent.id}`,
+        tipo: "entrada",
+        coluna: 0,
+        hora: ent.hora,
+        data: realData,
+        timestampMs: getTimestampMs(ent, dataFiltro),
+        obj: ent,
+      });
+    });
+
+    // 2. Bancadas (Coluna 1)
+    atividadesDoPeriodo
+      .filter((a) => a.tipo === "bancada")
+      .forEach((b) => {
+        const realData = getRealDate(b, dataFiltro);
+        lista.push({
+          id: `tl-banc-${b.id || Math.random()}`,
+          tipo: "bancada",
+          coluna: 1,
+          hora: b.hora,
+          data: realData,
+          timestampMs: getTimestampMs(b, dataFiltro),
+          obj: b,
+        });
+      });
+
+    // 3. Tunagens (Coluna 2)
+    atividadesDoPeriodo
+      .filter((a) => a.tipo === "tunagem")
+      .forEach((t) => {
+        const realData = getRealDate(t, dataFiltro);
+        lista.push({
+          id: `tl-tun-${t.id || Math.random()}`,
+          tipo: "tunagem",
+          coluna: 2,
+          hora: t.hora,
+          data: realData,
+          timestampMs: getTimestampMs(t, dataFiltro),
+          obj: t,
+        });
+      });
+
+    // 4. Saídas (Coluna 3)
+    saidasDoPeriodo.forEach((sai) => {
+      const realData = getRealDate(sai, dataFiltro);
+      lista.push({
+        id: `tl-sai-${sai.id}`,
+        tipo: "saida",
+        coluna: 3,
+        hora: sai.hora,
+        data: realData,
+        timestampMs: getTimestampMs(sai, dataFiltro),
+        obj: sai,
+      });
+    });
+
+    const PRIORIDADE_TIPO = {
+      entrada: 1,
+      bancada: 2,
+      tunagem: 3,
+      saida: 4,
+    };
+
+    return lista.sort((a, b) => {
+      // Invariante de sessão casada: dentro do mesmo turno, a entrada sempre precede a saída
+      if ((a.tipo === "entrada" && b.tipo === "saida") || (a.tipo === "saida" && b.tipo === "entrada")) {
+        const entEv = a.tipo === "entrada" ? a : b;
+        const saiEv = a.tipo === "saida" ? a : b;
+        const ehMesmaSessao = sessoesCasadasLista.some(
+          (s) => s.entradaId === entEv.obj.id && s.saidaId === saiEv.obj.id
+        );
+        if (ehMesmaSessao) {
+          return a.tipo === "entrada" ? -1 : 1;
+        }
+      }
+
+      // 1. Comparar pelo segundo do evento
+      const segA = Math.floor(a.timestampMs / 1000);
+      const segB = Math.floor(b.timestampMs / 1000);
+      if (segA !== segB) {
+        return segA - segB;
+      }
+
+      // 2. No mesmo segundo:
+      // Exceção: quando uma saída encerra um turno anterior (iniciado em momento anterior)
+      // e uma entrada inicia um novo turno neste mesmo segundo, a saída anterior vem antes da nova entrada.
+      if ((a.tipo === "saida" && b.tipo === "entrada") || (a.tipo === "entrada" && b.tipo === "saida")) {
+        const saiEv = a.tipo === "saida" ? a : b;
+        const entEv = a.tipo === "entrada" ? a : b;
+        const sessaoDaSaida = sessoesCasadasLista.find((s) => s.saidaId === saiEv.obj.id);
+
+        if (sessaoDaSaida && sessaoDaSaida.tIni < saiEv.timestampMs - 1000 && sessaoDaSaida.entradaId !== entEv.obj.id) {
+          return a.tipo === "saida" ? -1 : 1;
+        }
+      }
+
+      // Ordem padrão de cima para baixo: Entrada (1) -> Bancada (2) -> Tunagem (3) -> Saída (4)
+      const pA = PRIORIDADE_TIPO[a.tipo] || 0;
+      const pB = PRIORIDADE_TIPO[b.tipo] || 0;
+      if (pA !== pB) {
+        return pA - pB;
+      }
+
+      return a.timestampMs - b.timestampMs;
+    });
+  }, [entradasVisiveis, atividadesDoPeriodo, saidasDoPeriodo, dataFiltro, sessoesCasadasLista]);
+
+  // Vincula cada linha do tempo à sua sessão sequencialmente, eliminando lacunas por milissegundos
+  const eventosLinhaDoTempoComSessao = useMemo(() => {
+    let sessaoCorrente = null;
+
+    return eventosLinhaDoTempo.map((ev) => {
+      // 1. Entrada que inicia uma sessão casada
+      const sessaoIniciando = sessoesCasadasLista.find(
+        (s) => ev.tipo === "entrada" && ev.obj.id === s.entradaId
+      );
+
+      if (sessaoIniciando) {
+        sessaoCorrente = sessaoIniciando;
+        return {
+          ...ev,
+          sessaoAtiva: sessaoIniciando,
+          isInicioSessao: true,
+          isFimSessao: false,
+        };
+      }
+
+      // 2. Saída que encerra uma sessão casada
+      const sessaoFechando = sessoesCasadasLista.find(
+        (s) => ev.tipo === "saida" && ev.obj.id === s.saidaId
+      );
+      if (sessaoFechando) {
+        sessaoCorrente = null;
+        return {
+          ...ev,
+          sessaoAtiva: sessaoFechando,
+          isInicioSessao: false,
+          isFimSessao: true,
+        };
+      }
+
+      // 3. Atividades (bancadas, tunagens) dentro do período da sessão corrente
+      if (sessaoCorrente) {
+        return {
+          ...ev,
+          sessaoAtiva: sessaoCorrente,
+          isInicioSessao: false,
+          isFimSessao: false,
+        };
+      }
+
+      // 4. Fora de qualquer sessão
+      return {
+        ...ev,
+        sessaoAtiva: null,
+        isInicioSessao: false,
+        isFimSessao: false,
+      };
+    });
+  }, [eventosLinhaDoTempo, sessoesCasadasLista]);
 
   // Cálculos dinâmicos
   const totalMinutosCasados = entradasVisiveis.reduce((acc, ent) => {
@@ -366,6 +774,1428 @@ export default function ConciliadorPontoPage() {
   const sessoesPendentesSaida = totalSessoesVisiveis - sessoesCasadas;
   const mecanicoSelecionado = usuarios.find((u) => String(u.id) === String(usuarioId));
 
+  const renderTrilha4Colunas = () => {
+    const turnosResumo = entradasVisiveis.map((ent, idx) => {
+      const tNum = idx + 1;
+      const sai = ent.saidaId ? saidas.find((s) => s.id === ent.saidaId) : null;
+      const isCasada = Boolean(sai);
+      const duracaoMin = sai ? calcularDuracao(ent.hora, sai.hora) : null;
+      const isDiscord = sai ? isLogSaidaDiscord(sai, ent) : false;
+      const isAncora = sai ? isAncoraAutomatica(sai) : false;
+
+      let atvsDoTurno = [];
+      if (sai) {
+        const tIni = ent.timestampz ? new Date(ent.timestampz).getTime() : new Date(`${ent.data || dataFiltro}T${ent.hora}-03:00`).getTime();
+        const tSai = sai.timestampz ? new Date(sai.timestampz).getTime() : new Date(`${sai.dataOriginal || sai.data || dataFiltro}T${sai.hora}-03:00`).getTime();
+        atvsDoTurno = atividadesDoPeriodo.filter((atv) => {
+          const tAtv = atv.timestampz ? new Date(atv.timestampz).getTime() : new Date(`${atv.data || dataFiltro}T${atv.hora}-03:00`).getTime();
+          return tAtv >= tIni - 5 * 60 * 1000 && tAtv <= tSai + 10 * 60 * 1000;
+        });
+      }
+      const qtdServicos = atvsDoTurno.length;
+      const isMenor30 = isCasada && duracaoMin !== null && duracaoMin < 30;
+      // Irregularidade (<30m) só se aplica quando a saída foi deliberada via log do Discord, nunca por crash
+      const isIrregularGrave = isMenor30 && qtdServicos > 0 && isDiscord;
+      const isIrregularCurto = isMenor30 && qtdServicos === 0 && isDiscord;
+
+      return {
+        tNum,
+        entradaId: ent.id,
+        saidaId: sai?.id,
+        horaEntrada: ent.hora,
+        horaSaida: sai?.hora,
+        duracaoMin,
+        duracaoTexto: duracaoMin !== null ? formatarTempoXHXM(duracaoMin) : "Sem Saída",
+        isCasada,
+        isDiscord,
+        isAncora,
+        auditado: Boolean(ent.auditado),
+        qtdServicos,
+        isMenor30,
+        isIrregularGrave,
+        isIrregularCurto,
+      };
+    });
+
+    const totalMinutosTurnos = turnosResumo.reduce((acc, t) => acc + (t.duracaoMin || 0), 0);
+    const totalFormatado = formatarTempoXHXM(totalMinutosTurnos);
+
+    const irregularesCount = equipePeriodo.filter((m) => {
+      const isSelected = String(m.id) === String(usuarioId);
+      const temGrave = isSelected ? turnosResumo.some((t) => t.isIrregularGrave) : Boolean(m.temTurnoCurtoComServico);
+      const temCurto = isSelected ? turnosResumo.some((t) => t.isIrregularCurto) : Boolean(m.temTurnoCurtoSemServico);
+      return temGrave || temCurto;
+    }).length;
+
+    // Filtragem dos funcionários para a coluna esquerda
+    const equipeFiltrada = equipePeriodo.filter((m) => {
+      const isSelected = String(m.id) === String(usuarioId);
+      const temGrave = isSelected ? turnosResumo.some((t) => t.isIrregularGrave) : Boolean(m.temTurnoCurtoComServico);
+      const temCurto = isSelected ? turnosResumo.some((t) => t.isIrregularCurto) : Boolean(m.temTurnoCurtoSemServico);
+
+      if (filtroStatusEquipe === "irregulares") {
+        if (!temGrave && !temCurto) return false;
+      } else if (filtroStatusEquipe !== "todos" && m.status !== filtroStatusEquipe) {
+        return false;
+      }
+      if (buscaEquipe.trim()) {
+        const termo = buscaEquipe.toLowerCase().trim();
+        return m.nome.toLowerCase().includes(termo) || (m.cargoLabel && m.cargoLabel.toLowerCase().includes(termo));
+      }
+      return true;
+    });
+
+    const totalEquipe = equipePeriodo.length;
+    const pendentesCount = equipePeriodo.filter((m) => m.status === "pendente").length;
+    const avaliadosCount = equipePeriodo.filter((m) => m.status === "avaliado").length;
+
+    return (
+      <div style={{
+        maxWidth: "1680px",
+        margin: "0 auto",
+        display: "grid",
+        gridTemplateColumns: "260px 1fr 280px",
+        gap: "18px",
+        alignItems: "start"
+      }}>
+        {/* COLUNA ESQUERDA: Equipe no Ciclo (Sticky) */}
+        <div style={{
+          position: "sticky",
+          top: "16px",
+          maxHeight: "calc(100vh - 32px)",
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: "10px",
+          background: "linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.9) 100%)",
+          border: "1px solid rgba(255, 255, 255, 0.12)",
+          borderRadius: "16px",
+          padding: "14px",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.6)",
+          backdropFilter: "blur(12px)",
+          zIndex: 35
+        }}>
+          {/* Header da Equipe */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "10px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "16px" }}>🧑‍🔧</span>
+              <span style={{ fontSize: "12.5px", fontWeight: "900", color: "#fff", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                Equipe ({totalEquipe})
+              </span>
+            </div>
+            <span style={{
+              fontSize: "10.5px",
+              fontWeight: "800",
+              color: pendentesCount === 0 ? "#34d399" : "#fbbf24",
+              background: pendentesCount === 0 ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)",
+              padding: "2px 7px",
+              borderRadius: "8px"
+            }}>
+              {avaliadosCount}/{totalEquipe} Fechados
+            </span>
+          </div>
+
+          {/* Campo de Busca Rápida */}
+          <div style={{ position: "relative" }}>
+            <input
+              type="text"
+              placeholder="🔍 Buscar mecânico..."
+              value={buscaEquipe}
+              onChange={(e) => setBuscaEquipe(e.target.value)}
+              style={{
+                width: "100%",
+                background: "rgba(15, 23, 42, 0.7)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                borderRadius: "8px",
+                padding: "6px 10px",
+                fontSize: "11.5px",
+                color: "#fff",
+                outline: "none"
+              }}
+            />
+            {buscaEquipe && (
+              <button
+                onClick={() => setBuscaEquipe("")}
+                style={{
+                  position: "absolute",
+                  right: "8px",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "transparent",
+                  border: "none",
+                  color: "#94a3b8",
+                  cursor: "pointer",
+                  fontSize: "12px"
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          {/* Filtros por Status */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px", background: "rgba(10,15,29,0.6)", padding: "4px", borderRadius: "8px" }}>
+            <button
+              onClick={() => setFiltroStatusEquipe("todos")}
+              style={{
+                padding: "5px 3px",
+                borderRadius: "6px",
+                border: "none",
+                fontSize: "10px",
+                fontWeight: "800",
+                cursor: "pointer",
+                background: filtroStatusEquipe === "todos" ? "linear-gradient(135deg, #a855f7 0%, #7e22ce 100%)" : "transparent",
+                color: filtroStatusEquipe === "todos" ? "#fff" : "#94a3b8"
+              }}
+            >
+              Todos ({totalEquipe})
+            </button>
+            <button
+              onClick={() => setFiltroStatusEquipe("pendente")}
+              style={{
+                padding: "5px 3px",
+                borderRadius: "6px",
+                border: "none",
+                fontSize: "10px",
+                fontWeight: "800",
+                cursor: "pointer",
+                background: filtroStatusEquipe === "pendente" ? "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" : "transparent",
+                color: filtroStatusEquipe === "pendente" ? "#fff" : "#fbbf24"
+              }}
+            >
+              ⚠️ Pendentes ({pendentesCount})
+            </button>
+            <button
+              onClick={() => setFiltroStatusEquipe("avaliado")}
+              style={{
+                padding: "5px 3px",
+                borderRadius: "6px",
+                border: "none",
+                fontSize: "10px",
+                fontWeight: "800",
+                cursor: "pointer",
+                background: filtroStatusEquipe === "avaliado" ? "linear-gradient(135deg, #10b981 0%, #059669 100%)" : "transparent",
+                color: filtroStatusEquipe === "avaliado" ? "#fff" : "#34d399"
+              }}
+            >
+              ✅ Fechados ({avaliadosCount})
+            </button>
+            <button
+              onClick={() => setFiltroStatusEquipe("irregulares")}
+              style={{
+                padding: "5px 3px",
+                borderRadius: "6px",
+                border: "none",
+                fontSize: "10px",
+                fontWeight: "800",
+                cursor: "pointer",
+                background: filtroStatusEquipe === "irregulares" ? "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)" : "transparent",
+                color: filtroStatusEquipe === "irregulares" ? "#fff" : "#fbbf24"
+              }}
+            >
+              ⚠️ &lt;30m ({irregularesCount})
+            </button>
+          </div>
+
+          {/* Lista de Mecânicos */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px", overflowY: "auto", maxHeight: "calc(100vh - 240px)", paddingRight: "2px" }}>
+            {equipeFiltrada.length === 0 ? (
+              <div style={{ fontSize: "11px", color: "#64748b", textAlign: "center", padding: "16px 8px" }}>
+                Nenhum mecânico encontrado neste filtro.
+              </div>
+            ) : (
+              equipeFiltrada.map((m) => {
+                const isSelected = String(m.id) === String(usuarioId);
+                const isAvaliado = m.status === "avaliado";
+                const temGrave = isSelected ? turnosResumo.some(t => t.isIrregularGrave) : Boolean(m.temTurnoCurtoComServico);
+                const temCurto = isSelected ? turnosResumo.some(t => t.isIrregularCurto) : Boolean(m.temTurnoCurtoSemServico);
+
+                return (
+                  <div
+                    key={m.id}
+                    onClick={() => {
+                      if (String(m.id) !== String(usuarioId)) {
+                        setUsuarioId(String(m.id));
+                        carregarDadosReais(String(m.id), dataFiltro, modo, semanaOffset);
+                      }
+                    }}
+                    style={{
+                      background: isSelected
+                        ? "linear-gradient(135deg, rgba(168,85,247,0.25) 0%, rgba(126,34,206,0.18) 100%)"
+                        : "rgba(15, 23, 42, 0.65)",
+                      border: isSelected
+                        ? "1.5px solid #a855f7"
+                        : "1px solid rgba(255, 255, 255, 0.08)",
+                      borderRadius: "10px",
+                      padding: "8px 10px",
+                      cursor: "pointer",
+                      boxShadow: isSelected
+                        ? "0 0 16px rgba(168,85,247,0.35)"
+                        : "none",
+                      transition: "all 0.15s"
+                    }}
+                    title={temGrave ? `⚠️ ${m.nome}: Turno < 30m com serviços realizados (avaliar punição)` : temCurto ? `⚠️ ${m.nome}: Turno < 30m sem serviços` : `Clique para auditar a linha do tempo de ${m.nome}`}
+                  >
+                    {/* Linha 1: Nome + Cargo + Ícone discreto de Alerta */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "5px", overflow: "hidden" }}>
+                        {temGrave ? (
+                          <span title="Turno < 30m com serviços realizados (avaliar punição)" style={{ fontSize: "12px", cursor: "help" }}>⚠️</span>
+                        ) : temCurto ? (
+                          <span title="Turno < 30m sem serviços" style={{ fontSize: "11px", color: "#94a3b8", cursor: "help" }}>⚠️</span>
+                        ) : null}
+                        <span style={{
+                          fontSize: "12px",
+                          fontWeight: isSelected ? "900" : "800",
+                          color: isSelected ? "#c084fc" : "#fff",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap"
+                        }}>
+                          {m.nome}
+                        </span>
+                      </div>
+                      {m.cargoLabel && (
+                        <span style={{
+                          fontSize: "8.5px",
+                          fontWeight: "800",
+                          color: "#94a3b8",
+                          background: "rgba(255,255,255,0.06)",
+                          padding: "1px 5px",
+                          borderRadius: "4px",
+                          whiteSpace: "nowrap"
+                        }}>
+                          {m.cargoLabel}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Linha 2: Status Pill + Horas */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "5px", gap: "4px" }}>
+                      <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+                        <span style={{
+                          fontSize: "9px",
+                          fontWeight: "900",
+                          color: isAvaliado ? "#34d399" : "#fbbf24",
+                          background: isAvaliado ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)",
+                          border: `1px solid ${isAvaliado ? "rgba(16,185,129,0.35)" : "rgba(245,158,11,0.35)"}`,
+                          padding: "1px 6px",
+                          borderRadius: "6px"
+                        }}>
+                          {isAvaliado ? "✅ Avaliado" : "⚠️ Pendente"}
+                        </span>
+                      </div>
+
+                      <span style={{
+                        fontSize: "12px",
+                        fontWeight: "900",
+                        fontFamily: "monospace",
+                        color: isAvaliado ? "#34d399" : "#cbd5e1"
+                      }}>
+                        {m.horasFormatadas}
+                      </span>
+                    </div>
+
+                    {/* Linha 3: Detalhes pequenos */}
+                    <div style={{ display: "flex", gap: "6px", fontSize: "9.5px", color: "#64748b", marginTop: "4px" }}>
+                      <span>{m.sessoesBanco} sessões</span>
+                      {(m.qtdTunagens > 0 || m.qtdBancada > 0) && (
+                        <span>• {m.qtdTunagens} tun • {m.qtdBancada} craft</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* COLUNA CENTRAL: Trilha Temporal (4 Colunas) */}
+        <div style={{ minWidth: 0 }}>
+        {/* Banner Informativo do Ciclo Operacional 09h às 09h */}
+        <div style={{
+          background: "linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(30, 41, 59, 0.7) 100%)",
+          border: "1px solid rgba(255, 255, 255, 0.08)",
+          borderRadius: "14px",
+          padding: "14px 18px",
+          marginBottom: "16px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "12px"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "22px" }}>🌅</span>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "14px", fontWeight: "900", color: "#fff" }}>
+                  Ciclo Operacional: {janelaOperacional?.label || `09:00 de ${dataFiltro.slice(8, 10)}/${dataFiltro.slice(5, 7)} até 09:00 do dia seguinte`}
+                </span>
+                <span style={{ fontSize: "10px", fontWeight: "800", color: "#34d399", background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.3)", padding: "1px 6px", borderRadius: "10px" }}>
+                  24 HORAS OPERACIONAIS
+                </span>
+              </div>
+              <div style={{ fontSize: "11.5px", color: "#94a3b8", marginTop: "2px" }}>
+                Trilha cronológica em 4 colunas. O tempo corre de cima para baixo. Clique em uma Entrada para casar com uma Saída ou Âncora.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {entradaSelecionadaId ? (
+              <button
+                onClick={() => setEntradaSelecionadaId(null)}
+                style={{
+                  background: "rgba(239,68,68,0.2)",
+                  border: "1px solid rgba(239,68,68,0.4)",
+                  color: "#f87171",
+                  padding: "6px 12px",
+                  borderRadius: "8px",
+                  fontSize: "11.5px",
+                  fontWeight: "800",
+                  cursor: "pointer"
+                }}
+              >
+                ✕ Cancelar Seleção da Entrada
+              </button>
+            ) : (
+              <span style={{ fontSize: "11px", color: "#64748b" }}>
+                💡 Clique em &quot;Casar Saída&quot; na Coluna 1 para vincular
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Header Fixo das 4 Colunas Swimlane */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "100px 1fr 1fr 1fr 1fr",
+          gap: "14px",
+          position: "sticky",
+          top: "12px",
+          zIndex: 40,
+          background: "rgba(10, 15, 29, 0.95)",
+          backdropFilter: "blur(12px)",
+          padding: "12px 16px",
+          borderRadius: "14px",
+          border: "1px solid rgba(255,255,255,0.12)",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.6)"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "900", fontSize: "11px", color: "#64748b", textTransform: "uppercase" }}>
+            ⏱️ Horário
+          </div>
+
+          {/* Coluna 1: Entrada */}
+          <div style={{
+            background: "rgba(16, 185, 129, 0.12)",
+            border: "1px solid rgba(16, 185, 129, 0.35)",
+            borderRadius: "10px",
+            padding: "8px 12px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontSize: "14px" }}>🟢</span>
+              <span style={{ fontWeight: "900", fontSize: "12px", color: "#34d399", textTransform: "uppercase" }}>
+                1. Entrada (Discord)
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {sessoesCasadas > 0 && (
+                <button
+                  onClick={descasarTodosPares}
+                  title="Descasar todos os pares em exibição para verificação manual"
+                  style={{
+                    background: "rgba(239, 68, 68, 0.18)",
+                    border: "1px solid rgba(239, 68, 68, 0.4)",
+                    color: "#f87171",
+                    padding: "2px 7px",
+                    borderRadius: "6px",
+                    fontSize: "10px",
+                    fontWeight: "800",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px"
+                  }}
+                >
+                  <span>✂️</span>
+                  <span>Descasar Todos</span>
+                </button>
+              )}
+              <span style={{ fontSize: "11px", fontWeight: "800", color: "#34d399", background: "rgba(16, 185, 129, 0.2)", padding: "2px 7px", borderRadius: "10px" }}>
+                {entradasVisiveis.length}
+              </span>
+            </div>
+          </div>
+
+          {/* Coluna 2: Bancada */}
+          <div style={{
+            background: "rgba(245, 158, 11, 0.12)",
+            border: "1px solid rgba(245, 158, 11, 0.35)",
+            borderRadius: "10px",
+            padding: "8px 12px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontSize: "14px" }}>🔨</span>
+              <span style={{ fontWeight: "900", fontSize: "12px", color: "#fbbf24", textTransform: "uppercase" }}>
+                2. Bancada (Craft)
+              </span>
+            </div>
+            <span style={{ fontSize: "11px", fontWeight: "800", color: "#fbbf24", background: "rgba(245, 158, 11, 0.2)", padding: "2px 7px", borderRadius: "10px" }}>
+              {atividadesDoPeriodo.filter((a) => a.tipo === "bancada").length}
+            </span>
+          </div>
+
+          {/* Coluna 3: Tunagem */}
+          <div style={{
+            background: "rgba(56, 189, 248, 0.12)",
+            border: "1px solid rgba(56, 189, 248, 0.35)",
+            borderRadius: "10px",
+            padding: "8px 12px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontSize: "14px" }}>🚗</span>
+              <span style={{ fontWeight: "900", fontSize: "12px", color: "#38bdf8", textTransform: "uppercase" }}>
+                3. Tunagem (Veículos)
+              </span>
+            </div>
+            <span style={{ fontSize: "11px", fontWeight: "800", color: "#38bdf8", background: "rgba(56, 189, 248, 0.2)", padding: "2px 7px", borderRadius: "10px" }}>
+              {atividadesDoPeriodo.filter((a) => a.tipo === "tunagem").length}
+            </span>
+          </div>
+
+          {/* Coluna 4: Saída */}
+          <div style={{
+            background: "rgba(168, 85, 247, 0.12)",
+            border: "1px solid rgba(168, 85, 247, 0.35)",
+            borderRadius: "10px",
+            padding: "8px 12px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontSize: "14px" }}>🏁</span>
+              <span style={{ fontWeight: "900", fontSize: "12px", color: "#c084fc", textTransform: "uppercase" }}>
+                4. Saída Oficial (Discord)
+              </span>
+            </div>
+            <span style={{ fontSize: "11px", fontWeight: "800", color: "#c084fc", background: "rgba(168, 85, 247, 0.2)", padding: "2px 7px", borderRadius: "10px" }}>
+              {saidasDoPeriodo.length}
+            </span>
+          </div>
+        </div>
+
+        {/* Lista de Linhas do Tempo */}
+        {eventosLinhaDoTempo.length === 0 ? (
+          <div style={{
+            marginTop: "16px",
+            background: "rgba(15, 23, 42, 0.5)",
+            border: "1px dashed rgba(255,255,255,0.15)",
+            borderRadius: "16px",
+            padding: "48px 24px",
+            textAlign: "center",
+            color: "#94a3b8"
+          }}>
+            <span style={{ fontSize: "36px" }}>📭</span>
+            <div style={{ fontSize: "16px", fontWeight: "800", color: "#fff", marginTop: "8px" }}>
+              Nenhum registro de ponto, bancada ou tunagem encontrado para este mecânico neste ciclo.
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
+            {eventosLinhaDoTempoComSessao.map((ev) => {
+              const sessaoAtiva = ev.sessaoAtiva;
+              const isInicioSessao = ev.isInicioSessao;
+              const isFimSessao = ev.isFimSessao;
+              const isDiscordSession = Boolean(sessaoAtiva?.isDiscord);
+              const isSessaoIrregularGrave = Boolean(sessaoAtiva?.isIrregularGrave);
+              const isSessaoIrregularCurto = Boolean(sessaoAtiva?.isIrregularCurto);
+              const isSessaoIrregular = isSessaoIrregularGrave || isSessaoIrregularCurto;
+
+              // Cores e destaque para o fundo do período conectado:
+              // Saída por crash = âmbar (não fica em vermelho).
+              // Saída por Discord < 30m = vermelho destacado.
+              // Saída por Discord normal = esmeralda suave.
+              const sessionBg = sessaoAtiva
+                ? isSessaoIrregular
+                  ? "linear-gradient(90deg, rgba(239, 68, 68, 0.12) 0%, rgba(239, 68, 68, 0.05) 50%, rgba(239, 68, 68, 0.12) 100%)"
+                  : isDiscordSession
+                  ? "linear-gradient(90deg, rgba(16, 185, 129, 0.09) 0%, rgba(16, 185, 129, 0.04) 50%, rgba(16, 185, 129, 0.09) 100%)"
+                  : "linear-gradient(90deg, rgba(245, 158, 11, 0.09) 0%, rgba(245, 158, 11, 0.04) 50%, rgba(245, 158, 11, 0.09) 100%)"
+                : "transparent";
+              const sessionBorderColor = isSessaoIrregular
+                ? "rgba(239, 68, 68, 0.35)"
+                : isDiscordSession
+                ? "rgba(16, 185, 129, 0.25)"
+                : "rgba(245, 158, 11, 0.25)";
+              const sessionAccentColor = isSessaoIrregular ? "#ef4444" : isDiscordSession ? "#10b981" : "#f59e0b";
+
+              return (
+                <div
+                  id={ev.id}
+                  key={ev.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "100px 1fr 1fr 1fr 1fr",
+                    gap: "14px",
+                    alignItems: "stretch",
+                    position: "relative",
+                    background: sessionBg,
+                    borderLeft: sessaoAtiva ? `4px solid ${sessionAccentColor}` : "4px solid transparent",
+                    borderRight: sessaoAtiva ? `1px solid ${sessionBorderColor}` : "1px solid transparent",
+                    borderTop: isInicioSessao ? `1.5px solid ${sessionBorderColor}` : sessaoAtiva ? "1px dashed rgba(255,255,255,0.03)" : "none",
+                    borderBottom: isFimSessao ? `1.5px solid ${sessionBorderColor}` : "none",
+                    borderTopLeftRadius: isInicioSessao ? "14px" : "0",
+                    borderTopRightRadius: isInicioSessao ? "14px" : "0",
+                    borderBottomLeftRadius: isFimSessao ? "14px" : "0",
+                    borderBottomRightRadius: isFimSessao ? "14px" : "0",
+                    padding: sessaoAtiva ? "8px 12px" : "4px 12px",
+                    marginTop: isInicioSessao ? "10px" : "0",
+                    marginBottom: isFimSessao ? "18px" : "2px",
+                    boxShadow: sessaoAtiva
+                      ? isSessaoIrregular
+                        ? "0 4px 20px rgba(239, 68, 68, 0.15)"
+                        : isDiscordSession
+                        ? "0 4px 20px rgba(16,185,129,0.04)"
+                        : "0 4px 20px rgba(245,158,11,0.04)"
+                      : "none",
+                    transition: "all 0.2s"
+                  }}
+                >
+                  {/* Coluna 0: Horário */}
+                  <div style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    background: sessaoAtiva
+                      ? isSessaoIrregular
+                        ? "rgba(239, 68, 68, 0.18)"
+                        : isDiscordSession
+                        ? "rgba(16, 185, 129, 0.14)"
+                        : "rgba(245, 158, 11, 0.14)"
+                      : "rgba(15, 23, 42, 0.6)",
+                    border: `1px solid ${
+                      sessaoAtiva
+                        ? isSessaoIrregular
+                          ? "rgba(239, 68, 68, 0.55)"
+                          : isDiscordSession
+                          ? "rgba(16, 185, 129, 0.4)"
+                          : "rgba(245, 158, 11, 0.4)"
+                        : "rgba(255, 255, 255, 0.06)"
+                    }`,
+                    borderRadius: "10px",
+                    padding: "6px 8px"
+                  }}>
+                    <span style={{ fontSize: "13px", fontWeight: "900", color: "#fff", fontFamily: "monospace" }}>
+                      {ev.hora}
+                    </span>
+                    {ev.data !== dataFiltro && (
+                      <span style={{ fontSize: "9px", fontWeight: "800", color: "#c084fc", background: "rgba(168,85,247,0.2)", padding: "1px 4px", borderRadius: "4px", marginTop: "2px" }}>
+                        +{ev.data.slice(8, 10)}/{ev.data.slice(5, 7)}
+                      </span>
+                    )}
+                    {sessaoAtiva && (
+                      <span style={{
+                        fontSize: "9px",
+                        fontWeight: "900",
+                        color: isSessaoIrregular ? "#fca5a5" : isDiscordSession ? "#34d399" : "#fbbf24",
+                        background: isSessaoIrregular ? "rgba(239, 68, 68, 0.28)" : isDiscordSession ? "rgba(16,185,129,0.22)" : "rgba(245,158,11,0.22)",
+                        padding: "1px 5px",
+                        borderRadius: "4px",
+                        marginTop: "4px",
+                        whiteSpace: "nowrap"
+                      }}>
+                        {isInicioSessao
+                          ? `${isSessaoIrregular ? "🚨" : "🟢"} Início T#${sessaoAtiva.sessaoNumero}`
+                          : isFimSessao
+                          ? `${isSessaoIrregular ? "🚨" : "🏁"} Fim T#${sessaoAtiva.sessaoNumero}`
+                          : `T#${sessaoAtiva.sessaoNumero}`}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Coluna 1: Entrada */}
+                  {ev.coluna === 0 ? (
+                    (() => {
+                      const ent = ev.obj;
+                      const saidaCasada = ent.saidaId ? saidas.find((s) => s.id === ent.saidaId) : null;
+                      const isCasada = Boolean(saidaCasada);
+                      const duracaoMin = saidaCasada ? calcularDuracao(ent.hora, saidaCasada.hora) : null;
+                      const isSelected = entradaSelecionadaId === ent.id;
+                      const isIrregularGrave = Boolean(ev.sessaoAtiva?.isIrregularGrave);
+                      const isIrregularCurto = Boolean(ev.sessaoAtiva?.isIrregularCurto);
+
+                      return (
+                        <div style={{
+                          background: isSelected
+                            ? "linear-gradient(135deg, rgba(168,85,247,0.3) 0%, rgba(126,34,206,0.25) 100%)"
+                            : isIrregularGrave || isIrregularCurto
+                            ? "linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(185, 28, 28, 0.1) 100%)"
+                            : isCasada
+                            ? "rgba(16, 185, 129, 0.12)"
+                            : "rgba(239, 68, 68, 0.12)",
+                          border: `1.5px solid ${
+                            isSelected
+                              ? "#a855f7"
+                              : isIrregularGrave || isIrregularCurto
+                              ? "#ef4444"
+                              : isCasada
+                              ? "rgba(16, 185, 129, 0.45)"
+                              : "rgba(239, 68, 68, 0.45)"
+                          }`,
+                          borderRadius: "12px",
+                          padding: "10px 12px",
+                          boxShadow: isSelected
+                            ? "0 0 16px rgba(168,85,247,0.4)"
+                            : isIrregularGrave || isIrregularCurto
+                            ? "0 0 12px rgba(239, 68, 68, 0.25)"
+                            : "none",
+                          transition: "all 0.2s"
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: "10px", fontWeight: "900", color: isIrregularGrave || isIrregularCurto ? "#fca5a5" : isCasada ? "#34d399" : "#f87171", textTransform: "uppercase" }}>
+                              {isIrregularGrave ? "🚨 Entrada (<30m)" : isIrregularCurto ? "⚠️ Entrada (<30m)" : "🟢 Entrada"}
+                            </span>
+                            {isCasada ? (
+                              <span style={{
+                                fontSize: "10.5px",
+                                fontWeight: "900",
+                                color: isIrregularGrave || isIrregularCurto ? "#fff" : "#34d399",
+                                background: isIrregularGrave || isIrregularCurto
+                                  ? "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)"
+                                  : "rgba(16,185,129,0.2)",
+                                border: isIrregularGrave || isIrregularCurto ? "1px solid #f87171" : "none",
+                                padding: "1px 6px",
+                                borderRadius: "6px"
+                              }}>
+                                {isIrregularGrave || isIrregularCurto ? "🚨 " : "⏱️ "}{formatarMinutos(duracaoMin)}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: "10px", fontWeight: "900", color: "#f87171", background: "rgba(239,68,68,0.2)", padding: "1px 6px", borderRadius: "6px" }}>
+                                ⚠️ Sem Saída
+                              </span>
+                            )}
+                          </div>
+
+                          <div style={{ fontSize: "16px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
+                            {ent.hora}
+                          </div>
+
+                          <div style={{ fontSize: "10.5px", color: "#94a3b8", marginTop: "2px" }}>
+                            {ent.origem || "Discord"}
+                          </div>
+
+                          <div style={{ marginTop: "8px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                            {isCasada ? (
+                              <button
+                                onClick={() => descasarPonto(ent.id)}
+                                style={{
+                                  background: "rgba(239,68,68,0.15)",
+                                  border: "1px solid rgba(239,68,68,0.35)",
+                                  color: "#f87171",
+                                  padding: "3px 8px",
+                                  borderRadius: "6px",
+                                  fontSize: "10.5px",
+                                  fontWeight: "800",
+                                  cursor: "pointer"
+                                }}
+                                title={saidaCasada && isAncoraAutomatica(saidaCasada) ? "Descartar e remover esta âncora automática" : "Descasar esta sessão"}
+                              >
+                                {saidaCasada && isAncoraAutomatica(saidaCasada) ? "🗑️ Descartar Âncora" : "✂️ Descasar"}
+                              </button>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => setEntradaSelecionadaId(isSelected ? null : ent.id)}
+                                  style={{
+                                    background: isSelected ? "#a855f7" : "rgba(168,85,247,0.2)",
+                                    border: `1px solid ${isSelected ? "#c084fc" : "rgba(168,85,247,0.4)"}`,
+                                    color: "#fff",
+                                    padding: "4px 8px",
+                                    borderRadius: "6px",
+                                    fontSize: "10.5px",
+                                    fontWeight: "900",
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  {isSelected ? "✕ Cancelar" : "🎯 Casar Saída"}
+                                </button>
+
+                                <button
+                                  onClick={() => criarSaida1Minuto(ent.id, ent.hora)}
+                                  style={{
+                                    background: "rgba(245,158,11,0.15)",
+                                    border: "1px solid rgba(245,158,11,0.35)",
+                                    color: "#fbbf24",
+                                    padding: "4px 8px",
+                                    borderRadius: "6px",
+                                    fontSize: "10.5px",
+                                    fontWeight: "800",
+                                    cursor: "pointer"
+                                  }}
+                                  title="Criar saída estimada de 1 minuto para crash sem atividade"
+                                >
+                                  ⏱️ 1 Minuto
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "44px", position: "relative" }}>
+                      <div style={{ position: "absolute", top: 0, bottom: 0, width: "2px", background: sessaoAtiva ? (isDiscordSession ? "rgba(16, 185, 129, 0.35)" : "rgba(245, 158, 11, 0.35)") : "rgba(255,255,255,0.04)" }} />
+                    </div>
+                  )}
+
+                  {/* Coluna 2: Bancada */}
+                  {ev.coluna === 1 ? (
+                    (() => {
+                      const b = ev.obj;
+                      const evTimestamp = ev.timestampMs || getTimestampMs(b, dataFiltro);
+                      const entradasCandidatas = entradasVisiveis
+                        .filter((e) => !e.saidaId && getTimestampMs(e, dataFiltro) <= evTimestamp)
+                        .sort((x, y) => getTimestampMs(x, dataFiltro) - getTimestampMs(y, dataFiltro));
+                      const entradaAbertaAnterior = !sessaoAtiva
+                        ? entradasCandidatas[entradasCandidatas.length - 1] || null
+                        : null;
+                      const alvoEntrada = entradaSelecionadaId
+                        ? entradas.find((e) => e.id === entradaSelecionadaId)
+                        : entradaAbertaAnterior;
+                      const podeUsarComoAncora = Boolean(alvoEntrada && !sessaoAtiva);
+
+                      return (
+                        <div style={{
+                          background: sessaoAtiva ? "rgba(245, 158, 11, 0.08)" : "rgba(30, 41, 59, 0.4)",
+                          border: `1px solid ${sessaoAtiva ? "rgba(245, 158, 11, 0.3)" : "rgba(255,255,255,0.08)"}`,
+                          borderRadius: "12px",
+                          padding: "8px 12px",
+                          transition: "all 0.2s"
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: "10px", fontWeight: "900", color: "#fbbf24", textTransform: "uppercase" }}>
+                              🔨 Bancada
+                            </span>
+                            {sessaoAtiva ? (
+                              <span style={{ fontSize: "9.5px", fontWeight: "800", color: "#34d399", background: "rgba(16,185,129,0.18)", padding: "1px 5px", borderRadius: "4px" }}>
+                                Turno #{sessaoAtiva.sessaoNumero}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: "9.5px", color: "#94a3b8" }}>{b.hora}</span>
+                            )}
+                          </div>
+
+                          <div style={{ fontSize: "13px", fontWeight: "800", color: "#fff", marginTop: "2px" }}>
+                            {b.item || b.desc || "Item de Bancada"}
+                          </div>
+
+                          {b.quantidade && (
+                            <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "1px" }}>
+                              Qtd: <strong style={{ color: "#fbbf24" }}>{b.quantidade}x</strong>
+                            </div>
+                          )}
+
+                          {podeUsarComoAncora && (
+                            <button
+                              onClick={() => {
+                                gerarSaidaPorAtividade(alvoEntrada.id, b);
+                                setEntradaSelecionadaId(null);
+                              }}
+                              style={{
+                                marginTop: "6px",
+                                width: "100%",
+                                background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
+                                border: "none",
+                                color: "#fff",
+                                padding: "4px 8px",
+                                borderRadius: "6px",
+                                fontSize: "10.5px",
+                                fontWeight: "900",
+                                cursor: "pointer",
+                                boxShadow: "0 2px 8px rgba(245,158,11,0.3)"
+                              }}
+                            >
+                              ⚡ {entradaSelecionadaId ? "Usar p/ Entrada Selecionada" : `Ancorar p/ Entr. ${alvoEntrada.hora}`}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "44px", position: "relative" }}>
+                      <div style={{ position: "absolute", top: 0, bottom: 0, width: "2px", background: sessaoAtiva ? (isDiscordSession ? "rgba(16, 185, 129, 0.35)" : "rgba(245, 158, 11, 0.35)") : "rgba(255,255,255,0.04)" }} />
+                    </div>
+                  )}
+
+                  {/* Coluna 3: Tunagem */}
+                  {ev.coluna === 2 ? (
+                    (() => {
+                      const t = ev.obj;
+                      const evTimestamp = ev.timestampMs || getTimestampMs(t, dataFiltro);
+                      const entradasCandidatas = entradasVisiveis
+                        .filter((e) => !e.saidaId && getTimestampMs(e, dataFiltro) <= evTimestamp)
+                        .sort((x, y) => getTimestampMs(x, dataFiltro) - getTimestampMs(y, dataFiltro));
+                      const entradaAbertaAnterior = !sessaoAtiva
+                        ? entradasCandidatas[entradasCandidatas.length - 1] || null
+                        : null;
+                      const alvoEntrada = entradaSelecionadaId
+                        ? entradas.find((e) => e.id === entradaSelecionadaId)
+                        : entradaAbertaAnterior;
+                      const podeUsarComoAncora = Boolean(alvoEntrada && !sessaoAtiva);
+
+                      return (
+                        <div style={{
+                          background: sessaoAtiva ? "rgba(56, 189, 248, 0.08)" : "rgba(30, 41, 59, 0.4)",
+                          border: `1px solid ${sessaoAtiva ? "rgba(56, 189, 248, 0.3)" : "rgba(255,255,255,0.08)"}`,
+                          borderRadius: "12px",
+                          padding: "8px 12px",
+                          transition: "all 0.2s"
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: "10px", fontWeight: "900", color: "#38bdf8", textTransform: "uppercase" }}>
+                              🚗 Tunagem
+                            </span>
+                            {sessaoAtiva ? (
+                              <span style={{ fontSize: "9.5px", fontWeight: "800", color: "#34d399", background: "rgba(16,185,129,0.18)", padding: "1px 5px", borderRadius: "4px" }}>
+                                Turno #{sessaoAtiva.sessaoNumero}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: "9.5px", color: "#94a3b8" }}>{t.hora}</span>
+                            )}
+                          </div>
+
+                          <div style={{ fontSize: "13px", fontWeight: "800", color: "#fff", marginTop: "2px" }}>
+                            {t.veiculo || "Veículo"}
+                          </div>
+
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "2px" }}>
+                            <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                              Placa: <strong style={{ color: "#cbd5e1" }}>{t.placa || "S/ Placa"}</strong>
+                            </span>
+                            {t.valor && (
+                              <span style={{ fontSize: "11px", fontWeight: "800", color: "#34d399" }}>
+                                R$ {Number(t.valor).toLocaleString("pt-BR")}
+                              </span>
+                            )}
+                          </div>
+
+                          {podeUsarComoAncora && (
+                            <button
+                              onClick={() => {
+                                gerarSaidaPorAtividade(alvoEntrada.id, t);
+                                setEntradaSelecionadaId(null);
+                              }}
+                              style={{
+                                marginTop: "6px",
+                                width: "100%",
+                                background: "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
+                                border: "none",
+                                color: "#fff",
+                                padding: "4px 8px",
+                                borderRadius: "6px",
+                                fontSize: "10.5px",
+                                fontWeight: "900",
+                                cursor: "pointer",
+                                boxShadow: "0 2px 8px rgba(2,132,199,0.3)"
+                              }}
+                            >
+                              ⚡ {entradaSelecionadaId ? "Usar p/ Entrada Selecionada" : `Ancorar p/ Entr. ${alvoEntrada.hora}`}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "44px", position: "relative" }}>
+                      <div style={{ position: "absolute", top: 0, bottom: 0, width: "2px", background: sessaoAtiva ? (isDiscordSession ? "rgba(16, 185, 129, 0.35)" : "rgba(245, 158, 11, 0.35)") : "rgba(255,255,255,0.04)" }} />
+                    </div>
+                  )}
+
+                  {/* Coluna 4: Saída */}
+                  {ev.coluna === 3 ? (
+                    (() => {
+                      const s = ev.obj;
+                      const isDiscord = isLogSaidaDiscord(s);
+                      const entradaCasada = s.pareadoCom ? entradas.find((e) => e.id === s.pareadoCom) : null;
+                      const isCasada = Boolean(entradaCasada);
+                      const sTimestamp = ev.timestampMs || getTimestampMs(s, dataFiltro);
+                      const entradasCandidatas = entradasVisiveis
+                        .filter((e) => !e.saidaId && getTimestampMs(e, dataFiltro) <= sTimestamp)
+                        .sort((x, y) => getTimestampMs(x, dataFiltro) - getTimestampMs(y, dataFiltro));
+                      const entradaAbertaAnterior = !isCasada
+                        ? entradasCandidatas[entradasCandidatas.length - 1] || null
+                        : null;
+                      const alvoEntrada = entradaSelecionadaId
+                        ? entradas.find((e) => e.id === entradaSelecionadaId)
+                        : entradaAbertaAnterior;
+                      const podeCasar = Boolean(alvoEntrada && !isCasada);
+                      const isIrregularGrave = Boolean(ev.sessaoAtiva?.isIrregularGrave);
+                      const isIrregularCurto = Boolean(ev.sessaoAtiva?.isIrregularCurto);
+                      const isSessaoIrregular = isIrregularGrave || isIrregularCurto;
+
+                      return (
+                        <div style={{
+                          background: podeCasar
+                            ? "linear-gradient(135deg, rgba(16,185,129,0.2) 0%, rgba(5,150,105,0.2) 100%)"
+                            : isSessaoIrregular
+                            ? "linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(185, 28, 28, 0.1) 100%)"
+                            : isCasada
+                            ? isDiscord
+                              ? "rgba(16, 185, 129, 0.12)"
+                              : "rgba(245, 158, 11, 0.12)"
+                            : isDiscord
+                            ? "rgba(239, 68, 68, 0.1)"
+                            : "rgba(245, 158, 11, 0.12)",
+                          border: `1.5px solid ${
+                            podeCasar
+                              ? "#10b981"
+                              : isSessaoIrregular
+                              ? "#ef4444"
+                              : isCasada
+                              ? isDiscord
+                                ? "rgba(16, 185, 129, 0.45)"
+                                : "rgba(245, 158, 11, 0.45)"
+                              : isDiscord
+                              ? "rgba(239, 68, 68, 0.35)"
+                              : "rgba(245, 158, 11, 0.45)"
+                          }`,
+                          borderRadius: "12px",
+                          padding: "10px 12px",
+                          boxShadow: podeCasar
+                            ? "0 0 16px rgba(16,185,129,0.4)"
+                            : isSessaoIrregular
+                            ? "0 0 12px rgba(239, 68, 68, 0.25)"
+                            : "none",
+                          transition: "all 0.2s"
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{
+                              fontSize: "10px",
+                              fontWeight: "900",
+                              color: isSessaoIrregular ? "#fca5a5" : isDiscord ? "#34d399" : "#fbbf24",
+                              textTransform: "uppercase"
+                            }}>
+                              {isIrregularGrave
+                                ? "🚨 Saída Discord (<30m)"
+                                : isIrregularCurto
+                                ? "⚠️ Saída Discord (<30m)"
+                                : isDiscord
+                                ? "🟢 Saída Discord"
+                                : "⚠️ Âncora / Crash"}
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSaidaDetalhesModal(s);
+                              }}
+                              style={{
+                                background: "rgba(255,255,255,0.08)",
+                                border: "none",
+                                color: "#94a3b8",
+                                borderRadius: "4px",
+                                padding: "2px 6px",
+                                fontSize: "10px",
+                                cursor: "pointer"
+                              }}
+                              title="Ver detalhes brutos do log"
+                            >
+                              🔍
+                            </button>
+                          </div>
+
+                          <div style={{ fontSize: "16px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
+                            {s.hora}
+                          </div>
+
+                          <div style={{ fontSize: "10.5px", color: isDiscord ? "#94a3b8" : "#fbbf24", marginTop: "2px" }}>
+                            {s.origem}
+                          </div>
+
+                          <div style={{ marginTop: "8px" }}>
+                            {isCasada ? (
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <span style={{ fontSize: "10px", fontWeight: "800", color: isDiscord ? "#34d399" : "#fbbf24" }}>
+                                  {isDiscord ? "🔒 Casada c/ " : "⚓ Casada c/ "} {entradaCasada?.hora || "Entrada"}
+                                </span>
+                                <button
+                                  onClick={() => descasarSaida(s.id)}
+                                  style={{
+                                    background: isAncoraAutomatica(s) ? "rgba(245,158,11,0.15)" : "rgba(239,68,68,0.15)",
+                                    border: `1px solid ${isAncoraAutomatica(s) ? "rgba(245,158,11,0.35)" : "rgba(239,68,68,0.35)"}`,
+                                    color: isAncoraAutomatica(s) ? "#fbbf24" : "#f87171",
+                                    padding: "3px 8px",
+                                    borderRadius: "6px",
+                                    fontSize: "10px",
+                                    fontWeight: "800",
+                                    cursor: "pointer"
+                                  }}
+                                  title={isAncoraAutomatica(s) ? "Descartar e remover esta âncora automática" : "Descasar saída"}
+                                >
+                                  {isAncoraAutomatica(s) ? "🗑️ Descartar Âncora" : "✂️ Descasar"}
+                                </button>
+                              </div>
+                            ) : isAncoraAutomatica(s) ? (
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                                {podeCasar && (
+                                  <button
+                                    onClick={() => {
+                                      casarPonto(alvoEntrada.id, s.id);
+                                      setEntradaSelecionadaId(null);
+                                    }}
+                                    style={{
+                                      flex: 1,
+                                      background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                                      border: "none",
+                                      color: "#fff",
+                                      padding: "5px 8px",
+                                      borderRadius: "6px",
+                                      fontSize: "11px",
+                                      fontWeight: "900",
+                                      cursor: "pointer",
+                                      boxShadow: "0 2px 8px rgba(16,185,129,0.4)"
+                                    }}
+                                  >
+                                    🔗 {entradaSelecionadaId ? "Casar" : `Casar c/ ${alvoEntrada.hora}`}
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => descartarAncora(s.id)}
+                                  style={{
+                                    background: "rgba(245,158,11,0.15)",
+                                    border: "1px solid rgba(245,158,11,0.4)",
+                                    color: "#fbbf24",
+                                    padding: "5px 10px",
+                                    borderRadius: "6px",
+                                    fontSize: "11px",
+                                    fontWeight: "900",
+                                    cursor: "pointer"
+                                  }}
+                                  title="Descartar e remover esta âncora"
+                                >
+                                  🗑️ Descartar
+                                </button>
+                              </div>
+                            ) : podeCasar ? (
+                              <button
+                                onClick={() => {
+                                  casarPonto(alvoEntrada.id, s.id);
+                                  setEntradaSelecionadaId(null);
+                                }}
+                                style={{
+                                  width: "100%",
+                                  background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                                  border: "none",
+                                  color: "#fff",
+                                  padding: "5px 10px",
+                                  borderRadius: "6px",
+                                  fontSize: "11px",
+                                  fontWeight: "900",
+                                  cursor: "pointer",
+                                  boxShadow: "0 2px 8px rgba(16,185,129,0.4)"
+                                }}
+                              >
+                                🔗 {entradaSelecionadaId ? "Casar c/ Entrada Selecionada" : `Casar c/ Entr. ${alvoEntrada.hora}`}
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: "10.5px", color: isDiscord ? "#34d399" : "#fbbf24", fontWeight: "700" }}>
+                                ✋ Disponível (Livre)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "44px", position: "relative" }}>
+                      <div style={{ position: "absolute", top: 0, bottom: 0, width: "2px", background: sessaoAtiva ? (isDiscordSession ? "rgba(16, 185, 129, 0.35)" : "rgba(245, 158, 11, 0.35)") : "rgba(255,255,255,0.04)" }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Toast Flutuante quando Entrada estiver selecionada */}
+        {entradaSelecionadaId && (
+          <div style={{
+            position: "fixed",
+            bottom: "24px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 9999,
+            background: "linear-gradient(135deg, rgba(30,27,75,0.95) 0%, rgba(15,23,42,0.95) 100%)",
+            border: "2px solid #a855f7",
+            boxShadow: "0 10px 40px rgba(168,85,247,0.5)",
+            borderRadius: "16px",
+            padding: "12px 24px",
+            display: "flex",
+            alignItems: "center",
+            gap: "16px",
+            backdropFilter: "blur(12px)"
+          }}>
+            <span style={{ fontSize: "22px" }}>🎯</span>
+            <div>
+              <div style={{ fontSize: "13.5px", fontWeight: "900", color: "#fff" }}>
+                Entrada das {entradas.find((e) => e.id === entradaSelecionadaId)?.hora} selecionada!
+              </div>
+              <div style={{ fontSize: "11.5px", color: "#c084fc" }}>
+                Agora clique em qualquer Saída na Coluna 4 ou em uma Atividade (Colunas 2/3) para fechar o turno.
+              </div>
+            </div>
+            <button
+              onClick={() => setEntradaSelecionadaId(null)}
+              style={{
+                background: "rgba(255,255,255,0.1)",
+                border: "1px solid rgba(255,255,255,0.2)",
+                color: "#fff",
+                padding: "6px 12px",
+                borderRadius: "8px",
+                fontSize: "12px",
+                fontWeight: "800",
+                cursor: "pointer"
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
+        </div>
+
+        {/* COLUNA DIREITA: Painel Flutuante Acompanhando a Tela (Sticky) */}
+        <div style={{
+          position: "sticky",
+          top: "16px",
+          maxHeight: "calc(100vh - 32px)",
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: "12px",
+          background: "linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.9) 100%)",
+          border: "1px solid rgba(255, 255, 255, 0.12)",
+          borderRadius: "16px",
+          padding: "16px",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.6)",
+          backdropFilter: "blur(12px)",
+          zIndex: 35
+        }}>
+          {/* Header do Painel */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "10px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "16px" }}>⏱️</span>
+              <span style={{ fontSize: "12.5px", fontWeight: "900", color: "#fff", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                Tempos do Ciclo
+              </span>
+            </div>
+            <span style={{
+              fontSize: "10.5px",
+              fontWeight: "800",
+              color: sessoesPendentesSaida === 0 ? "#34d399" : "#fbbf24",
+              background: sessoesPendentesSaida === 0 ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)",
+              padding: "2px 7px",
+              borderRadius: "8px"
+            }}>
+              {sessoesCasadas}/{totalSessoesVisiveis} Fechados
+            </span>
+          </div>
+
+          {/* Lista de Turnos: T#1, T#2, T#3... */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", overflowY: "auto", maxHeight: "calc(100vh - 240px)", paddingRight: "2px" }}>
+            {turnosResumo.length === 0 ? (
+              <div style={{ fontSize: "11.5px", color: "#64748b", textAlign: "center", padding: "16px 8px" }}>
+                Nenhum turno registrado neste ciclo.
+              </div>
+            ) : (
+              turnosResumo.map((t) => {
+                const isIrreg = t.isIrregularGrave || t.isIrregularCurto;
+
+                return (
+                  <div
+                    key={t.tNum}
+                    onClick={() => {
+                      const el = document.getElementById(`tl-ent-${t.entradaId}`);
+                      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }}
+                    style={{
+                      background: isIrreg
+                        ? "linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(185, 28, 28, 0.1) 100%)"
+                        : t.isCasada
+                        ? t.isDiscord
+                          ? "rgba(16, 185, 129, 0.08)"
+                          : "rgba(245, 158, 11, 0.08)"
+                        : "rgba(239, 68, 68, 0.1)",
+                      border: `1.5px solid ${
+                        isIrreg
+                          ? "#ef4444"
+                          : t.isCasada
+                          ? t.isDiscord
+                            ? "rgba(16, 185, 129, 0.3)"
+                            : "rgba(245, 158, 11, 0.35)"
+                          : "rgba(239, 68, 68, 0.35)"
+                      }`,
+                      borderRadius: "10px",
+                      padding: "9px 12px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      cursor: "pointer",
+                      boxShadow: isIrreg ? "0 0 10px rgba(239, 68, 68, 0.2)" : "none",
+                      transition: "all 0.15s"
+                    }}
+                    title="Clique para localizar este turno na linha do tempo"
+                  >
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <span style={{ fontSize: "12px", fontWeight: "900", color: "#cbd5e1" }}>
+                          T#{t.tNum}:
+                        </span>
+                        <span style={{
+                          fontSize: "13px",
+                          fontWeight: "900",
+                          color: isIrreg ? "#fca5a5" : t.isCasada ? (t.isDiscord ? "#34d399" : "#fbbf24") : "#f87171",
+                          fontFamily: "monospace"
+                        }}>
+                          {t.duracaoTexto}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: "10.5px", color: "#94a3b8", marginTop: "2px" }}>
+                        {t.horaEntrada} ➔ {t.horaSaida || "Sem Saída"}
+                      </div>
+                    </div>
+
+                    {isIrreg ? (
+                      <span style={{
+                        fontSize: "9px",
+                        fontWeight: "900",
+                        color: "#fff",
+                        background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)",
+                        border: "1px solid #f87171",
+                        padding: "2px 6px",
+                        borderRadius: "6px"
+                      }}>
+                        {t.isIrregularGrave ? "🚨 <30m Discord" : "⚠️ <30m Discord"}
+                      </span>
+                    ) : (
+                      <span style={{
+                        fontSize: "9.5px",
+                        fontWeight: "900",
+                        color: t.isCasada ? (t.isDiscord ? "#34d399" : "#fbbf24") : "#f87171",
+                        background: t.isCasada ? (t.isDiscord ? "rgba(16,185,129,0.18)" : "rgba(245,158,11,0.18)") : "rgba(239,68,68,0.18)",
+                        padding: "2px 6px",
+                        borderRadius: "6px"
+                      }}>
+                        {t.isCasada ? (t.isDiscord ? "🟢 Discord" : "⚠️ Âncora") : "⚠️ Pendente"}
+                      </span>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Divisor */}
+          <div style={{ borderTop: "1px dashed rgba(255, 255, 255, 0.15)", margin: "2px 0" }} />
+
+          {/* Card de Total Acumulado */}
+          <div style={{
+            background: "linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(5, 150, 105, 0.12) 100%)",
+            border: "1px solid rgba(16, 185, 129, 0.35)",
+            borderRadius: "12px",
+            padding: "10px 14px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center"
+          }}>
+            <div>
+              <span style={{ fontSize: "11px", fontWeight: "900", color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                Total:
+              </span>
+              <div style={{ fontSize: "18px", fontWeight: "900", color: "#34d399", fontFamily: "monospace", marginTop: "1px" }}>
+                {totalFormatado.replace("+", "")}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <span style={{ fontSize: "11px", color: "#cbd5e1", fontWeight: "700" }}>
+                {totalMinutosTurnos} min
+              </span>
+              <div style={{ fontSize: "9.5px", color: sessoesPendentesSaida === 0 ? "#34d399" : "#fbbf24", fontWeight: "800", marginTop: "2px" }}>
+                {sessoesPendentesSaida === 0 ? "✅ 100% Fechado" : `⚠️ ${sessoesPendentesSaida} aberto(s)`}
+              </div>
+            </div>
+          </div>
+
+          {/* Botão de Descasar Todos os Pares em Exibição */}
+          {sessoesCasadas > 0 && (
+            <button
+              onClick={descasarTodosPares}
+              disabled={salvando}
+              style={{
+                width: "100%",
+                background: "rgba(239, 68, 68, 0.12)",
+                border: "1px solid rgba(239, 68, 68, 0.35)",
+                color: "#f87171",
+                padding: "8px 12px",
+                borderRadius: "10px",
+                fontSize: "11.5px",
+                fontWeight: "900",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+                transition: "all 0.2s"
+              }}
+              title="Desfaz o casamento de todas as sessões em exibição para verificação manual"
+            >
+              <span>✂️</span>
+              <span>Descasar Todos ({sessoesCasadas})</span>
+            </button>
+          )}
+
+          {/* Botão de Gravar Integrado ao Painel */}
+          <button
+            onClick={gravarSessoesNoBanco}
+            disabled={salvando || sessoesCasadas === 0}
+            style={{
+              width: "100%",
+              background: sessoesPendentesGravacao > 0
+                ? "linear-gradient(135deg, #10b981 0%, #059669 100%)"
+                : "rgba(255,255,255,0.08)",
+              border: `1px solid ${sessoesPendentesGravacao > 0 ? "#10b981" : "rgba(255,255,255,0.15)"}`,
+              color: sessoesPendentesGravacao > 0 ? "#fff" : "#94a3b8",
+              padding: "10px 14px",
+              borderRadius: "10px",
+              fontSize: "12px",
+              fontWeight: "900",
+              cursor: salvando || sessoesCasadas === 0 ? "not-allowed" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "8px",
+              boxShadow: sessoesPendentesGravacao > 0 ? "0 4px 15px rgba(16,185,129,0.35)" : "none",
+              transition: "all 0.2s"
+            }}
+          >
+            <span>💾</span>
+            <span>{salvando ? "Gravando..." : sessoesPendentesGravacao > 0 ? `Gravar (${sessoesPendentesGravacao} pendente${sessoesPendentesGravacao > 1 ? "s" : ""})` : "Homologado em Banco"}</span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -375,7 +2205,7 @@ export default function ConciliadorPontoPage() {
       padding: "24px 20px"
     }}>
       {/* Topo / Header com Filtros Reais */}
-      <div style={{ maxWidth: "1340px", margin: "0 auto 20px" }}>
+      <div style={{ maxWidth: "1540px", margin: "0 auto 20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px", marginBottom: "16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
             <span style={{ fontSize: "32px" }}>🎯</span>
@@ -528,6 +2358,7 @@ export default function ConciliadorPontoPage() {
                   </button>
                 </div>
               </div>
+
 
               {/* Controles de Semana (quando modo === 'semana') */}
               {modo === "semana" ? (
@@ -924,964 +2755,8 @@ export default function ConciliadorPontoPage() {
         </div>
       )}
 
-      {/* Grid Principal: Duas Colunas com Pareamento */}
-      <div style={{
-        maxWidth: "1340px",
-        margin: "0 auto",
-        display: "grid",
-        gridTemplateColumns: "1fr 340px",
-        gap: "24px"
-      }}>
-        {/* COLUNA ESQUERDA: Trilhas de Entrada e Casamento */}
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
-            <h2 style={{ fontSize: "15px", fontWeight: "800", color: "#cbd5e1", margin: 0, display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#10b981" }} />
-              Sessões de Entrada ({entradasVisiveis.length} encontradas)
-            </h2>
-            <span style={{ fontSize: "12px", color: "#64748b" }}>
-              Arraste uma saída da direita ou use as âncoras de atividade
-            </span>
-          </div>
-
-          {entradasVisiveis.length === 0 ? (
-            <div style={{
-              background: "rgba(15, 23, 42, 0.5)",
-              border: "1px dashed rgba(255,255,255,0.15)",
-              borderRadius: "16px",
-              padding: "48px 24px",
-              textAlign: "center",
-              color: "#94a3b8"
-            }}>
-              <span style={{ fontSize: "36px" }}>📭</span>
-              <div style={{ fontSize: "16px", fontWeight: "800", color: "#fff", marginTop: "8px" }}>
-                Nenhum registro de ponto encontrado para este mecânico neste período.
-              </div>
-              <p style={{ fontSize: "13px", marginTop: "4px" }}>
-                Tente selecionar outro dia na barra acima, outra semana ou outro mecânico.
-              </p>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-              {entradasVisiveis.map((ent, idx) => {
-                const isAuditado = Boolean(ent.auditado);
-                const saidaCasada = saidas.find((s) => s.id === ent.saidaId);
-                const duracaoMin = saidaCasada ? calcularDuracao(ent.hora, saidaCasada.hora) : null;
-                const isOver = dragOverEntradaId === ent.id;
-
-                return (
-                  <div
-                    key={ent.id}
-                    style={{
-                      background: isAuditado
-                        ? "rgba(15, 23, 42, 0.85)"
-                        : saidaCasada
-                        ? "rgba(15, 23, 42, 0.75)"
-                        : "rgba(30, 41, 59, 0.4)",
-                      border: `1.5px solid ${
-                        isOver
-                          ? "#a855f7"
-                          : isAuditado
-                          ? "rgba(16, 185, 129, 0.45)"
-                          : saidaCasada
-                          ? "rgba(245, 158, 11, 0.4)"
-                          : "rgba(239, 68, 68, 0.35)"
-                      }`,
-                      borderRadius: "16px",
-                      padding: "18px 20px",
-                      transition: "all 0.2s",
-                      boxShadow: isOver
-                        ? "0 0 20px rgba(168,85,247,0.3)"
-                        : isAuditado
-                        ? "0 4px 18px rgba(16, 185, 129, 0.08)"
-                        : "none"
-                    }}
-                  >
-                    {/* Header de Status de Auditoria do Par */}
-                    <div style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: "14px",
-                      paddingBottom: "10px",
-                      borderBottom: isAuditado
-                        ? "1px solid rgba(16, 185, 129, 0.25)"
-                        : saidaCasada
-                        ? "1px dashed rgba(245, 158, 11, 0.3)"
-                        : "1px dashed rgba(239, 68, 68, 0.25)",
-                      flexWrap: "wrap",
-                      gap: "8px"
-                    }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                        {isAuditado ? (
-                          <>
-                            <span style={{
-                              background: "rgba(16, 185, 129, 0.2)",
-                              border: "1px solid rgba(16, 185, 129, 0.5)",
-                              color: "#34d399",
-                              fontSize: "11px",
-                              fontWeight: "900",
-                              padding: "3px 10px",
-                              borderRadius: "20px",
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "5px"
-                            }}>
-                              🛡️ SESSÃO AUDITADA POR RESPONSÁVEL
-                            </span>
-                            <span style={{
-                              background: "rgba(168, 85, 247, 0.15)",
-                              border: "1px solid rgba(168, 85, 247, 0.4)",
-                              color: "#c084fc",
-                              fontSize: "11px",
-                              fontWeight: "800",
-                              padding: "2px 8px",
-                              borderRadius: "6px"
-                            }}>
-                              {ent.tipoFechamento || "VALIDADO_CONCILIADOR"}
-                            </span>
-                          </>
-                        ) : saidaCasada ? (
-                          <>
-                            <span style={{
-                              background: "rgba(245, 158, 11, 0.18)",
-                              border: "1px solid rgba(245, 158, 11, 0.45)",
-                              color: "#fbbf24",
-                              fontSize: "11px",
-                              fontWeight: "900",
-                              padding: "3px 10px",
-                              borderRadius: "20px",
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "5px"
-                            }}>
-                              ⚠️ CASADO (PENDENTE DE GRAVAÇÃO)
-                            </span>
-                            <span style={{ fontSize: "11px", color: "#f59e0b" }}>
-                              Clique em &quot;Gravar Alterações&quot; no topo para persistir
-                            </span>
-                          </>
-                        ) : (
-                          <span style={{
-                            background: "rgba(239, 68, 68, 0.15)",
-                            border: "1px solid rgba(239, 68, 68, 0.4)",
-                            color: "#f87171",
-                            fontSize: "11px",
-                            fontWeight: "800",
-                            padding: "3px 10px",
-                            borderRadius: "20px",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "5px"
-                          }}>
-                            🚨 PENDENTE DE AUDITORIA (SEM SAÍDA)
-                          </span>
-                        )}
-                      </div>
-
-                      {isAuditado && (
-                        <span style={{ fontSize: "11px", color: "#6ee7b7", fontWeight: "700", display: "flex", alignItems: "center", gap: "4px" }}>
-                          <span>🔒</span> Gravado no banco (`log_ponto`)
-                        </span>
-                      )}
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "220px 140px 1fr", gap: "16px", alignItems: "center" }}>
-                      {/* Bloco de Entrada */}
-                      <div style={{
-                        background: "rgba(16, 185, 129, 0.12)",
-                        border: "1px solid rgba(16, 185, 129, 0.35)",
-                        borderRadius: "12px",
-                        padding: "12px 14px"
-                      }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <span style={{ fontSize: "10px", fontWeight: "900", color: "#34d399", textTransform: "uppercase" }}>
-                            🟢 Entrada #{idx + 1}
-                          </span>
-                          {ent.data && (
-                            <span style={{ fontSize: "10px", fontWeight: "800", color: "#c084fc", background: "rgba(168,85,247,0.18)", padding: "1px 6px", borderRadius: "4px" }}>
-                              📅 {ent.data.slice(8, 10)}/{ent.data.slice(5, 7)}
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: "20px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
-                          {ent.hora}
-                        </div>
-                        <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
-                          {ent.origem}
-                        </div>
-                      </div>
-
-                      {/* Linha Conectora de Duração */}
-                      <div style={{ textAlign: "center" }}>
-                        {isAuditado ? (
-                          <div>
-                            <div style={{ fontSize: "15px", fontWeight: "900", color: "#34d399" }}>
-                              {formatarMinutos(duracaoMin)}
-                            </div>
-                            <div style={{
-                              height: "3px",
-                              background: "#10b981",
-                              borderRadius: "2px",
-                              margin: "4px 0",
-                              boxShadow: "0 0 8px rgba(16, 185, 129, 0.4)"
-                            }} />
-                            <div style={{
-                              fontSize: "10px",
-                              color: "#34d399",
-                              fontWeight: "900",
-                              letterSpacing: "0.5px"
-                            }}>
-                              🛡️ AUDITADO
-                            </div>
-                          </div>
-                        ) : saidaCasada ? (
-                          <div>
-                            <div style={{ fontSize: "14px", fontWeight: "900", color: "#fbbf24" }}>
-                              {formatarMinutos(duracaoMin)}
-                            </div>
-                            <div style={{
-                              height: "2px",
-                              background: "linear-gradient(90deg, #f59e0b, #ec4899)",
-                              margin: "4px 0"
-                            }} />
-                            <div style={{ fontSize: "10px", color: "#fbbf24", fontWeight: "800" }}>
-                              🔗 NOVO PAR
-                            </div>
-                          </div>
-                        ) : (
-                          <div>
-                            <div style={{ fontSize: "13px", fontWeight: "900", color: "#f87171" }}>
-                              Sem Saída
-                            </div>
-                            <div style={{ height: "2px", borderTop: "2px dashed #f87171", margin: "4px 0" }} />
-                            <div style={{ fontSize: "10px", color: "#ef4444", fontWeight: "800" }}>⚠️ ÓRFÃO</div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Bloco da Saída (ou Dropzone) */}
-                      <div>
-                        {saidaCasada ? (
-                          <div style={{
-                            background: isAuditado
-                              ? "rgba(16, 185, 129, 0.12)"
-                              : saidaCasada.geradoPorLog
-                              ? "rgba(56, 189, 248, 0.12)"
-                              : "rgba(239, 68, 68, 0.12)",
-                            border: `1px solid ${
-                              isAuditado
-                                ? "rgba(16, 185, 129, 0.35)"
-                                : saidaCasada.geradoPorLog
-                                ? "rgba(56, 189, 248, 0.4)"
-                                : "rgba(239, 68, 68, 0.35)"
-                            }`,
-                            borderRadius: "12px",
-                            padding: "12px 14px",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center"
-                          }}>
-                            <div
-                              onClick={() => setSaidaDetalhesModal(saidaCasada)}
-                              style={{ cursor: "pointer", flex: 1 }}
-                              title="Clique para ver os detalhes completos deste log de saída"
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                <span style={{
-                                  fontSize: "10px",
-                                  fontWeight: "900",
-                                  color: isAuditado
-                                    ? "#34d399"
-                                    : saidaCasada.geradoPorLog
-                                    ? "#38bdf8"
-                                    : "#f87171",
-                                  textTransform: "uppercase"
-                                }}>
-                                  🔴 Saída {isAuditado ? "(Homologada)" : saidaCasada.geradoPorLog ? "(Criada por Âncora)" : "Registrada"}
-                                </span>
-                                {saidaCasada.data && (
-                                  <span style={{ fontSize: "10px", fontWeight: "800", color: "#c084fc", background: "rgba(168,85,247,0.18)", padding: "1px 6px", borderRadius: "4px" }}>
-                                    📅 {(saidaCasada.dataOriginal || saidaCasada.data).slice(8, 10)}/{(saidaCasada.dataOriginal || saidaCasada.data).slice(5, 7)}
-                                  </span>
-                                )}
-                              </div>
-                              <div style={{ fontSize: "20px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
-                                {saidaCasada.hora}
-                              </div>
-                              <div style={{ fontSize: "11px", color: "#94a3b8" }}>
-                                {saidaCasada.origem}
-                              </div>
-                            </div>
-
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSaidaDetalhesModal(saidaCasada);
-                                }}
-                                style={{
-                                  background: "rgba(56,189,248,0.15)",
-                                  border: "1px solid rgba(56,189,248,0.35)",
-                                  color: "#38bdf8",
-                                  borderRadius: "8px",
-                                  padding: "6px 10px",
-                                  fontSize: "11px",
-                                  fontWeight: "800",
-                                  cursor: "pointer"
-                                }}
-                                title="Ver informações completas do log de saída"
-                              >
-                                ℹ️ Log
-                              </button>
-
-                              <button
-                                onClick={() => descasarPonto(ent.id)}
-                                style={{
-                                  background: "rgba(255,255,255,0.08)",
-                                  border: "1px solid rgba(255,255,255,0.15)",
-                                  color: isAuditado ? "#cbd5e1" : "#f87171",
-                                  borderRadius: "8px",
-                                  padding: "6px 10px",
-                                  fontSize: "11px",
-                                  fontWeight: "800",
-                                  cursor: "pointer"
-                                }}
-                                title={isAuditado ? "Reabrir par para reauditoria" : "Desfazer Casamento"}
-                              >
-                                {isAuditado ? "✂️ Reabrir Par" : "✂️ Descasar"}
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            onDragOver={(e) => handleDragOver(e, ent.id)}
-                            onDragLeave={handleDragLeave}
-                            onDrop={(e) => handleDrop(e, ent.id)}
-                            onClick={() => {
-                              if (saidaSelecionadaId) {
-                                casarPonto(ent.id, saidaSelecionadaId);
-                                setSaidaSelecionadaId(null);
-                              }
-                            }}
-                            style={{
-                              border: `2px ${saidaSelecionadaId ? "solid #c084fc" : isOver ? "solid #a855f7" : "dashed rgba(255, 255, 255, 0.2)"}`,
-                              background: saidaSelecionadaId
-                                ? "linear-gradient(135deg, rgba(168,85,247,0.2) 0%, rgba(126,34,206,0.2) 100%)"
-                                : isOver
-                                ? "rgba(168, 85, 247, 0.15)"
-                                : "rgba(0, 0, 0, 0.2)",
-                              borderRadius: "12px",
-                              padding: "16px",
-                              textAlign: "center",
-                              color: saidaSelecionadaId ? "#c084fc" : isOver ? "#c084fc" : "#94a3b8",
-                              fontSize: "12px",
-                              fontWeight: "700",
-                              transition: "all 0.2s",
-                              cursor: saidaSelecionadaId ? "pointer" : "default",
-                              boxShadow: saidaSelecionadaId ? "0 0 15px rgba(168,85,247,0.3)" : "none"
-                            }}
-                          >
-                            {saidaSelecionadaId ? (
-                              <div>
-                                <div style={{ fontSize: "13px", fontWeight: "900", color: "#c084fc" }}>
-                                  🎯 Clique aqui para casar com a saída {saidaSelecionadaObj?.hora}!
-                                </div>
-                                <div style={{ fontSize: "11px", color: "#cbd5e1", marginTop: "2px" }}>
-                                  {saidaSelecionadaObj?.origem}
-                                </div>
-                              </div>
-                            ) : isOver ? (
-                              "🎯 Solte a Saída Aqui para Casar!"
-                            ) : (
-                              <div>
-                                <div>📥 Arraste uma saída da direita OU clique nela no banco lateral</div>
-                                {saidasDisponiveisDropdown.length > 0 && (
-                                  <div style={{ marginTop: "8px" }} onClick={(e) => e.stopPropagation()}>
-                                    <select
-                                      defaultValue=""
-                                      onChange={(e) => {
-                                        if (e.target.value) {
-                                          casarPonto(ent.id, e.target.value);
-                                          e.target.value = "";
-                                        }
-                                      }}
-                                      style={{
-                                        background: "#1e293b",
-                                        border: "1px solid rgba(168,85,247,0.4)",
-                                        color: "#c084fc",
-                                        padding: "5px 10px",
-                                        borderRadius: "8px",
-                                        fontSize: "11.5px",
-                                        fontWeight: "800",
-                                        cursor: "pointer",
-                                        outline: "none"
-                                      }}
-                                    >
-                                      <option value="" disabled>⚡ Escolher Saída Disponível...</option>
-                                      {saidasDisponiveisDropdown.map((s) => (
-                                        <option key={s.id} value={s.id}>
-                                          🔴 {s.hora} ({s.data ? `${s.data.slice(8, 10)}/${s.data.slice(5, 7)}` : ""}) — {s.origem}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* GAVETA DE ATIVIDADES E SERVIÇOS NO INTERVALO */}
-                    <div style={{
-                      marginTop: "16px",
-                      paddingTop: "14px",
-                      borderTop: "1px solid rgba(255,255,255,0.08)"
-                    }}>
-                      {!saidaCasada ? (
-                        /* Caso NÃO tenha saída casada: Modo Busca de Âncora */
-                        <>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
-                            <span style={{ fontSize: "12px", fontWeight: "800", color: "#38bdf8", display: "flex", alignItems: "center", gap: "6px" }}>
-                              🔍 Âncoras de Atividade Detectadas no Intervalo
-                            </span>
-                            <button
-                              onClick={() => criarSaida1Minuto(ent.id, ent.hora)}
-                              style={{
-                                background: "rgba(239,68,68,0.12)",
-                                border: "1px solid rgba(239,68,68,0.3)",
-                                color: "#f87171",
-                                padding: "3px 8px",
-                                borderRadius: "6px",
-                                fontSize: "11px",
-                                fontWeight: "700",
-                                cursor: "pointer"
-                              }}
-                            >
-                              ⏱️ Fechar com 1 Minuto (Crash sem trampo)
-                            </button>
-                          </div>
-
-                          {ent.atividades && ent.atividades.length > 0 ? (
-                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                              {ent.atividades.map((atv) => (
-                                <div
-                                  key={atv.id}
-                                  style={{
-                                    background: atv.isUltima ? "rgba(56, 189, 248, 0.1)" : "rgba(255,255,255,0.03)",
-                                    border: `1px solid ${atv.isUltima ? "rgba(56, 189, 248, 0.35)" : "rgba(255,255,255,0.06)"}`,
-                                    padding: "8px 12px",
-                                    borderRadius: "8px",
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    alignItems: "center",
-                                    flexWrap: "wrap",
-                                    gap: "8px"
-                                  }}
-                                >
-                                  <span style={{ fontSize: "12px", color: "#e2e8f0" }}>
-                                    <strong style={{ color: atv.tipo === "tunagem" ? "#38bdf8" : "#c084fc" }}>[{atv.hora}]</strong> {atv.desc}
-                                  </span>
-
-                                  <button
-                                    onClick={() => gerarSaidaPorAtividade(ent.id, atv)}
-                                    style={{
-                                      background: atv.isUltima
-                                        ? "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)"
-                                        : "rgba(255,255,255,0.08)",
-                                      border: "none",
-                                      color: "#fff",
-                                      padding: "5px 12px",
-                                      borderRadius: "6px",
-                                      fontSize: "11px",
-                                      fontWeight: "800",
-                                      cursor: "pointer",
-                                      boxShadow: atv.isUltima ? "0 2px 8px rgba(2,132,199,0.3)" : "none"
-                                    }}
-                                  >
-                                    {atv.isUltima ? `⚡ Criar Saída no Último Serviço (${atv.hora})` : `Usar este (${atv.hora})`}
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", padding: "4px 0" }}>
-                              Nenhuma tunagem ou compra de bancada registrada por este mecânico no intervalo.
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        /* Caso TENHA saída casada: Exibir Auditoria de Serviços no Período */
-                        <div>
-                          {(() => {
-                            const atvs = ent.atividades || [];
-                            const tunagens = atvs.filter((a) => a.tipo === "tunagem");
-                            const bancadas = atvs.filter((a) => a.tipo === "bancada");
-                            const isExpandido = Boolean(atividadesExpandidas[ent.id]);
-                            const ultimaAtividade = atvs.length > 0 ? atvs[atvs.length - 1] : null;
-
-                            return (
-                              <div>
-                                <div style={{
-                                  display: "flex",
-                                  justifyContent: "space-between",
-                                  alignItems: "center",
-                                  flexWrap: "wrap",
-                                  gap: "8px"
-                                }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                                    <span style={{ fontSize: "12px", fontWeight: "800", color: atvs.length > 0 ? "#38bdf8" : "#94a3b8", display: "flex", alignItems: "center", gap: "5px" }}>
-                                      <span>🛠️</span>
-                                      Serviços Realizados no Turno ({atvs.length}):
-                                    </span>
-                                    {atvs.length > 0 ? (
-                                      <div style={{ display: "flex", gap: "6px" }}>
-                                        <span style={{
-                                          background: "rgba(56,189,248,0.15)",
-                                          border: "1px solid rgba(56,189,248,0.3)",
-                                          color: "#38bdf8",
-                                          fontSize: "10.5px",
-                                          fontWeight: "800",
-                                          padding: "1px 6px",
-                                          borderRadius: "6px"
-                                        }}>
-                                          🚗 {tunagens.length} tunagem(ns)
-                                        </span>
-                                        <span style={{
-                                          background: "rgba(168,85,247,0.15)",
-                                          border: "1px solid rgba(168,85,247,0.3)",
-                                          color: "#c084fc",
-                                          fontSize: "10.5px",
-                                          fontWeight: "800",
-                                          padding: "1px 6px",
-                                          borderRadius: "6px"
-                                        }}>
-                                          ⚙️ {bancadas.length} bancada(s)
-                                        </span>
-                                      </div>
-                                    ) : (
-                                      <span style={{ fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
-                                        Nenhum registro de tunagem ou bancada neste intervalo
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                    {ultimaAtividade && ent.tipoFechamento === "CRASH_SEM_ATIVIDADE" && (
-                                      <button
-                                        onClick={() => gerarSaidaPorAtividade(ent.id, ultimaAtividade)}
-                                        style={{
-                                          background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
-                                          border: "none",
-                                          color: "#fff",
-                                          padding: "4px 10px",
-                                          borderRadius: "6px",
-                                          fontSize: "11px",
-                                          fontWeight: "800",
-                                          cursor: "pointer",
-                                          boxShadow: "0 2px 8px rgba(245,158,11,0.3)"
-                                        }}
-                                        title={`Substituir saída fantasma pela última atividade real (${ultimaAtividade.hora})`}
-                                      >
-                                        ⚡ Retificar p/ Última Atividade ({ultimaAtividade.hora})
-                                      </button>
-                                    )}
-
-                                    {atvs.length > 0 && (
-                                      <button
-                                        onClick={() => toggleExpandirAtividades(ent.id)}
-                                        style={{
-                                          background: "rgba(255,255,255,0.06)",
-                                          border: "1px solid rgba(255,255,255,0.12)",
-                                          color: "#cbd5e1",
-                                          padding: "3px 8px",
-                                          borderRadius: "6px",
-                                          fontSize: "11px",
-                                          fontWeight: "700",
-                                          cursor: "pointer"
-                                        }}
-                                      >
-                                        {isExpandido ? "▲ Ocultar Serviços" : `▼ Ver ${atvs.length} Serviços`}
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-
-                                {isExpandido && atvs.length > 0 && (
-                                  <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                                    {atvs.map((atv) => (
-                                      <div
-                                        key={atv.id}
-                                        style={{
-                                          background: "rgba(255,255,255,0.03)",
-                                          border: `1px solid ${atv.isUltima ? "rgba(56, 189, 248, 0.4)" : "rgba(255,255,255,0.06)"}`,
-                                          padding: "7px 12px",
-                                          borderRadius: "8px",
-                                          display: "flex",
-                                          justifyContent: "space-between",
-                                          alignItems: "center",
-                                          flexWrap: "wrap",
-                                          gap: "8px"
-                                        }}
-                                      >
-                                        <span style={{ fontSize: "11.5px", color: "#e2e8f0" }}>
-                                          <strong style={{ color: atv.tipo === "tunagem" ? "#38bdf8" : "#c084fc" }}>[{atv.hora}]</strong> {atv.desc}
-                                        </span>
-
-                                        <button
-                                          onClick={() => gerarSaidaPorAtividade(ent.id, atv)}
-                                          style={{
-                                            background: "rgba(255,255,255,0.08)",
-                                            border: "1px solid rgba(255,255,255,0.15)",
-                                            color: "#fff",
-                                            padding: "3px 8px",
-                                            borderRadius: "5px",
-                                            fontSize: "10.5px",
-                                            fontWeight: "700",
-                                            cursor: "pointer"
-                                          }}
-                                          title={`Reancorar saída exatamente neste horário (${atv.hora})`}
-                                        >
-                                          ⚓ Usar este ({atv.hora})
-                                        </button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Sessões já homologadas em log_ponto */}
-          {sessoesExistentesVisiveis.length > 0 && (
-            <div style={{
-              marginTop: "24px",
-              background: "rgba(15,23,42,0.6)",
-              border: "1px solid rgba(16,185,129,0.25)",
-              borderRadius: "14px",
-              padding: "18px 22px"
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
-                <div style={{ fontSize: "13.5px", fontWeight: "800", color: "#34d399", display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span>🛡️</span> Sessões Homologadas Atualmente no Banco de Dados (`log_ponto`):
-                </div>
-                <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                  Total: {sessoesExistentesVisiveis.length} sessão(ões) persistidas
-                </span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {sessoesExistentesVisiveis.map((s, i) => (
-                  <div
-                    key={s.id || i}
-                    style={{
-                      background: "rgba(255,255,255,0.03)",
-                      border: "1px solid rgba(255,255,255,0.08)",
-                      borderRadius: "10px",
-                      padding: "10px 14px",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      gap: "10px"
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: "900", color: "#a855f7", fontSize: "12px" }}>
-                        #{i + 1}
-                      </span>
-                      {s.data && (
-                        <span style={{ fontSize: "10.5px", fontWeight: "800", color: "#c084fc", background: "rgba(168,85,247,0.18)", padding: "1px 6px", borderRadius: "4px" }}>
-                          📅 {String(s.data).slice(8, 10)}/{String(s.data).slice(5, 7)}
-                        </span>
-                      )}
-                      <span style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: "700" }}>
-                        🟢 {s.horaEntradaFormatada || s.entrada?.slice(11, 19) || "—"} ➔ 🔴 {s.horaSaidaFormatada || s.saida?.slice(11, 19) || "—"}
-                      </span>
-                      <span style={{ background: "rgba(16,185,129,0.15)", color: "#34d399", fontSize: "11.5px", fontWeight: "800", padding: "2px 8px", borderRadius: "6px" }}>
-                        ⏱️ {s.total_minutos} min
-                      </span>
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <code style={{
-                        background: "rgba(168,85,247,0.12)",
-                        color: "#c084fc",
-                        padding: "2px 8px",
-                        borderRadius: "6px",
-                        fontSize: "11px",
-                        fontWeight: "700"
-                      }}>
-                        {s.tipo_fechamento}
-                      </code>
-                      <span style={{
-                        background: "rgba(16,185,129,0.15)",
-                        border: "1px solid rgba(16,185,129,0.3)",
-                        color: "#34d399",
-                        fontSize: "10.5px",
-                        fontWeight: "800",
-                        padding: "2px 8px",
-                        borderRadius: "12px"
-                      }}>
-                        ✅ Gravado
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* COLUNA DIREITA: Banco de Saídas Disponíveis (Fixado na Rolagem) */}
-        <div style={{
-          position: "sticky",
-          top: "20px",
-          maxHeight: "calc(100vh - 40px)",
-          display: "flex",
-          flexDirection: "column",
-          alignSelf: "start",
-          background: "rgba(15, 23, 42, 0.8)",
-          border: "1px solid rgba(255,255,255,0.08)",
-          borderRadius: "16px",
-          padding: "16px",
-          boxShadow: "0 8px 30px rgba(0,0,0,0.5)"
-        }}>
-          {/* Header do Banco de Saídas */}
-          <div style={{ marginBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "12px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h2 style={{ fontSize: "14.5px", fontWeight: "800", color: "#cbd5e1", margin: 0, display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#ef4444" }} />
-                Banco de Saídas
-              </h2>
-              <span style={{
-                background: totalSaidasLivresDoPeriodo > 0 ? "rgba(16,185,129,0.18)" : "rgba(255,255,255,0.06)",
-                border: `1px solid ${totalSaidasLivresDoPeriodo > 0 ? "rgba(16,185,129,0.4)" : "rgba(255,255,255,0.1)"}`,
-                color: totalSaidasLivresDoPeriodo > 0 ? "#34d399" : "#94a3b8",
-                padding: "2px 8px",
-                borderRadius: "10px",
-                fontSize: "11px",
-                fontWeight: "900"
-              }}>
-                {totalSaidasLivresDoPeriodo} livre(s)
-              </span>
-            </div>
-
-            {/* Toggle para Ocultar Saídas Já Vinculadas */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "10px" }}>
-              <label style={{
-                fontSize: "11.5px",
-                color: ocultarVinculadas ? "#c084fc" : "#94a3b8",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                userSelect: "none",
-                fontWeight: "700"
-              }}>
-                <input
-                  type="checkbox"
-                  checked={ocultarVinculadas}
-                  onChange={(e) => setOcultarVinculadas(e.target.checked)}
-                  style={{ cursor: "pointer", accentColor: "#a855f7" }}
-                />
-                <span>Ocultar já vinculadas</span>
-              </label>
-
-              <span style={{ fontSize: "10.5px", color: "#64748b" }}>
-                {saidasVisiveis.length} de {totalSaidasDoPeriodo}
-              </span>
-            </div>
-          </div>
-
-          {/* Banner de Saída Selecionada para Casamento Rápido */}
-          {saidaSelecionadaId && (
-            <div style={{
-              background: "linear-gradient(135deg, rgba(168,85,247,0.25) 0%, rgba(126,34,206,0.3) 100%)",
-              border: "1px solid #c084fc",
-              borderRadius: "10px",
-              padding: "8px 12px",
-              marginBottom: "10px",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              boxShadow: "0 0 15px rgba(168,85,247,0.3)"
-            }}>
-              <div style={{ fontSize: "11.5px", color: "#fff" }}>
-                🎯 Saída <strong>{saidaSelecionadaObj?.hora}</strong> selecionada! Clique no slot da entrada.
-              </div>
-              <button
-                onClick={() => setSaidaSelecionadaId(null)}
-                style={{
-                  background: "rgba(255,255,255,0.15)",
-                  border: "none",
-                  color: "#fff",
-                  borderRadius: "6px",
-                  padding: "2px 8px",
-                  fontSize: "11px",
-                  cursor: "pointer",
-                  fontWeight: "800"
-                }}
-              >
-                ✕ Cancelar
-              </button>
-            </div>
-          )}
-
-          {/* Lista de Saídas com Rolagem Própria */}
-          {saidasVisiveis.length === 0 ? (
-            <div style={{
-              background: "rgba(15, 23, 42, 0.4)",
-              border: "1px dashed rgba(255,255,255,0.1)",
-              borderRadius: "14px",
-              padding: "24px 16px",
-              textAlign: "center",
-              fontSize: "12px",
-              color: "#64748b"
-            }}>
-              {ocultarVinculadas && totalSaidasVinculadasDoPeriodo > 0
-                ? "Todas as saídas deste período já foram vinculadas! Desmarque 'Ocultar já vinculadas' acima para vê-las."
-                : "Nenhuma saída encontrada neste período."}
-            </div>
-          ) : (
-            <div style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "10px",
-              overflowY: "auto",
-              paddingRight: "4px",
-              flex: 1
-            }}>
-              {saidasVisiveis.map((sai) => {
-                const estaCasada = Boolean(sai.pareadoCom);
-                const entradaPareada = sai.pareadoCom ? entradas.find((e) => e.id === sai.pareadoCom) : null;
-                const foiAuditada = Boolean(entradaPareada?.auditado || sai.auditado);
-                const isSelected = saidaSelecionadaId === sai.id;
-
-                return (
-                  <div
-                    key={sai.id}
-                    draggable={!estaCasada}
-                    onDragStart={(e) => handleDragStart(e, sai.id)}
-                    onClick={() => {
-                      if (!estaCasada) {
-                        setSaidaSelecionadaId(isSelected ? null : sai.id);
-                      }
-                    }}
-                    style={{
-                      background: isSelected
-                        ? "linear-gradient(135deg, rgba(168,85,247,0.25) 0%, rgba(126,34,206,0.2) 100%)"
-                        : foiAuditada
-                        ? "rgba(16, 185, 129, 0.08)"
-                        : estaCasada
-                        ? "rgba(245, 158, 11, 0.08)"
-                        : "rgba(239, 68, 68, 0.12)",
-                      border: `1.5px solid ${
-                        isSelected
-                          ? "#c084fc"
-                          : foiAuditada
-                          ? "rgba(16, 185, 129, 0.35)"
-                          : estaCasada
-                          ? "rgba(245, 158, 11, 0.35)"
-                          : "rgba(239, 68, 68, 0.4)"
-                      }`,
-                      borderRadius: "14px",
-                      padding: "12px 14px",
-                      cursor: estaCasada ? "default" : "pointer",
-                      opacity: estaCasada ? 0.75 : 1,
-                      transition: "all 0.2s",
-                      boxShadow: isSelected
-                        ? "0 0 18px rgba(168,85,247,0.4)"
-                        : estaCasada
-                        ? "none"
-                        : "0 4px 12px rgba(239,68,68,0.15)"
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{
-                        fontSize: "10.5px",
-                        fontWeight: "900",
-                        color: isSelected ? "#c084fc" : foiAuditada ? "#34d399" : estaCasada ? "#fbbf24" : "#f87171"
-                      }}>
-                        {isSelected
-                          ? "🎯 Selecionada (Clique na Entrada)"
-                          : foiAuditada
-                          ? "🛡️ Homologada em Banco"
-                          : estaCasada
-                          ? "🔒 Casada (Pendente)"
-                          : "✋ Livre (Clique ou Arraste)"}
-                      </span>
-
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        {sai.data && (
-                          <span style={{ fontSize: "10px", fontWeight: "800", color: "#c084fc", background: "rgba(168,85,247,0.18)", padding: "1px 6px", borderRadius: "4px" }}>
-                            📅 {sai.data.slice(8, 10)}/{sai.data.slice(5, 7)}
-                          </span>
-                        )}
-
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSaidaDetalhesModal(sai);
-                          }}
-                          style={{
-                            background: "rgba(255,255,255,0.08)",
-                            border: "1px solid rgba(255,255,255,0.15)",
-                            color: "#cbd5e1",
-                            borderRadius: "6px",
-                            padding: "2px 6px",
-                            fontSize: "10px",
-                            fontWeight: "800",
-                            cursor: "pointer"
-                          }}
-                          title="Ver informações completas do log de saída"
-                        >
-                          ℹ️ Log
-                        </button>
-                      </div>
-                    </div>
-
-                    <div style={{ fontSize: "20px", fontWeight: "900", color: "#fff", marginTop: "4px" }}>
-                      {sai.hora}
-                    </div>
-
-                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
-                      {sai.origem}
-                    </div>
-
-                    {!estaCasada && (
-                      <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "1px dashed rgba(239,68,68,0.25)", fontSize: "10.5px", color: isSelected ? "#c084fc" : "#fca5a5", display: "flex", alignItems: "center", gap: "6px" }}>
-                        <span>{isSelected ? "✨ Clique na entrada à esquerda para vincular" : "↔️ Arraste ou clique para selecionar"}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Dica Compacta no Rodapé da Barra Lateral */}
-          <div style={{
-            marginTop: "12px",
-            paddingTop: "10px",
-            borderTop: "1px solid rgba(255, 255, 255, 0.06)",
-            fontSize: "11px",
-            color: "#64748b",
-            lineHeight: "1.4"
-          }}>
-            💡 <strong>Dica de Pareamento:</strong> Clique numa saída livre para selecioná-la e depois clique na entrada desejada, sem precisar arrastar pela tela.
-          </div>
-        </div>
-      </div>
+      {/* Grid Principal: Trilha 4 Colunas */}
+      {renderTrilha4Colunas()}
 
       {/* MODAL DE DETALHES DO LOG DE SAÍDA */}
       {saidaDetalhesModal && (
@@ -1921,13 +2796,13 @@ export default function ConciliadorPontoPage() {
               alignItems: "center"
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <span style={{ fontSize: "22px" }}>🔴</span>
+                <span style={{ fontSize: "22px" }}>{isLogSaidaDiscord(saidaDetalhesModal) ? "🟢" : "⚠️"}</span>
                 <div>
                   <div style={{ fontSize: "15px", fontWeight: "900", color: "#fff" }}>
                     Informações do Registro de Saída
                   </div>
                   <div style={{ fontSize: "11.5px", color: "#94a3b8" }}>
-                    Horário: <strong style={{ color: "#f87171" }}>{saidaDetalhesModal.hora}</strong> • Data: <strong>{saidaDetalhesModal.dataOriginal || saidaDetalhesModal.data}</strong>
+                    Horário: <strong style={{ color: isLogSaidaDiscord(saidaDetalhesModal) ? "#34d399" : "#fbbf24" }}>{saidaDetalhesModal.hora}</strong> • Data: <strong>{saidaDetalhesModal.dataOriginal || saidaDetalhesModal.data}</strong>
                     {saidaDetalhesModal.dataOriginal && saidaDetalhesModal.dataOriginal !== saidaDetalhesModal.data && (
                       <span style={{ marginLeft: "6px", fontSize: "10px", color: "#c084fc", fontWeight: "700" }}>
                         (🌙 Turno iniciado em {saidaDetalhesModal.data.slice(8, 10)}/{saidaDetalhesModal.data.slice(5, 7)})
@@ -1966,7 +2841,9 @@ export default function ConciliadorPontoPage() {
                     📌 Tipo de Fechamento
                   </span>
                   <div style={{ fontSize: "13px", fontWeight: "900", color: "#c084fc", marginTop: "4px" }}>
-                    {saidaDetalhesModal.tipoFechamento || "NORMAL"}
+                    {isLogSaidaDiscord(saidaDetalhesModal)
+                      ? (saidaDetalhesModal.tipoFechamento && !saidaDetalhesModal.tipoFechamento.includes("CRASH") ? saidaDetalhesModal.tipoFechamento : "NORMAL (DISCORD)")
+                      : (saidaDetalhesModal.tipoFechamento || "CRASH_COM_ATIVIDADE")}
                   </div>
                 </div>
 
@@ -1974,7 +2851,7 @@ export default function ConciliadorPontoPage() {
                   <span style={{ fontSize: "10.5px", color: "#94a3b8", fontWeight: "800", textTransform: "uppercase" }}>
                     📡 Origem do Dado
                   </span>
-                  <div style={{ fontSize: "13px", fontWeight: "900", color: "#38bdf8", marginTop: "4px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "900", color: isLogSaidaDiscord(saidaDetalhesModal) ? "#38bdf8" : "#fbbf24", marginTop: "4px" }}>
                     {saidaDetalhesModal.origem || "Discord / Sistema"}
                   </div>
                 </div>
@@ -2014,9 +2891,11 @@ export default function ConciliadorPontoPage() {
                 <span style={{ fontSize: "10.5px", color: "#94a3b8", fontWeight: "800", textTransform: "uppercase" }}>
                   🔗 Status de Vinculação
                 </span>
-                <div style={{ fontSize: "12.5px", fontWeight: "800", color: saidaDetalhesModal.pareadoCom ? "#34d399" : "#fbbf24", marginTop: "4px" }}>
+                <div style={{ fontSize: "12.5px", fontWeight: "800", color: saidaDetalhesModal.pareadoCom ? (isLogSaidaDiscord(saidaDetalhesModal) ? "#34d399" : "#fbbf24") : "#fbbf24", marginTop: "4px" }}>
                   {saidaDetalhesModal.pareadoCom
-                    ? `🔒 Casada com Entrada (${saidaDetalhesModal.pareadoCom})`
+                    ? (isLogSaidaDiscord(saidaDetalhesModal)
+                      ? `🔒 Casada com Entrada (${saidaDetalhesModal.pareadoCom})`
+                      : `⚠️ Casada via Âncora/Crash (${saidaDetalhesModal.pareadoCom})`)
                     : "✋ Disponível no Banco de Saídas (Livre para Parear)"}
                 </div>
               </div>

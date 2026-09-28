@@ -102,6 +102,43 @@ function getSegundaEDomingo(dataRefStr) {
   };
 }
 
+function getRealDate(item, fallbackDate = "") {
+  if (item?.dataOriginal) return item.dataOriginal;
+  if (item?.timestampz) {
+    const d = new Date(item.timestampz);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    }
+  }
+  const baseData = item?.data || fallbackDate;
+  if (baseData && item?.hora && item.hora < "09:00:00") {
+    const [a, m, d] = baseData.split("-").map(Number);
+    const dProx = new Date(a, m - 1, d + 1);
+    return `${dProx.getFullYear()}-${String(dProx.getMonth() + 1).padStart(2, "0")}-${String(dProx.getDate()).padStart(2, "0")}`;
+  }
+  return baseData;
+}
+
+function getTimestampMs(item, fallbackDate = "") {
+  if (!item) return 0;
+  const d = getRealDate(item, fallbackDate);
+  const hr = item.hora;
+  let baseMs = 0;
+  if (d && hr) {
+    const t = new Date(`${d}T${hr}-03:00`).getTime();
+    if (!isNaN(t)) baseMs = t;
+  }
+  if (!baseMs && item.timestampz) {
+    const t = new Date(item.timestampz).getTime();
+    if (!isNaN(t)) baseMs = t;
+  }
+  if (baseMs && item.timestampz) {
+    const ms = new Date(item.timestampz).getMilliseconds();
+    if (!isNaN(ms)) baseMs += ms;
+  }
+  return baseMs;
+}
+
 function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) {
   const entradas = [];
   const saidas = [];
@@ -117,6 +154,7 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
       entradas.push({
         id: `ent-${ev.id}`,
         data: ev.data || dataDia,
+        dataOriginal: ev.dataOriginal || (ev.timestampz ? new Date(ev.timestampz).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) : (ev.data || dataDia)),
         hora: ev.hora,
         origem: ev.origem,
         uuid: ev.uuid,
@@ -124,6 +162,7 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
         auditado: false,
         tipoFechamento: null,
         atividades: [],
+        timestampz: ev.timestampz,
       });
     } else {
       if (seenSai.has(chave)) return;
@@ -131,6 +170,7 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
       saidas.push({
         id: `sai-${ev.id}`,
         data: ev.data || dataDia,
+        dataOriginal: ev.dataOriginal || (ev.timestampz ? new Date(ev.timestampz).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) : (ev.data || dataDia)),
         hora: ev.hora,
         origem: ev.origem,
         uuid: ev.uuid,
@@ -142,8 +182,9 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
   });
 
   const sessoesValidas = (sessoesExistentes || []).filter((s) => {
-    if (s.uuid_entrada && s.uuid_entrada.startsWith("AUTO_ENTRADA_")) {
-      const duplicada = sessoesExistentes.some((outra) => outra.id !== s.id && outra.uuid_saida === s.uuid_saida);
+    const isAutoEntrada = s.uuid_entrada && (s.uuid_entrada.startsWith("AUTO_ENTRADA_") || s.uuid_entrada.toLowerCase().startsWith("auto-"));
+    if (isAutoEntrada) {
+      const duplicada = sessoesExistentes.some((outra) => outra.id !== s.id && outra.uuid_saida === s.uuid_saida && !outra.uuid_entrada?.toLowerCase().startsWith("auto-"));
       if (duplicada) return false;
     }
     return true;
@@ -151,36 +192,50 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
 
   if (sessoesValidas && sessoesValidas.length > 0) {
     sessoesValidas.forEach((s) => {
-      let ent = entradas.find((e) => e.uuid === s.uuid_entrada || e.hora === s.horaEntradaFormatada);
+      let ent = null;
+      if (s.uuid_entrada) {
+        ent = entradas.find((e) => !e.saidaId && e.uuid === s.uuid_entrada);
+        if (!ent) ent = entradas.find((e) => e.uuid === s.uuid_entrada);
+      }
       if (!ent) {
-        ent = {
-          id: `ent-rec-${s.id}`,
-          data: s.data || dataDia,
-          hora: s.horaEntradaFormatada,
-          origem: "Sessão Gravada em Banco",
-          uuid: s.uuid_entrada,
-          saidaId: null,
-          auditado: true,
-          tipoFechamento: s.tipo_fechamento,
-          observacao: s.observacao,
-          timestampz: s.entrada,
-          atividades: [],
-        };
-        entradas.push(ent);
-      } else {
-        ent.observacao = s.observacao;
+        ent = entradas.find((e) => !e.saidaId && e.data === s.data && e.hora === s.horaEntradaFormatada);
+      }
+      if (!ent) {
+        ent = entradas.find((e) => !e.saidaId && e.hora === s.horaEntradaFormatada);
+      }
+      if (!ent) {
+        ent = entradas.find((e) => e.data === s.data && e.hora === s.horaEntradaFormatada);
+      }
+      if (!ent) {
+        ent = entradas.find((e) => e.hora === s.horaEntradaFormatada);
       }
 
+      // Regra de Negócio: Entradas devem ser exclusivamente logs reais do Discord.
+      // Se não houver log correspondente de entrada do Discord, não criamos entrada sintética ("Sessão Gravada em Banco").
+      if (!ent) {
+        return;
+      }
+
+      ent.observacao = s.observacao;
+
       // Busca a saída primeiro por UUID exato para priorizar o log original do Discord
-      let sai = saidas.find((x) => !x.pareadoCom && x.uuid && x.uuid === s.uuid_saida);
+      let sai = null;
+      if (s.uuid_saida) {
+        sai = saidas.find((x) => !x.pareadoCom && x.uuid === s.uuid_saida);
+        if (!sai) sai = saidas.find((x) => x.uuid === s.uuid_saida);
+      }
       if (!sai) {
-        sai = saidas.find((x) => !x.pareadoCom && x.hora === s.horaSaidaFormatada);
+        sai = saidas.find((x) => !x.pareadoCom && x.data === s.data && x.hora === s.horaSaidaFormatada);
+      }
+      if (!sai) {
+        sai = saidas.find((x) => x.data === s.data && x.hora === s.horaSaidaFormatada);
       }
 
       if (!sai) {
         sai = {
           id: `sai-rec-${s.id}`,
           data: s.data || dataDia,
+          dataOriginal: s.saida ? new Date(s.saida).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) : (s.data || dataDia),
           hora: s.horaSaidaFormatada,
           origem: (s.tipo_fechamento || "").includes("CRASH") ? "Âncora de Atividade / Crash" : "Validado por Responsável",
           uuid: s.uuid_saida,
@@ -195,26 +250,35 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
         saidas.push(sai);
       } else {
         sai.observacao = s.observacao;
-        sai.tipoFechamento = s.tipo_fechamento;
+        if (sai.origem && sai.origem.toLowerCase().includes("discord")) {
+          sai.tipoFechamento = (s.tipo_fechamento && !s.tipo_fechamento.includes("CRASH")) ? s.tipo_fechamento : "NORMAL";
+        } else {
+          sai.tipoFechamento = s.tipo_fechamento;
+        }
         sai.auditado = true;
       }
 
       ent.saidaId = sai.id;
       sai.pareadoCom = ent.id;
       ent.auditado = true;
-      ent.tipoFechamento = s.tipo_fechamento;
+      if (sai.origem && sai.origem.toLowerCase().includes("discord")) {
+        ent.tipoFechamento = (s.tipo_fechamento && !s.tipo_fechamento.includes("CRASH")) ? s.tipo_fechamento : "NORMAL";
+      } else {
+        ent.tipoFechamento = s.tipo_fechamento;
+      }
     });
   }
 
-  entradas.sort((a, b) => a.hora.localeCompare(b.hora));
-  saidas.sort((a, b) => a.hora.localeCompare(b.hora));
+  // Ordenação cronológica estrita por milissegundos absolutos (normalizados para fuso)
+  entradas.sort((a, b) => getTimestampMs(a, dataDia) - getTimestampMs(b, dataDia));
+  saidas.sort((a, b) => getTimestampMs(a, dataDia) - getTimestampMs(b, dataDia));
 
-  // Validação estrita da Regra de Ouro: Nenhuma saída gravada pode ultrapassar a próxima entrada
+  // Validação da Regra de Ouro apenas para pares NÃO auditados
   entradas.forEach((ent, idx) => {
     const proximaEntrada = entradas[idx + 1];
-    if (proximaEntrada && ent.saidaId) {
+    if (!ent.auditado && proximaEntrada && ent.saidaId) {
       const sai = saidas.find((s) => s.id === ent.saidaId);
-      if (sai && sai.hora > proximaEntrada.hora && !sai.dataOriginal) {
+      if (sai && getTimestampMs(sai, dataDia) > getTimestampMs(proximaEntrada, dataDia)) {
         // Violação da Regra de Ouro: desvincula a saída inválida que transpassa a próxima entrada
         sai.pareadoCom = null;
         ent.saidaId = null;
@@ -229,16 +293,11 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
     if (!ent.saidaId) {
       const saidaCandidata = saidas.find((s) => {
         if (s.pareadoCom) return false;
-        const horaSai = s.hora;
-        const horaEnt = ent.hora;
-        const horaProx = proximaEntrada ? proximaEntrada.hora : "23:59:59";
+        const kSai = getTimestampMs(s, dataDia);
+        const kEnt = getTimestampMs(ent, dataDia);
+        const kProx = proximaEntrada ? getTimestampMs(proximaEntrada, dataDia) : Infinity;
 
-        // Se a saída veio da madrugada seguinte (virada de noite), permite casar se for a última entrada do dia
-        if ((s.dataOriginal && s.dataOriginal !== ent.data) || (s.data && s.data !== ent.data)) {
-          return !proximaEntrada;
-        }
-
-        return horaSai >= horaEnt && horaSai <= horaProx;
+        return kSai >= kEnt && kSai <= kProx;
       });
 
       if (saidaCandidata) {
@@ -248,21 +307,20 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
     }
 
     const saidaVinculada = saidas.find((s) => s.id === ent.saidaId);
-    const horaIni = ent.hora;
-    const horaLimiteProxima = proximaEntrada ? proximaEntrada.hora : "23:59:59";
+    const kIni = getTimestampMs(ent, dataDia);
+    const kLimiteProxima = proximaEntrada ? getTimestampMs(proximaEntrada, dataDia) : Infinity;
 
-    // Pega todas as atividades deste dia entre a entrada e a próxima entrada (ou saída)
+    // Pega todas as atividades deste ciclo entre a entrada e a próxima entrada (ou saída)
     const atvsNoIntervalo = (atividades || [])
-      .filter((atv) => atv.hora >= horaIni && atv.hora <= horaLimiteProxima)
+      .filter((atv) => {
+        const kAtv = getTimestampMs(atv, dataDia);
+        return kAtv >= kIni && kAtv <= kLimiteProxima;
+      })
       .map((atv) => {
         let dentroDoPar = true;
         if (saidaVinculada) {
-          if (saidaVinculada.hora >= horaIni) {
-            dentroDoPar = atv.hora <= saidaVinculada.hora;
-          } else {
-            // Virada de meia-noite
-            dentroDoPar = atv.data === ent.data ? atv.hora >= horaIni : atv.hora <= saidaVinculada.hora;
-          }
+          const kSai = getTimestampMs(saidaVinculada, dataDia);
+          dentroDoPar = getTimestampMs(atv, dataDia) <= kSai;
         }
         return {
           ...atv,
@@ -276,17 +334,21 @@ function conciliarDia({ eventosPonto, atividades, sessoesExistentes, dataDia }) 
     ent.atividades = atvsNoIntervalo;
   });
 
-  entradas.sort((a, b) => a.hora.localeCompare(b.hora));
-  saidas.sort((a, b) => a.hora.localeCompare(b.hora));
+  // Mantém sempre ordenado cronologicamente por milissegundos absolutos
+  entradas.sort((a, b) => getTimestampMs(a, dataDia) - getTimestampMs(b, dataDia));
+  saidas.sort((a, b) => getTimestampMs(a, dataDia) - getTimestampMs(b, dataDia));
 
   // Deduplica saidas pelo UUID para garantir que nenhum UUID real apareça mais de uma vez no mesmo dia
   const saidasUnicas = [];
   const uuidsSaidasVistos = new Set();
+  const idsSaidasVistos = new Set();
   saidas.forEach((s) => {
-    if (s.uuid && !s.uuid.startsWith("CRASH_") && !s.uuid.startsWith("AUTO_")) {
-      if (uuidsSaidasVistos.has(s.uuid)) return;
+    if (s.uuid && !s.uuid.startsWith("CRASH_") && !s.uuid.startsWith("AUTO_") && !s.uuid.startsWith("sai-auto") && !s.uuid.startsWith("sai-1min")) {
+      if (uuidsSaidasVistos.has(s.uuid) && !s.pareadoCom) return;
       uuidsSaidasVistos.add(s.uuid);
     }
+    if (idsSaidasVistos.has(s.id)) return;
+    idsSaidasVistos.add(s.id);
     saidasUnicas.push(s);
   });
 
@@ -377,28 +439,30 @@ export async function GET(request) {
         return a.nome.localeCompare(b.nome);
       });
 
-    // 2. Busca mensagens de ponto do Discord (canal da RED'S: 1388991065226346718)
-    // Estende a janela: inclui o dia anterior para identificar se saídas da madrugada pertencem a turnos da noite anterior,
-    // e vai até 06:00 do dia seguinte para cobrir saídas de turnos que viram a noite.
+    // 2. Janela Operacional: das 09:00:00 de um dia até as 09:00:00 do dia seguinte (horário de Brasília)
     const [anoF, mesF, diaF] = dataFiltro.split("-").map(Number);
-    const dAnt = new Date(anoF, mesF - 1, diaF - 1);
-    const dataAnteriorStr = `${dAnt.getFullYear()}-${String(dAnt.getMonth() + 1).padStart(2, "0")}-${String(dAnt.getDate()).padStart(2, "0")}`;
+    const dProx = new Date(anoF, mesF - 1, diaF + 1);
+    const dataSeguinteStr = `${dProx.getFullYear()}-${String(dProx.getMonth() + 1).padStart(2, "0")}-${String(dProx.getDate()).padStart(2, "0")}`;
 
-    const dataFimBase = isSemana ? dataFim : dataFiltro;
-    const [fAno, fMes, fDia] = dataFimBase.split("-").map(Number);
-    const dFimBuffer = new Date(fAno, fMes - 1, fDia + 1, 6, 0, 0);
-    const dataFimBufferStr = `${dFimBuffer.getFullYear()}-${String(dFimBuffer.getMonth() + 1).padStart(2, "0")}-${String(dFimBuffer.getDate()).padStart(2, "0")}`;
-    const dataFimUtc = new Date(`${dataFimBufferStr}T06:00:00-03:00`).toISOString();
-    const dataInicioBusca = isSemana ? dataInicio : dataAnteriorStr;
-    const dataInicioUtc = new Date(`${dataInicioBusca}T00:00:00-03:00`).toISOString();
+    const inicioJanelaUtc = new Date(`${dataFiltro}T09:00:00-03:00`).toISOString();
+    const fimJanelaUtc = new Date(`${dataSeguinteStr}T09:00:00-03:00`).toISOString();
+
+    const [fAno, fMes, fDia] = (isSemana ? dataFim : dataFiltro).split("-").map(Number);
+    const dFimSeg = new Date(fAno, fMes - 1, fDia + 1);
+    const dataFimSeguinteStr = `${dFimSeg.getFullYear()}-${String(dFimSeg.getMonth() + 1).padStart(2, "0")}-${String(dFimSeg.getDate()).padStart(2, "0")}`;
+    const inicioSemanaUtc = new Date(`${dataInicio}T09:00:00-03:00`).toISOString();
+    const fimSemanaUtc = new Date(`${dataFimSeguinteStr}T09:00:00-03:00`).toISOString();
+
+    const gteUtc = isSemana ? inicioSemanaUtc : inicioJanelaUtc;
+    const lteUtc = isSemana ? fimSemanaUtc : fimJanelaUtc;
 
     let queryDiscord = v2
       .from("discord_log_messages")
       .select("id, content, created_at")
       .eq("log_type", "ponto")
       .ilike("content", `%[ID]: ${usuarioId} %`)
-      .gte("created_at", dataInicioUtc)
-      .lte("created_at", dataFimUtc)
+      .gte("created_at", gteUtc)
+      .lte("created_at", lteUtc)
       .order("id", { ascending: true });
 
     const { data: rawPontoMsgs } = await queryDiscord;
@@ -438,14 +502,13 @@ export async function GET(request) {
       .order("entrada", { ascending: true });
 
     if (isSemana) {
-      tunagensQuery = tunagensQuery.gte("data", dataInicio).lte("data", dataFim);
-      bancadaQuery = bancadaQuery.gte("data", dataInicio).lte("data", dataFim);
-      sessoesQuery = sessoesQuery.gte("data", dataInicio).lte("data", dataFim);
+      tunagensQuery = tunagensQuery.gte("data", dataInicio).lte("data", dataFimSeguinteStr);
+      bancadaQuery = bancadaQuery.gte("data", dataInicio).lte("data", dataFimSeguinteStr);
+      sessoesQuery = sessoesQuery.gte("data", dataInicio).lte("data", dataFimSeguinteStr);
     } else {
-      tunagensQuery = tunagensQuery.eq("data", dataFiltro);
-      bancadaQuery = bancadaQuery.eq("data", dataFiltro);
-      // Busca também as sessões do dia anterior para saber se alguma saída da madrugada pertence à virada de noite
-      sessoesQuery = sessoesQuery.gte("data", dataAnteriorStr).lte("data", dataFiltro);
+      tunagensQuery = tunagensQuery.in("data", [dataFiltro, dataSeguinteStr]);
+      bancadaQuery = bancadaQuery.in("data", [dataFiltro, dataSeguinteStr]);
+      sessoesQuery = sessoesQuery.in("data", [dataFiltro, dataSeguinteStr]);
     }
 
     const [tunagensRes, bancadaRes, sessoesRes] = await Promise.all([
@@ -454,24 +517,49 @@ export async function GET(request) {
       sessoesQuery,
     ]);
 
+    const processarAtividade = (item, tipo) => {
+      let hora = item.hora ? item.hora.slice(0, 8) : "";
+      let data = item.data;
+      let iso = item.timestampz;
+      if (item.timestampz) {
+        const d = new Date(item.timestampz);
+        const horaSp = d.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour12: false });
+        const dataSp = d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+        if (!hora || hora === "00:00:00") hora = horaSp;
+        if (!data) data = dataSp;
+        iso = d.toISOString();
+      } else if (data && hora) {
+        iso = new Date(`${data}T${hora}-03:00`).toISOString();
+      }
+
+      return {
+        id: item.uuid,
+        tipo,
+        data,
+        hora,
+        desc: tipo === "tunagem"
+          ? `🚗 Tunagem: ${item.veiculo_nome || "Veículo"} (${item.placa || "S/ Placa"}) — R$ ${Number(item.valor_pago || 0).toLocaleString("pt-BR")}`
+          : `🛠️ Bancada: ${item.quantidade || 1}x ${item.item_craftado || "Item"}`,
+        veiculo: item.veiculo_nome,
+        placa: item.placa,
+        valor: item.valor_pago,
+        item: item.item_craftado,
+        quantidade: item.quantidade,
+        timestampz: iso,
+      };
+    };
+
     const todasAtividades = [
-      ...(tunagensRes.data || []).map((t) => ({
-        id: t.uuid,
-        tipo: "tunagem",
-        data: t.data,
-        hora: t.hora ? t.hora.slice(0, 8) : "00:00:00",
-        desc: `🚗 Tunagem: ${t.veiculo_nome || "Veículo"} (${t.placa || "S/ Placa"}) — R$ ${Number(t.valor_pago || 0).toLocaleString("pt-BR")}`,
-        timestampz: t.timestampz,
-      })),
-      ...(bancadaRes.data || []).map((b) => ({
-        id: b.uuid,
-        tipo: "bancada",
-        data: b.data,
-        hora: b.hora ? b.hora.slice(0, 8) : "00:00:00",
-        desc: `🛠️ Bancada: ${b.quantidade || 1}x ${b.item_craftado || "Item"}`,
-        timestampz: b.timestampz,
-      })),
-    ].sort((a, b) => a.hora.localeCompare(b.hora));
+      ...(tunagensRes.data || []).map((t) => processarAtividade(t, "tunagem")),
+      ...(bancadaRes.data || []).map((b) => processarAtividade(b, "bancada")),
+    ]
+      .filter((atv) => {
+        if (atv.timestampz) {
+          return atv.timestampz >= gteUtc && atv.timestampz <= lteUtc;
+        }
+        return true;
+      })
+      .sort((a, b) => (a.timestampz || `${a.data}T${a.hora}`).localeCompare(b.timestampz || `${b.data}T${b.hora}`));
 
     const todasSessoesFormatadas = (sessoesRes.data || []).map((s) => {
       const dEnt = new Date(s.entrada);
@@ -501,28 +589,28 @@ export async function GET(request) {
       }
     });
 
-    // 2) Para saídas do Discord de madrugada (00:00 às 06:00) ainda não homologadas:
-    rawEventosPonto.forEach((evSai) => {
-      if (evSai.tipo === "saida" && !saidasReassociadas.has(evSai.id) && evSai.hora <= "06:00:00") {
-        const [a, m, d] = evSai.data.split("-").map(Number);
-        const dAnt = new Date(a, m - 1, d - 1);
-        const dataAnterior = `${dAnt.getFullYear()}-${String(dAnt.getMonth() + 1).padStart(2, "0")}-${String(dAnt.getDate()).padStart(2, "0")}`;
-
-        // Houve entrada tarde na noite anterior (>= 20:00) sem saída no mesmo dia?
-        const temEntradaNoturna = rawEventosPonto.some(
-          (evEnt) => evEnt.tipo === "entrada" && (evEnt.dataOriginal || evEnt.data) === dataAnterior && evEnt.hora >= "20:00:00"
-        );
-        const temEntradaAntesNoDia = rawEventosPonto.some(
-          (evEnt) => evEnt.tipo === "entrada" && (evEnt.dataOriginal || evEnt.data) === evSai.data && evEnt.hora < evSai.hora
-        );
-
-        if (temEntradaNoturna && !temEntradaAntesNoDia) {
-          evSai.dataOriginal = evSai.dataOriginal || evSai.data;
-          evSai.data = dataAnterior;
-          saidasReassociadas.add(evSai.id);
+    // 2) Reassocia eventos (entradas e saídas) e atividades da madrugada (00:00 às 08:59:59)
+    // ao ciclo operacional de 24h que começou às 09:00 do dia anterior.
+    const reassociarAoDiaOperacional = (item) => {
+      if (!item || !item.hora) return;
+      if (item.hora < "09:00:00") {
+        const dStr = item.dataOriginal || item.data;
+        if (dStr) {
+          const [a, m, d] = dStr.split("-").map(Number);
+          const dAnt = new Date(a, m - 1, d - 1);
+          const dataAnterior = `${dAnt.getFullYear()}-${String(dAnt.getMonth() + 1).padStart(2, "0")}-${String(dAnt.getDate()).padStart(2, "0")}`;
+          item.dataOriginal = item.dataOriginal || item.data;
+          item.data = dataAnterior;
         }
       }
+    };
+
+    rawEventosPonto.forEach((ev) => {
+      if (ev.sessaoVinculadaId) return; // Preserva associação já homologada
+      reassociarAoDiaOperacional(ev);
     });
+
+    todasAtividades.forEach(reassociarAoDiaOperacional);
 
     // Filtra eventos para a janela solicitada considerando as saídas reassociadas
     const dataMin = isSemana ? dataInicio : dataFiltro;
@@ -550,9 +638,21 @@ export async function GET(request) {
     // Se for modo dia único:
     let resultadoPrincipal;
     if (!isSemana) {
-      const evsDia = todosEventosPonto.filter((ev) => ev.data === dataFiltro);
-      const atvsDia = todasAtividades.filter((atv) => atv.data === dataFiltro);
-      const sessoesDia = todasSessoesFormatadas.filter((s) => s.data === dataFiltro);
+      const evsDia = todosEventosPonto.filter((ev) => {
+        if (ev.timestampz) return ev.timestampz >= inicioJanelaUtc && ev.timestampz <= fimJanelaUtc;
+        return true;
+      });
+      const atvsDia = todasAtividades.filter((atv) => {
+        if (atv.timestampz) return atv.timestampz >= inicioJanelaUtc && atv.timestampz <= fimJanelaUtc;
+        return true;
+      });
+      const sessoesDia = todasSessoesFormatadas.filter((s) => {
+        if (s.entrada) {
+          const entIso = new Date(s.entrada).toISOString();
+          return entIso >= inicioJanelaUtc && entIso <= fimJanelaUtc;
+        }
+        return s.data === dataFiltro;
+      });
       resultadoPrincipal = conciliarDia({
         eventosPonto: evsDia,
         atividades: atvsDia,
@@ -566,6 +666,181 @@ export async function GET(request) {
     const totalAuditadasSemana = diasDaSemanaResultado.reduce((acc, d) => acc + d.sessoesAuditadas, 0);
     const totalPendentesSemana = diasDaSemanaResultado.reduce((acc, d) => acc + d.sessoesPendentes, 0);
 
+    // 5. Compila status de toda a equipe para o painel lateral esquerdo
+    const dataMinGlobal = isSemana ? dataInicio : dataFiltro;
+    const dataMaxGlobal = isSemana ? dataFim : dataFiltro;
+
+    const [todosLogPontoRes, todosDiscordPontoRes, todosTunagensRes, todosBancadaRes] = await Promise.all([
+      v2
+        .from("log_ponto")
+        .select("id, usuario_id, nome, total_minutos, tipo_fechamento, total_atividades, qtd_tunagens, qtd_bancada, uuid_entrada, uuid_saida, observacao")
+        .eq("mecanica_id", "reds")
+        .gte("data", dataMinGlobal)
+        .lte("data", dataMaxGlobal),
+      v2
+        .from("discord_log_messages")
+        .select("content")
+        .eq("log_type", "ponto")
+        .gte("created_at", gteUtc)
+        .lte("created_at", lteUtc),
+      v2
+        .from("log_tunagem")
+        .select("tecnico_id")
+        .eq("mecanica_id", "reds")
+        .gte("data", dataMinGlobal)
+        .lte("data", dataMaxGlobal),
+      v2
+        .from("log_bancada")
+        .select("usuario_id")
+        .eq("mecanica_id", "reds")
+        .gte("data", dataMinGlobal)
+        .lte("data", dataMaxGlobal),
+    ]);
+
+    const mapaEquipe = new Map();
+
+    (todosDiscordPontoRes.data || []).forEach((m) => {
+      const match = m.content.match(/\[ID\]:\s*(\d+)\s+([^(]+)/i);
+      if (match) {
+        const uId = match[1].trim();
+        const isEntrou = m.content.includes("ENTROU EM SERVIÇO");
+        const isSaiu = m.content.includes("SAIU DE SERVIÇO");
+        if (!mapaEquipe.has(uId)) {
+          mapaEquipe.set(uId, { id: uId, entradasDiscord: 0, saidasDiscord: 0, sessoesBanco: 0, minutosBanco: 0, qtdTunagens: 0, qtdBancada: 0, qtdTurnosCurtosComServico: 0, qtdTurnosCurtosSemServico: 0 });
+        }
+        const item = mapaEquipe.get(uId);
+        if (isEntrou) item.entradasDiscord++;
+        if (isSaiu) item.saidasDiscord++;
+      }
+    });
+
+    (todosTunagensRes.data || []).forEach((t) => {
+      const uId = String(t.tecnico_id);
+      if (uId) {
+        if (!mapaEquipe.has(uId)) {
+          mapaEquipe.set(uId, { id: uId, entradasDiscord: 0, saidasDiscord: 0, sessoesBanco: 0, minutosBanco: 0, qtdTunagens: 0, qtdBancada: 0, qtdTurnosCurtosComServico: 0, qtdTurnosCurtosSemServico: 0 });
+        }
+        mapaEquipe.get(uId).qtdTunagens++;
+      }
+    });
+
+    (todosBancadaRes.data || []).forEach((b) => {
+      const uId = String(b.usuario_id);
+      if (uId) {
+        if (!mapaEquipe.has(uId)) {
+          mapaEquipe.set(uId, { id: uId, entradasDiscord: 0, saidasDiscord: 0, sessoesBanco: 0, minutosBanco: 0, qtdTunagens: 0, qtdBancada: 0, qtdTurnosCurtosComServico: 0, qtdTurnosCurtosSemServico: 0 });
+        }
+        mapaEquipe.get(uId).qtdBancada++;
+      }
+    });
+
+    const logPontoRows = todosLogPontoRes.data || [];
+    const seenUuidsEntrada = new Set();
+    const logPontoValidos = logPontoRows.filter((s) => {
+      const isAutoEntrada = s.uuid_entrada && (s.uuid_entrada.startsWith("AUTO_ENTRADA_") || s.uuid_entrada.toLowerCase().startsWith("auto-"));
+      if (isAutoEntrada) {
+        const duplicada = logPontoRows.some((outra) => outra.id !== s.id && outra.usuario_id === s.usuario_id && outra.uuid_saida === s.uuid_saida && !outra.uuid_entrada?.toLowerCase().startsWith("auto-"));
+        if (duplicada) return false;
+      }
+      // Deduplicação estrita por uuid_entrada para evitar sessões idênticas gravadas em duplicidade com datas operacionais divergentes
+      if (s.uuid_entrada && !s.uuid_entrada.startsWith("concil-ent-")) {
+        const key = `${s.usuario_id}_${s.uuid_entrada}`;
+        if (seenUuidsEntrada.has(key)) return false;
+        seenUuidsEntrada.add(key);
+      }
+      return true;
+    });
+
+    logPontoValidos.forEach((s) => {
+      const uId = String(s.usuario_id);
+      if (!mapaEquipe.has(uId)) {
+        mapaEquipe.set(uId, { id: uId, entradasDiscord: 0, saidasDiscord: 0, sessoesBanco: 0, minutosBanco: 0, qtdTunagens: 0, qtdBancada: 0, qtdTurnosCurtosComServico: 0, qtdTurnosCurtosSemServico: 0 });
+      }
+      const item = mapaEquipe.get(uId);
+      item.sessoesBanco++;
+      const minSessao = s.total_minutos || 0;
+      item.minutosBanco += minSessao;
+
+      const qtdAtv = (s.total_atividades || 0) + (s.qtd_tunagens || 0) + (s.qtd_bancada || 0);
+      const tipoFmt = String(s.tipo_fechamento || "").toUpperCase();
+      const obsFmt = String(s.observacao || "").toUpperCase();
+      const isCrash = tipoFmt.includes("CRASH") || obsFmt.includes("CRASH") || tipoFmt.includes("1MIN") || obsFmt.includes("1 MINUTO") || tipoFmt.includes("ESTIMADO");
+      const isSaidaDiscord = !isCrash;
+
+      // Irregularidade (<30m) só se aplica quando a saída foi deliberada via log do Discord, nunca por crash
+      if (minSessao > 0 && minSessao < 30 && isSaidaDiscord) {
+        if (qtdAtv > 0 || (item.qtdTunagens + item.qtdBancada > 0)) {
+          item.qtdTurnosCurtosComServico = (item.qtdTurnosCurtosComServico || 0) + 1;
+        } else {
+          item.qtdTurnosCurtosSemServico = (item.qtdTurnosCurtosSemServico || 0) + 1;
+        }
+      }
+    });
+
+    const equipePeriodo = usuarios
+      .map((u) => {
+        const info = mapaEquipe.get(String(u.id));
+        const trabalhou = Boolean(
+          info && (info.entradasDiscord > 0 || info.saidasDiscord > 0 || info.sessoesBanco > 0 || info.qtdTunagens > 0 || info.qtdBancada > 0)
+        );
+        const sessoesBanco = info?.sessoesBanco || 0;
+        const entradasDiscord = info?.entradasDiscord || 0;
+        const saidasDiscord = info?.saidasDiscord || 0;
+        const minutosBanco = info?.minutosBanco || 0;
+        const qtdTunagens = info?.qtdTunagens || 0;
+        const qtdBancada = info?.qtdBancada || 0;
+        const qtdTurnosCurtosComServico = info?.qtdTurnosCurtosComServico || 0;
+        const qtdTurnosCurtosSemServico = info?.qtdTurnosCurtosSemServico || 0;
+        const temTurnoCurtoComServico = qtdTurnosCurtosComServico > 0;
+        const temTurnoCurtoSemServico = qtdTurnosCurtosSemServico > 0;
+        const temIrregularidade = temTurnoCurtoComServico || temTurnoCurtoSemServico;
+
+        let status = "sem_registro";
+        if (trabalhou) {
+          if (sessoesBanco > 0 && entradasDiscord <= sessoesBanco) {
+            status = "avaliado";
+          } else {
+            status = "pendente";
+          }
+        }
+
+        const h = Math.floor(minutosBanco / 60);
+        const m = minutosBanco % 60;
+        const horasFormatadas = minutosBanco > 0 ? `${h}H${String(m).padStart(2, "0")}M` : "0H00M";
+
+        return {
+          id: u.id,
+          nome: u.nome,
+          cargoLabel: u.cargoLabel,
+          cargoNivel: u.cargoNivel,
+          cargoOrdem: u.cargoOrdem,
+          trabalhou,
+          status,
+          sessoesBanco,
+          minutosBanco,
+          horasFormatadas,
+          entradasDiscord,
+          saidasDiscord,
+          qtdTunagens,
+          qtdBancada,
+          temTurnoCurtoComServico,
+          qtdTurnosCurtosComServico,
+          temTurnoCurtoSemServico,
+          qtdTurnosCurtosSemServico,
+          temIrregularidade,
+        };
+      })
+      .filter((u) => u.trabalhou)
+      .sort((a, b) => {
+        if (a.status !== b.status) {
+          return a.status === "pendente" ? -1 : 1;
+        }
+        if (b.minutosBanco !== a.minutosBanco) {
+          return b.minutosBanco - a.minutosBanco;
+        }
+        return a.nome.localeCompare(b.nome);
+      });
+
     return NextResponse.json({
       ok: true,
       usuarioId,
@@ -574,7 +849,15 @@ export async function GET(request) {
       dataFiltro,
       dataInicio: semanaRef.segunda,
       dataFim: semanaRef.domingo,
+      janelaOperacional: {
+        inicio: `${dataFiltro}T09:00:00`,
+        fim: `${dataSeguinteStr}T09:00:00`,
+        inicioUtc: inicioJanelaUtc,
+        fimUtc: fimJanelaUtc,
+        label: `${dataFiltro.slice(8, 10)}/${dataFiltro.slice(5, 7)} 09:00 até ${dataSeguinteStr.slice(8, 10)}/${dataSeguinteStr.slice(5, 7)} 09:00`,
+      },
       usuarios: usuarios || [],
+      equipePeriodo: equipePeriodo || [],
       // Para o modo diário:
       entradas: isSemana ? [] : resultadoPrincipal.entradas,
       saidas: isSemana ? [] : resultadoPrincipal.saidas,
@@ -626,14 +909,20 @@ export async function POST(request) {
       const [hIni, mIni, sIni] = (s.horaEntrada || "00:00:00").split(":").map(Number);
       const [hFim, mFim, sFim] = (s.horaSaida || "00:00:00").split(":").map(Number);
       let diffMin = Math.round(((hFim * 3600 + mFim * 60 + (sFim || 0)) - (hIni * 3600 + mIni * 60 + (sIni || 0))) / 60);
-      let dataSaida = dataSessao;
+
+      // Determina as datas de calendário reais considerando a janela operacional das 09h às 09h
+      const [a, m, d] = dataSessao.split("-").map(Number);
+      const dProx = new Date(a, m - 1, d + 1);
+      const dataSeguinte = `${dProx.getFullYear()}-${String(dProx.getMonth() + 1).padStart(2, "0")}-${String(dProx.getDate()).padStart(2, "0")}`;
+
+      const dataEntradaReal = (s.horaEntrada && s.horaEntrada < "09:00:00") ? dataSeguinte : dataSessao;
+      let dataSaidaReal = dataEntradaReal;
 
       if (diffMin < 0) {
         diffMin += 1440;
-        // Horário de saída virou a noite (menor que o de entrada)
-        const [a, m, d] = dataSessao.split("-").map(Number);
-        const dProx = new Date(a, m - 1, d + 1);
-        dataSaida = `${dProx.getFullYear()}-${String(dProx.getMonth() + 1).padStart(2, "0")}-${String(dProx.getDate()).padStart(2, "0")}`;
+        dataSaidaReal = dataSeguinte;
+      } else if (s.horaSaida && s.horaSaida < "09:00:00" && s.horaEntrada >= "09:00:00") {
+        dataSaidaReal = dataSeguinte;
       }
 
       return {
@@ -641,13 +930,16 @@ export async function POST(request) {
         usuario_id: parseInt(usuario_id, 10),
         nome: nome || "Mecânico",
         data: dataSessao,
-        entrada: `${dataSessao}T${s.horaEntrada}-03:00`,
-        saida: `${dataSaida}T${s.horaSaida}-03:00`,
+        entrada: `${dataEntradaReal}T${s.horaEntrada}-03:00`,
+        saida: `${dataSaidaReal}T${s.horaSaida}-03:00`,
         uuid_entrada: s.uuidEntrada || `concil-ent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         uuid_saida: s.uuidSaida || `concil-sai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         total_minutos: diffMin,
         total_segundos: diffMin * 60,
         tipo_fechamento: s.tipoFechamento || "VALIDADO_CONCILIADOR",
+        qtd_tunagens: s.qtdTunagens || 0,
+        qtd_bancada: s.qtdBancada || 0,
+        total_atividades: (s.qtdTunagens || 0) + (s.qtdBancada || 0),
         observacao: "Sessão validada e conciliada via Conciliador Visual de Pontos.",
       };
     });
