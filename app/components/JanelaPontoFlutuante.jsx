@@ -477,14 +477,14 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       try {
         const { data: dataTunReds } = await supabase
           .from("logs_tunagem_reds")
-          .select("tecnico_id, tecnico_nome, data, hora")
+          .select("tecnico_id, tecnico_nome, dono_id, dono_nome, data, hora")
           .gte("data", lookbackStrSP);
         if (dataTunReds && dataTunReds.length > 0) {
           logsTunagem = dataTunReds;
         } else {
           const { data: dataTunGeral } = await supabase
             .from("logs_tunagem")
-            .select("tecnico_id, tecnico_nome, data, hora")
+            .select("tecnico_id, tecnico_nome, dono_id, dono_nome, data, hora")
             .gte("data", lookbackStrSP);
           logsTunagem = dataTunGeral || [];
         }
@@ -500,6 +500,9 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       // Mapeia todas as atividades (bancada, tunagem e baú) - para auditoria de histórico detalhado
       const mapaAtividadesAuditMecanico = {};
       const mapaTunagensMecanico = {};
+      // Separação de atendimentos a CLIENTES (usados para fila da vez) e serviços no PRÓPRIO CARRO
+      const mapaTunagensClienteMecanico = {};
+      const mapaTunagensPropriasMecanico = {};
       const atividadesObrigatoriasPonto = {}; // idJogo -> [{ tsMs, tsISO, nome, oficina, oficinaId, tipo }]
 
       (logsAtividades || []).forEach((msg) => {
@@ -566,6 +569,26 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
           if (!mapaTunagensMecanico[id]) mapaTunagensMecanico[id] = [];
           mapaTunagensMecanico[id].push(ts);
 
+          // Verificar se o serviço foi realizado no próprio veículo do mecânico
+          const donoId = String(t.dono_id || "").trim();
+          const donoNome = (t.dono_nome || "").toLowerCase().trim();
+          const tecNomeLower = nomeTecnico.toLowerCase().trim();
+
+          const isCarroProprio = Boolean(
+            (donoId && donoId !== "0" && donoId === id) ||
+            (donoNome && tecNomeLower && (donoNome === tecNomeLower || donoNome.includes(tecNomeLower) || tecNomeLower.includes(donoNome)) && donoNome.length > 2)
+          );
+
+          if (isCarroProprio) {
+            // Serviço no próprio carro não zera a fila de atendimento
+            if (!mapaTunagensPropriasMecanico[id]) mapaTunagensPropriasMecanico[id] = [];
+            mapaTunagensPropriasMecanico[id].push(ts);
+          } else {
+            // Atendimento real a cliente: esse zera o tempo da fila
+            if (!mapaTunagensClienteMecanico[id]) mapaTunagensClienteMecanico[id] = [];
+            mapaTunagensClienteMecanico[id].push(ts);
+          }
+
           if (!atividadesObrigatoriasPonto[id]) atividadesObrigatoriasPonto[id] = [];
           atividadesObrigatoriasPonto[id].push({
             tsMs: ts,
@@ -574,11 +597,14 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             oficina: "Reds Tunnershop",
             oficinaId: "reds",
             tipo: "tunagem",
+            isCarroProprio,
           });
         }
       });
 
       Object.values(mapaTunagensMecanico).forEach((arr) => arr.sort((a, b) => a - b));
+      Object.values(mapaTunagensClienteMecanico).forEach((arr) => arr.sort((a, b) => a - b));
+      Object.values(mapaTunagensPropriasMecanico).forEach((arr) => arr.sort((a, b) => a - b));
       Object.values(mapaAtividadesTrabalhoMecanico).forEach((arr) => arr.sort((a, b) => a - b));
       Object.values(mapaAtividadesAuditMecanico).forEach((arr) => arr.sort((a, b) => a - b));
 
@@ -850,11 +876,25 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             ultTunagemMs = tunagensNaSessao[tunagensNaSessao.length - 1];
           }
 
+          // Apenas tunagens em veículos de CLIENTES afetam a fila de atendimento
+          const tunagensClienteDoMec = mapaTunagensClienteMecanico[mec.idJogo] || [];
+          const tunagensClienteNaSessao = tunagensClienteDoMec.filter((ts) => ts >= entMs);
+          let ultTunagemClienteMs = null;
+          if (tunagensClienteNaSessao.length > 0) {
+            ultTunagemClienteMs = tunagensClienteNaSessao[tunagensClienteNaSessao.length - 1];
+          }
+
+          const tunagensPropriasDoMec = mapaTunagensPropriasMecanico[mec.idJogo] || [];
+          const tunagensPropriasNaSessao = tunagensPropriasDoMec.filter((ts) => ts >= entMs);
+
           const ativsNaSessaoAudit = ativsAudit.filter((ts) => ts >= entMs);
           pontoAtual.ultimaAtividadeMs = ultAtivMs;
           pontoAtual.qtdAtividadesSessao = ativsNaSessaoAudit.length;
           pontoAtual.ultimaTunagemMs = ultTunagemMs;
+          pontoAtual.ultimaTunagemClienteMs = ultTunagemClienteMs;
           pontoAtual.qtdTunagensSessao = tunagensNaSessao.length;
+          pontoAtual.qtdTunagensClienteSessao = tunagensClienteNaSessao.length;
+          pontoAtual.qtdTunagensPropriasSessao = tunagensPropriasNaSessao.length;
           pontoAtual.qtdTunagensHoje = tunagensHoje.length;
 
           const tempoDesdeUltimaMov = agora - ultAtivMs;
@@ -1026,6 +1066,15 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
           }
         })
         .map((t) => {
+          const tecId = String(t.tecnico_id || ponto.idJogo || "").trim();
+          const donoId = String(t.dono_id || "").trim();
+          const tecNome = (t.tecnico_nome || ponto.nome || "").toLowerCase().trim();
+          const donoNome = (t.dono_nome || "").toLowerCase().trim();
+          const isCarroProprio = Boolean(
+            (donoId && donoId !== "0" && donoId === tecId) ||
+            (donoNome && tecNome && (donoNome === tecNome || donoNome.includes(tecNome) || tecNome.includes(donoNome)) && donoNome.length > 2)
+          );
+
           const rawLogTunagem = t.raw_text || (
             `[TUNAGEM DE VEÍCULO]\n` +
             `[Oficina]: ${t.oficina_nome || "Red's Tunershop"}\n` +
@@ -1043,6 +1092,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
           );
           return {
             ...t,
+            isCarroProprio,
             rawLog: rawLogTunagem
           };
         });
@@ -1198,7 +1248,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       : aplicarFiltrosLista(pontosAbertos).filter((p) => p.oficinaId === "reds" || (p.oficina || "").toLowerCase().includes("red"));
     const lista = (pontosDaFila || []).map((p) => {
       const entMs = new Date(p.entrada).getTime();
-      const refMs = p.ultimaTunagemMs || entMs;
+      // O tempo de espera da fila zera APENAS com atendimento real a clientes (serviço em carro próprio NÃO zera)
+      const refMs = p.ultimaTunagemClienteMs || entMs;
       const tempoEsperaMs = Math.max(0, agoraTs - refMs);
       return {
         ...p,
@@ -1849,7 +1900,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                       marginBottom: "4px"
                     }}
                   >
-                    <span>🎯 <strong>Fila da Vez:</strong> Ordenado por maior tempo sem realizar serviços</span>
+                    <span>🎯 <strong>Fila da Vez:</strong> Ordenado por tempo sem atender clientes (veículo próprio não zera)</span>
                     <span style={{ fontSize: "9px", color: "#cbd5e1", background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: "4px" }}>
                       {isDono ? "Todas as oficinas" : "🔴 Somente RED'S"}
                     </span>
@@ -1940,16 +1991,16 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                               )}
                             </div>
                             <div style={{ fontSize: "10px", color: "#94a3b8" }}>
-                              {p.ultimaTunagemMs ? (
+                              {p.ultimaTunagemClienteMs ? (
                                 <>
-                                  Último serviço:{" "}
+                                  Último atendimento:{" "}
                                   <strong style={{ color: "#e2e8f0" }}>
-                                    {new Date(p.ultimaTunagemMs).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                                    {new Date(p.ultimaTunagemClienteMs).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                                   </strong>
                                 </>
                               ) : (
                                 <>
-                                  Sem serviços ainda • Entrou às{" "}
+                                  Sem atendimentos a clientes • Entrou às{" "}
                                   <strong style={{ color: "#e2e8f0" }}>
                                     {new Date(p.entrada).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                                   </strong>
@@ -1957,14 +2008,31 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                               )}
                               {" • "}
                               <span style={{ color: "#86efac" }}>
-                                🚗 {p.qtdTunagensSessao || 0} no ponto{p.qtdTunagensHoje > (p.qtdTunagensSessao || 0) ? ` (${p.qtdTunagensHoje} hoje)` : ""}
+                                🚗 {p.qtdTunagensClienteSessao ?? p.qtdTunagensSessao ?? 0} clientes atendidos
                               </span>
+                              {p.qtdTunagensPropriasSessao > 0 && (
+                                <span
+                                  style={{
+                                    color: "#f59e0b",
+                                    marginLeft: "6px",
+                                    background: "rgba(245, 158, 11, 0.15)",
+                                    padding: "1px 5px",
+                                    borderRadius: "4px",
+                                    border: "1px solid rgba(245, 158, 11, 0.3)",
+                                    fontWeight: "700"
+                                  }}
+                                  title="Serviço no próprio veículo: mantido no histórico, mas não zera o tempo de espera da fila"
+                                >
+                                  🚙 {p.qtdTunagensPropriasSessao} no próprio carro (não zera fila)
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
 
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "3px" }}>
                           <span
+                            title={`Tempo na fila aguardando cliente desde ${p.ultimaTunagemClienteMs ? `o último atendimento (${new Date(p.ultimaTunagemClienteMs).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })})` : `a entrada (${new Date(p.entrada).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })})`}`}
                             style={{
                               fontSize: "12px",
                               fontWeight: "800",
@@ -3373,6 +3441,22 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                                 </div>
                               </div>
                               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                {t.isCarroProprio && (
+                                  <span
+                                    title="Serviço realizado no próprio veículo do mecânico. Não zera o tempo de espera na fila de atendimento aos clientes."
+                                    style={{
+                                      fontSize: "10px",
+                                      fontWeight: "800",
+                                      background: "rgba(245, 158, 11, 0.15)",
+                                      border: "1px solid rgba(245, 158, 11, 0.4)",
+                                      color: "#f59e0b",
+                                      padding: "2px 6px",
+                                      borderRadius: "6px"
+                                    }}
+                                  >
+                                    🚙 Próprio Veículo
+                                  </span>
+                                )}
                                 {t.cobrado && (
                                   <span
                                     title="Serviço já finalizado"
