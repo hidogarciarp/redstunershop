@@ -1559,13 +1559,46 @@ export function MainSite({ isV2 = true } = {}) {
   const verificarPontoAtivo = async () => {
     if (!usuarioLogado) return;
     try {
+      const uidStr = String(usuarioLogado.id).trim();
+
+      // 1. Checagem primária na tabela oficial log_ponto (se já tem saída preenchida, o ponto NÃO está ativo!)
+      const { data: pontoAbertoDb } = await supabase
+        .from("log_ponto")
+        .select("id, usuario_id, nome, entrada, saida, mecanica_id")
+        .eq("usuario_id", uidStr)
+        .is("saida", null)
+        .order("entrada", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (pontoAbertoDb?.entrada) {
+        const dtEntrada = new Date(pontoAbertoDb.entrada);
+        if (Date.now() - dtEntrada.getTime() < 18 * 60 * 60 * 1000) {
+          const novaEntradaISO = dtEntrada.toISOString();
+          setPontoAtivo((prev) => {
+            if (prev && prev.entrada === novaEntradaISO && String(prev.usuario_id) === uidStr) {
+              return prev;
+            }
+            return {
+              id: pontoAbertoDb.id,
+              entrada: novaEntradaISO,
+              usuario_id: usuarioLogado.id,
+              nome: usuarioLogado.nome,
+              mecanica_id: pontoAbertoDb.mecanica_id
+            };
+          });
+          return;
+        }
+      }
+
+      // 2. Se no banco log_ponto não tem ponto aberto, checa se há evento no Discord
       const { data: logs, error } = await supabase
         .from("discord_log_messages")
         .select("id, content, created_at")
         .eq("log_type", "ponto")
-        .ilike("content", `%[ID]: ${usuarioLogado.id}%`)
+        .ilike("content", `%[ID]: ${uidStr}%`)
         .order("created_at", { ascending: false })
-        .limit(20);
+        .limit(10);
 
       if (error) throw error;
 
@@ -1582,7 +1615,7 @@ export function MainSite({ isV2 = true } = {}) {
       const userLogs = (logs || []).filter((l) => {
         const c = l.content || "";
         const idMatch = c.match(/\[ID\]:\s*(\d+)/i);
-        return idMatch && String(idMatch[1]).trim() === String(usuarioLogado.id).trim();
+        return idMatch && String(idMatch[1]).trim() === uidStr;
       });
 
       userLogs.sort((a, b) => getLogTimestamp(b) - getLogTimestamp(a));
@@ -1597,10 +1630,26 @@ export function MainSite({ isV2 = true } = {}) {
         if (isEntrou && !isSaiu) {
           const ts = getLogTimestamp(userLog);
           const dtEntrada = new Date(ts);
-          if (Date.now() - dtEntrada.getTime() < 18 * 60 * 60 * 1000) {
+
+          // Verificar se esse turno específico já foi encerrado na tabela log_ponto (via Conciliador ou Crash)
+          const isoMin = new Date(ts - 120000).toISOString();
+          const isoMax = new Date(ts + 120000).toISOString();
+
+          const { data: fechadoJa } = await supabase
+            .from("log_ponto")
+            .select("id, saida")
+            .eq("usuario_id", uidStr)
+            .gte("entrada", isoMin)
+            .lte("entrada", isoMax)
+            .not("saida", "is", null)
+            .limit(1)
+            .maybeSingle();
+
+          // Se esse turno já foi encerrado em log_ponto, NÃO deixa o relógio girando!
+          if (!fechadoJa && Date.now() - dtEntrada.getTime() < 18 * 60 * 60 * 1000) {
             const novaEntradaISO = dtEntrada.toISOString();
             setPontoAtivo((prev) => {
-              if (prev && prev.entrada === novaEntradaISO && String(prev.usuario_id) === String(usuarioLogado.id)) {
+              if (prev && prev.entrada === novaEntradaISO && String(prev.usuario_id) === uidStr) {
                 return prev;
               }
               return {

@@ -287,7 +287,8 @@ export function isMecanicoAtivo(func) {
 }
 
 // Processador puro do cálculo de rateio de um turno específico
-export function calcularDadosTurno(turnoId, montante, pontosCarregados, listaDiasPeriodo, listaFuncionarios) {
+export function calcularDadosTurno(turnoId, montante, pontosCarregados, listaDiasPeriodo, listaFuncionarios, options = {}) {
+  const { filtroMinimo4h = false } = options;
   const config = TURNOS_CONFIG[turnoId];
   if (!config) return null;
   const mapaMecanicos = {};
@@ -304,6 +305,7 @@ export function calcularDadosTurno(turnoId, montante, pontosCarregados, listaDia
       avatar: func.avatar_url || null,
       cargo: func.cargo || func.role || "Mecânico",
       dias: {},
+      intervalosGerais: [],
       minutosTotal: 0,
       horasCheias: 0,
       sobraMinutos: 0,
@@ -368,6 +370,7 @@ export function calcularDadosTurno(turnoId, montante, pontosCarregados, listaDia
         avatar: funcVinculado?.avatar_url || null,
         cargo: funcVinculado?.cargo || funcVinculado?.role || "Mecânico",
         dias: {},
+        intervalosGerais: [],
         minutosTotal: 0,
         horasCheias: 0,
         sobraMinutos: 0,
@@ -384,6 +387,19 @@ export function calcularDadosTurno(turnoId, montante, pontosCarregados, listaDia
     let minTurnoReg = 0;
     if (dSaidaElegivel) {
       (listaDiasPeriodo || []).forEach((d) => {
+        // Acumular tempo geral no dia da semana (para meta mínima semanal de 4h)
+        const limiteDiaInicio = new Date(`${d.dateStr}T00:00:00-03:00`).getTime();
+        const limiteDiaFim = new Date(`${d.dateStr}T23:59:59.999-03:00`).getTime();
+        const startGeral = Math.max(dEntrada.getTime(), limiteDiaInicio);
+        const endGeral = Math.min(dSaidaElegivel.getTime(), limiteDiaFim);
+        if (endGeral > startGeral) {
+          if (!mapaMecanicos[idKey].intervalosGerais) {
+            mapaMecanicos[idKey].intervalosGerais = [];
+          }
+          mapaMecanicos[idKey].intervalosGerais.push([startGeral, endGeral]);
+        }
+
+        // Intervalo específico no turno
         let horaInicio = config.horaInicio;
         let horaFim = config.horaFim;
 
@@ -435,49 +451,70 @@ export function calcularDadosTurno(turnoId, montante, pontosCarregados, listaDia
     const horasCheias = Math.floor(totalMin / 60);
     const sobraMinutos = Math.round(totalMin % 60);
 
+    // Apuração geral de horas em todo o período (meta semanal mínima de 4 horas = 240 minutos)
+    const minutosSemanaisGerais = calcularMinutosIntervalos(m.intervalosGerais || []);
+    const horasSemanaisGerais = Math.floor(minutosSemanaisGerais / 60);
+    const bateuMeta4h = minutosSemanaisGerais >= 240;
+    const elegivelRateio = filtroMinimo4h ? (bateuMeta4h && horasCheias > 0) : (horasCheias > 0);
+
     m.registrosTodos.sort((a, b) => b.dEntrada.getTime() - a.dEntrada.getTime());
 
-    if (totalMin > 0 || mecanicosAtivos.some((f) => String(f.id) === String(m.id))) {
+    if (totalMin > 0 || minutosSemanaisGerais > 0 || mecanicosAtivos.some((f) => String(f.id) === String(m.id))) {
       lista.push({
         ...m,
         minutosPorDia,
         minutosTotal: totalMin,
         horasCheias,
         sobraMinutos,
+        minutosSemanaisGerais,
+        horasSemanaisGerais,
+        bateuMeta4h,
+        elegivelRateio,
       });
     }
   });
 
-  lista.sort((a, b) => b.horasCheias - a.horasCheias || b.minutosTotal - a.minutosTotal);
-
-  const totalHorasEquipe = lista.reduce((acc, m) => acc + m.horasCheias, 0);
-  const totalMinutosEquipe = lista.reduce((acc, m) => acc + m.minutosTotal, 0);
+  // O rateio e o valor por hora cheia consideram apenas as horas dos mecânicos elegíveis
+  const totalHorasEquipe = lista.reduce((acc, m) => acc + (m.elegivelRateio ? m.horasCheias : 0), 0);
+  const totalMinutosEquipe = lista.reduce((acc, m) => acc + (m.elegivelRateio ? m.minutosTotal : 0), 0);
   const valorPorHoraCompleta = totalHorasEquipe > 0 ? montante / totalHorasEquipe : 0;
 
-  const listaComBonus = lista.map((m, idx) => {
-    const bonus = m.horasCheias * valorPorHoraCompleta;
-    const pctPool = montante > 0 ? (bonus / montante) * 100 : 0;
+  const listaComBonus = lista.map((m) => {
+    const bonus = m.elegivelRateio ? m.horasCheias * valorPorHoraCompleta : 0;
+    const pctPool = (montante > 0 && bonus > 0) ? (bonus / montante) * 100 : 0;
     return {
       ...m,
-      posicao: idx + 1,
       bonus,
       pctPool,
     };
   });
 
-  const totalBonusPago = listaComBonus.reduce((acc, m) => acc + m.bonus, 0);
-  const mecanicosElegiveis = listaComBonus.filter((m) => m.horasCheias > 0).length;
+  // Ordenar priorizando quem recebe bônus, seguido pelas horas cheias e minutos gerais
+  listaComBonus.sort((a, b) => {
+    if (b.bonus !== a.bonus) return b.bonus - a.bonus;
+    if (b.horasCheias !== a.horasCheias) return b.horasCheias - a.horasCheias;
+    return (b.minutosSemanaisGerais || 0) - (a.minutosSemanaisGerais || 0);
+  });
+
+  const listaFinal = listaComBonus.map((m, idx) => ({
+    ...m,
+    posicao: idx + 1,
+  }));
+
+  const totalBonusPago = listaFinal.reduce((acc, m) => acc + m.bonus, 0);
+  const mecanicosElegiveis = listaFinal.filter((m) => m.elegivelRateio && m.horasCheias > 0).length;
 
   return {
     config,
     montante,
-    mecanicos: listaComBonus,
+    mecanicos: listaFinal,
     totalHorasEquipe,
     totalMinutosEquipe,
     valorPorHoraCompleta,
     totalBonusPago,
     mecanicosElegiveis,
-    totalMecanicos: listaComBonus.length,
+    totalMecanicos: listaFinal.length,
+    filtroMinimo4h,
   };
 }
 
@@ -516,6 +553,25 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
 
   // Mecânico selecionado para o modal de detalhamento de horas
   const [mecanicoDetalhe, setMecanicoDetalhe] = useState(null);
+
+  // Filtro de Mínimo 4 Horas no Período (Meta Semanal)
+  const [filtroMinimo4h, setFiltroMinimo4h] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("reds_rateio_filtro_4h");
+      if (saved !== null) return saved === "true";
+    }
+    return true; // Ativo por padrão
+  });
+
+  const toggleFiltroMinimo4h = () => {
+    setFiltroMinimo4h((prev) => {
+      const novo = !prev;
+      if (typeof window !== "undefined") {
+        localStorage.setItem("reds_rateio_filtro_4h", String(novo));
+      }
+      return novo;
+    });
+  };
 
   // Sincronizar datas ao mudar semana
   useEffect(() => {
@@ -607,8 +663,8 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
   const relatorioTurno = useMemo(() => {
     if (!TURNOS_CONFIG[abaAtiva]) return null;
     const montante = montantesPorTurno[abaAtiva] !== undefined ? montantesPorTurno[abaAtiva] : TURNOS_CONFIG[abaAtiva].defaultMontante;
-    return calcularDadosTurno(abaAtiva, montante, pontosCarregados, listaDiasPeriodo, listaFuncionarios);
-  }, [abaAtiva, montantesPorTurno, pontosCarregados, listaDiasPeriodo, listaFuncionarios]);
+    return calcularDadosTurno(abaAtiva, montante, pontosCarregados, listaDiasPeriodo, listaFuncionarios, { filtroMinimo4h });
+  }, [abaAtiva, montantesPorTurno, pontosCarregados, listaDiasPeriodo, listaFuncionarios, filtroMinimo4h]);
 
   // Relatório Consolidado (Somatória dos 4 Turnos em Ordem Decrescente de Pagamento)
   const relatorioConsolidado = useMemo(() => {
@@ -617,7 +673,7 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
     turnosIds.forEach((tId) => {
       const cfg = TURNOS_CONFIG[tId];
       const mnt = montantesPorTurno[tId] !== undefined ? montantesPorTurno[tId] : cfg.defaultMontante;
-      relatorios[tId] = calcularDadosTurno(tId, mnt, pontosCarregados, listaDiasPeriodo, listaFuncionarios);
+      relatorios[tId] = calcularDadosTurno(tId, mnt, pontosCarregados, listaDiasPeriodo, listaFuncionarios, { filtroMinimo4h });
     });
 
     const mapa = {};
@@ -642,6 +698,8 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
         bonusTotal: 0,
         horasTotal: 0,
         minutosTotal: 0,
+        minutosSemanaisGerais: 0,
+        bateuMeta4h: false,
         turnos: {
           obrigatorio: { horas: 0, minutos: 0, bonus: 0, pctDoTotal: 0 },
           manha: { horas: 0, minutos: 0, bonus: 0, pctDoTotal: 0 },
@@ -688,6 +746,8 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
             bonusTotal: 0,
             horasTotal: 0,
             minutosTotal: 0,
+            minutosSemanaisGerais: 0,
+            bateuMeta4h: false,
             turnos: {
               obrigatorio: { horas: 0, minutos: 0, bonus: 0, pctDoTotal: 0 },
               manha: { horas: 0, minutos: 0, bonus: 0, pctDoTotal: 0 },
@@ -707,6 +767,10 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
         mapa[canonicalId].bonusTotal += m.bonus || 0;
         mapa[canonicalId].horasTotal += m.horasCheias || 0;
         mapa[canonicalId].minutosTotal += m.minutosTotal || 0;
+        if (m.minutosSemanaisGerais !== undefined) {
+          mapa[canonicalId].minutosSemanaisGerais = Math.max(mapa[canonicalId].minutosSemanaisGerais || 0, m.minutosSemanaisGerais);
+          mapa[canonicalId].bateuMeta4h = m.bateuMeta4h;
+        }
         if (m.registrosTodos) {
           mapa[canonicalId].registrosTodos.push(...m.registrosTodos);
         }
@@ -764,8 +828,9 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
       maiorBonusIndividual,
       totaisPorTurno,
       relatoriosTurnos: relatorios,
+      filtroMinimo4h,
     };
-  }, [montantesPorTurno, pontosCarregados, listaDiasPeriodo, listaFuncionarios]);
+  }, [montantesPorTurno, pontosCarregados, listaDiasPeriodo, listaFuncionarios, filtroMinimo4h]);
 
   // Filtrar lista por busca de texto
   const mecanicosFiltrados = useMemo(() => {
@@ -798,11 +863,12 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
     texto += `💵 **Total Geral a Pagar:** R$ ${formatarMoeda(totalGeralAPagar)}\n`;
     texto += `👥 **Mecânicos Bonificados:** ${totalMecanicosElegiveis} de ${mecanicos.length} ativos\n`;
     texto += `⏱️ **Total de Horas Cheias Elegíveis:** ${totalHorasGerais}h somadas nos 4 turnos\n`;
+    texto += `🎯 **Filtro Mínimo Semanal (≥ 4h):** ${filtroMinimo4h ? "ATIVO (mínimo de 4h gerais no período para ter direito ao rateio)" : "DESATIVADO"}\n`;
     texto += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     texto += `🏆 **SOMATÓRIA INDIVIDUAL (DO MAIOR PARA O MENOR):**\n\n`;
 
     if (elegiveis.length === 0) {
-      texto += `*Nenhum mecânico atingiu ao menos 1 hora cheia em qualquer turno nesta semana.*\n`;
+      texto += `*Nenhum mecânico atingiu ao menos 1 hora cheia elegível em qualquer turno nesta semana.*\n`;
     } else {
       elegiveis.forEach((m, idx) => {
         const medalha = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `\`${String(idx + 1).padStart(2, "0")}º\``;
@@ -841,18 +907,19 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
   const copiarRelatorioDiscord = () => {
     if (!relatorioTurno) return;
     const { config, montante, totalHorasEquipe, valorPorHoraCompleta, mecanicos } = relatorioTurno;
-    const elegiveis = mecanicos.filter((m) => m.horasCheias > 0);
+    const elegiveis = mecanicos.filter((m) => m.bonus > 0);
 
     let texto = `${config.emoji} **${config.labelDiscord} - RED'S TUNERSHOP**\n`;
     texto += `📅 **Período:** ${semanaInfo.inicioBR} a ${semanaInfo.fimBR}\n`;
     texto += `💰 **Montante Total do Rateio:** R$ ${formatarMoeda(montante)}\n`;
     texto += `⏱️ **Total de Horas Cheias da Equipe:** ${totalHorasEquipe}h elegíveis\n`;
     texto += `🏷️ **Valor Pago por Hora Completa:** R$ ${formatarMoeda(valorPorHoraCompleta)} / hora\n`;
+    texto += `🎯 **Filtro Mínimo Semanal (≥ 4h):** ${filtroMinimo4h ? "ATIVO (apenas mecânicos com ≥ 4h semanais totais recebem rateio)" : "DESATIVADO"}\n`;
     texto += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     texto += `🏆 **RATEIO E PREMIAÇÃO INDIVIDUAL:**\n\n`;
 
     if (elegiveis.length === 0) {
-      texto += `*Nenhum mecânico atingiu ao menos 1 hora cheia dentro do turno nesta semana.*\n`;
+      texto += `*Nenhum mecânico atingiu ao menos 1 hora cheia elegível dentro do turno nesta semana.*\n`;
     } else {
       elegiveis.forEach((m, idx) => {
         const medalha = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `\`${String(idx + 1).padStart(2, "0")}º\``;
@@ -863,11 +930,20 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
       });
     }
 
-    const zerados = mecanicos.filter((m) => m.minutosTotal > 0 && m.horasCheias === 0);
+    const desclassificados4h = mecanicos.filter((m) => m.horasCheias > 0 && !m.elegivelRateio);
+    if (desclassificados4h.length > 0) {
+      texto += `⚠️ **Horas no turno bloqueadas por não cumprir a meta mínima semanal de 4h:**\n`;
+      desclassificados4h.forEach((m) => {
+        texto += `• ${m.nome}: ${m.horasCheias}h no turno, mas apenas ${formatarMinutos(m.minutosSemanaisGerais || 0)} no total da semana (mínimo exigido: 4h)\n`;
+      });
+      texto += `\n`;
+    }
+
+    const zerados = mecanicos.filter((m) => m.minutosTotal > 0 && m.horasCheias === 0 && m.elegivelRateio);
     if (zerados.length > 0) {
       texto += `⚠️ **Mecânicos com minutos incompletos (< 1h completa no turno):**\n`;
       zerados.forEach((m) => {
-        texto += `• ${m.nome}: ${formatarMinutos(m.minutosTotal)} (precisa de 1h cheia para pontuar no bônus)\n`;
+        texto += `• ${m.nome}: ${formatarMinutos(m.minutosTotal)} (precisa de 1h cheia no turno para pontuar)\n`;
       });
       texto += `\n`;
     }
@@ -1165,6 +1241,39 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                 <span style={{ fontSize: "11px", fontWeight: "700", color: "#22c55e", background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)", padding: "6px 12px", borderRadius: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
                   <span>🔒</span> Filtro Estrito: Padrão + Logs de Tunagem & Bancada ({turnoAtualConfig.id === "obrigatorio" ? "18h-23h (≥ 07/09) / 19h-22h (≤ 06/09)" : `${turnoAtualConfig.horaInicio.slice(0, 2)}h-${turnoAtualConfig.horaFim.slice(0, 2)}h`})
                 </span>
+
+                {/* Filtro Mínimo 4h no Período */}
+                <button
+                  type="button"
+                  onClick={toggleFiltroMinimo4h}
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: "800",
+                    color: filtroMinimo4h ? "#34d399" : theme.subtext,
+                    background: filtroMinimo4h ? "rgba(16,185,129,0.15)" : theme.card2,
+                    border: `1.5px solid ${filtroMinimo4h ? "#10b981" : theme.border}`,
+                    padding: "6px 13px",
+                    borderRadius: "10px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                  }}
+                  title={filtroMinimo4h ? "Filtro Ativo: Apenas mecânicos com ≥ 4h semanais totais participam do rateio" : "Filtro Desligado: Todos os mecânicos participam do rateio sem exigência de horas mínimas"}
+                >
+                  <span>{filtroMinimo4h ? "⏱️ Meta 4h: ATIVA" : "⏱️ Meta 4h: TODAS"}</span>
+                  <span style={{
+                    fontSize: "10px",
+                    background: filtroMinimo4h ? "#10b981" : "rgba(255,255,255,0.1)",
+                    color: filtroMinimo4h ? "#000" : "#fff",
+                    padding: "1px 6px",
+                    borderRadius: "4px",
+                    fontWeight: "900",
+                  }}>
+                    {filtroMinimo4h ? "≥ 4h sem." : "Livre"}
+                  </span>
+                </button>
               </div>
 
               {/* Botões de Ação */}
@@ -1339,7 +1448,7 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                 {relatorioTurno.mecanicosElegiveis} / {relatorioTurno.totalMecanicos}
               </div>
               <div style={{ fontSize: "11px", color: theme.subtext, marginTop: "4px" }}>
-                Mecânicos com pelo menos 1h cheia no turno
+                {filtroMinimo4h ? "Com ≥ 1h no turno e meta semanal de 4h" : "Com pelo menos 1h cheia no turno"}
               </div>
             </div>
           </div>
@@ -1390,9 +1499,9 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                     </tr>
                   ) : (
                     mecanicosFiltrados.map((m, idx) => {
-                      const ehTop1 = idx === 0 && m.horasCheias > 0;
-                      const ehTop2 = idx === 1 && m.horasCheias > 0;
-                      const ehTop3 = idx === 2 && m.horasCheias > 0;
+                      const ehTop1 = idx === 0 && m.horasCheias > 0 && m.elegivelRateio;
+                      const ehTop2 = idx === 1 && m.horasCheias > 0 && m.elegivelRateio;
+                      const ehTop3 = idx === 2 && m.horasCheias > 0 && m.elegivelRateio;
                       const medalha = ehTop1 ? "🥇" : ehTop2 ? "🥈" : ehTop3 ? "🥉" : `${idx + 1}º`;
 
                       return (
@@ -1401,7 +1510,7 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                           onClick={() => setMecanicoDetalhe(m)}
                           style={{
                             borderBottom: `1px solid ${theme.border}33`,
-                            background: m.horasCheias > 0 ? (ehTop1 ? turnoAtualConfig.bgBadge : "transparent") : "rgba(255,255,255,0.01)",
+                            background: m.bonus > 0 ? (ehTop1 ? turnoAtualConfig.bgBadge : "transparent") : "rgba(255,255,255,0.01)",
                             transition: "background 0.2s ease",
                             cursor: "pointer",
                           }}
@@ -1420,12 +1529,28 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                                 )}
                               </div>
                               <div style={{ minWidth: 0 }}>
-                                <b style={{ color: "#fff", fontSize: "13px", display: "flex", alignItems: "center", gap: "4px", whiteSpace: "nowrap" }}>
+                                <b style={{ color: "#fff", fontSize: "13px", display: "flex", alignItems: "center", gap: "5px", flexWrap: "wrap", whiteSpace: "nowrap" }}>
                                   <span>{m.nome}</span>
                                   <span style={{ fontSize: "11px", opacity: 0.6 }}>🔍</span>
+                                  {filtroMinimo4h && !m.bateuMeta4h && (
+                                    <span
+                                      style={{
+                                        fontSize: "10px",
+                                        background: "rgba(239,68,68,0.15)",
+                                        color: "#f87171",
+                                        border: "1px solid rgba(239,68,68,0.3)",
+                                        padding: "1px 5px",
+                                        borderRadius: "5px",
+                                        fontWeight: "800",
+                                      }}
+                                      title={`Trabalhou ${formatarMinutos(m.minutosSemanaisGerais || 0)} no total da semana (mínimo de 4h não atingido).`}
+                                    >
+                                      ⚠️ &lt; 4h sem. ({formatarMinutos(m.minutosSemanaisGerais || 0)})
+                                    </span>
+                                  )}
                                 </b>
                                 <span style={{ fontSize: "10px", color: theme.subtext, whiteSpace: "nowrap", display: "block" }}>
-                                  ID: {m.idJogo} • {m.cargo}
+                                  ID: {m.idJogo} • {m.cargo} • Semanal: {formatarMinutos(m.minutosSemanaisGerais || 0)}
                                 </span>
                               </div>
                             </div>
@@ -1494,7 +1619,14 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                                 R$ {formatarMoeda(m.bonus)}
                               </span>
                             ) : (
-                              <span style={{ color: theme.subtext, opacity: 0.5, fontSize: "12px", whiteSpace: "nowrap" }}>R$ 0,00</span>
+                              <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end" }}>
+                                <span style={{ color: theme.subtext, opacity: 0.5, fontSize: "12px", whiteSpace: "nowrap" }}>R$ 0,00</span>
+                                {filtroMinimo4h && !m.bateuMeta4h && m.horasCheias > 0 && (
+                                  <span style={{ fontSize: "9px", color: "#f87171", fontWeight: "700" }}>
+                                    bloqueado (&lt; 4h sem.)
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </td>
 
@@ -1650,11 +1782,18 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
             </div>
 
             {/* Resumo de Ganhos do Mecânico */}
-            <div style={{ padding: "16px 24px", background: "rgba(255,255,255,0.02)", borderBottom: `1px solid ${theme.border}`, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
+            <div style={{ padding: "16px 24px", background: "rgba(255,255,255,0.02)", borderBottom: `1px solid ${theme.border}`, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: "12px" }}>
               <div style={{ background: theme.card2, padding: "12px 16px", borderRadius: "12px", border: `1px solid ${theme.border}` }}>
                 <span style={{ fontSize: "10px", fontWeight: "800", color: theme.subtext, textTransform: "uppercase" }}>Tempo Total no Turno</span>
                 <div style={{ fontSize: "18px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
                   {formatarMinutos(mecanicoDetalhe.minutosTotal)}
+                </div>
+              </div>
+
+              <div style={{ background: theme.card2, padding: "12px 16px", borderRadius: "12px", border: `1px solid ${mecanicoDetalhe.bateuMeta4h ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}` }}>
+                <span style={{ fontSize: "10px", fontWeight: "800", color: mecanicoDetalhe.bateuMeta4h ? "#4ade80" : "#f87171", textTransform: "uppercase" }}>Total Semanal (≥ 4h)</span>
+                <div style={{ fontSize: "18px", fontWeight: "900", color: mecanicoDetalhe.bateuMeta4h ? "#4ade80" : "#f87171", marginTop: "2px" }}>
+                  {formatarMinutos(mecanicoDetalhe.minutosSemanaisGerais || 0)} {mecanicoDetalhe.bateuMeta4h ? "✅" : "⚠️ < 4h"}
                 </div>
               </div>
 
@@ -1851,6 +1990,39 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                 <span style={{ fontSize: "11px", fontWeight: "700", color: "#10b981", background: "rgba(16, 185, 129, 0.12)", border: "1px solid rgba(16, 185, 129, 0.3)", padding: "6px 12px", borderRadius: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
                   <span>💰</span> Folha Consolidada (Soma dos 4 Períodos: Obrigatório, Manhã, Tarde e Madrugada)
                 </span>
+
+                {/* Filtro Mínimo 4h no Período */}
+                <button
+                  type="button"
+                  onClick={toggleFiltroMinimo4h}
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: "800",
+                    color: filtroMinimo4h ? "#34d399" : theme.subtext,
+                    background: filtroMinimo4h ? "rgba(16,185,129,0.15)" : theme.card2,
+                    border: `1.5px solid ${filtroMinimo4h ? "#10b981" : theme.border}`,
+                    padding: "6px 13px",
+                    borderRadius: "10px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                  }}
+                  title={filtroMinimo4h ? "Filtro Ativo: Apenas mecânicos com ≥ 4h semanais totais participam do rateio" : "Filtro Desligado: Todos os mecânicos participam do rateio sem exigência de horas mínimas"}
+                >
+                  <span>{filtroMinimo4h ? "⏱️ Meta 4h: ATIVA" : "⏱️ Meta 4h: TODAS"}</span>
+                  <span style={{
+                    fontSize: "10px",
+                    background: filtroMinimo4h ? "#10b981" : "rgba(255,255,255,0.1)",
+                    color: filtroMinimo4h ? "#000" : "#fff",
+                    padding: "1px 6px",
+                    borderRadius: "4px",
+                    fontWeight: "900",
+                  }}>
+                    {filtroMinimo4h ? "≥ 4h sem." : "Livre"}
+                  </span>
+                </button>
               </div>
 
               {/* Botões de Ação */}
@@ -2108,12 +2280,31 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                                 </div>
                               )}
                               <div>
-                                <div style={{ fontWeight: "800", color: "#fff", fontSize: "14px" }}>
-                                  {m.nome}
+                                <div style={{ fontWeight: "800", color: "#fff", fontSize: "14px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                  <span>{m.nome}</span>
+                                  {filtroMinimo4h && !m.bateuMeta4h && (
+                                    <span
+                                      style={{
+                                        fontSize: "10px",
+                                        background: "rgba(239,68,68,0.15)",
+                                        color: "#f87171",
+                                        border: "1px solid rgba(239,68,68,0.3)",
+                                        padding: "1px 5px",
+                                        borderRadius: "5px",
+                                        fontWeight: "800",
+                                      }}
+                                      title={`Trabalhou ${formatarMinutos(m.minutosSemanaisGerais || 0)} no total da semana (mínimo de 4h não atingido).`}
+                                    >
+                                      ⚠️ &lt; 4h na semana
+                                    </span>
+                                  )}
                                 </div>
                                 <div style={{ fontSize: "11px", color: theme.subtext, display: "flex", gap: "6px" }}>
                                   <span>ID: {m.id}</span>
                                   {m.cargo && <span>• {m.cargo}</span>}
+                                  {m.minutosSemanaisGerais !== undefined && (
+                                    <span>• Semanal: {formatarMinutos(m.minutosSemanaisGerais)}</span>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -2135,7 +2326,11 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                               R$ {formatarMoeda(m.bonusTotal)}
                             </div>
                             <div style={{ fontSize: "10px", color: theme.subtext }}>
-                              {semBonus ? "Sem bônus na semana" : "Total líquido apurado"}
+                              {semBonus ? (
+                                filtroMinimo4h && !m.bateuMeta4h && m.horasTotal > 0
+                                  ? "Bloqueado (< 4h semanais)"
+                                  : "Sem bônus na semana"
+                              ) : "Total líquido apurado"}
                             </div>
                           </td>
 

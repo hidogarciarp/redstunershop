@@ -1212,42 +1212,118 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     return lista;
   }, [pontosAbertosFiltrados, pontosAbertos, agoraTs, isDono, buscaTexto]);
 
+  const obterUltimaAtividadeValida = (ponto, atividades) => {
+    if (!ponto) return null;
+    const entMs = new Date(ponto.entrada).getTime();
+    const eventos = [];
+
+    if (atividades) {
+      // 1. Tunagens válidas
+      (atividades.tunagens || []).forEach((t) => {
+        if (t.data && t.hora) {
+          try {
+            const dtStr = `${t.data}T${t.hora.length === 5 ? t.hora + ":00" : t.hora}-03:00`;
+            const ts = new Date(dtStr).getTime();
+            if (!isNaN(ts) && ts >= entMs - 60000) {
+              eventos.push({
+                ts,
+                tipo: "Tunagem",
+                detalhe: `${t.veiculo_nome || "Veículo"}${t.placa ? ` (${t.placa})` : ""}`
+              });
+            }
+          } catch (_) {}
+        } else if (t.created_at) {
+          const ts = new Date(t.created_at).getTime();
+          if (!isNaN(ts) && ts >= entMs - 60000) {
+            eventos.push({
+              ts,
+              tipo: "Tunagem",
+              detalhe: `${t.veiculo_nome || "Veículo"}${t.placa ? ` (${t.placa})` : ""}`
+            });
+          }
+        }
+      });
+
+      // 2. Bancada válida
+      (atividades.bancada || []).forEach((bc) => {
+        let ts = null;
+        if (bc.rawLog) {
+          const dataMatch = bc.rawLog.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
+          if (dataMatch) {
+            const [_, dia, mes, ano, hora] = dataMatch;
+            ts = new Date(`${ano}-${mes}-${dia}T${hora}-03:00`).getTime();
+          }
+        }
+        if (!ts && bc.hora && ponto.entrada) {
+          const dataEntradaStr = ponto.entrada.split("T")[0];
+          ts = new Date(`${dataEntradaStr}T${bc.hora}-03:00`).getTime();
+        }
+        if (ts && !isNaN(ts) && ts >= entMs - 60000) {
+          eventos.push({
+            ts,
+            tipo: "Bancada",
+            detalhe: `${bc.acao || "Item"}: ${bc.item || "Bancada"}`
+          });
+        }
+      });
+    }
+
+    if (eventos.length > 0) {
+      eventos.sort((a, b) => b.ts - a.ts);
+      const ultimo = eventos[0];
+      const dataObj = new Date(ultimo.ts);
+      return {
+        temAtividade: true,
+        timestampMs: ultimo.ts,
+        dataISO: dataObj.toISOString(),
+        horaFormatada: dataObj.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        dataDescricao: dataObj.toLocaleDateString("pt-BR"),
+        tipo: ultimo.tipo,
+        detalhe: ultimo.detalhe,
+        descricaoOrigem: `Última atividade válida detectada (${ultimo.tipo}: "${ultimo.detalhe}") às ${dataObj.toLocaleTimeString("pt-BR")}.`
+      };
+    }
+
+    const entradaObj = new Date(entMs);
+    return {
+      temAtividade: false,
+      timestampMs: entMs,
+      dataISO: entradaObj.toISOString(),
+      horaFormatada: entradaObj.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+      dataDescricao: entradaObj.toLocaleDateString("pt-BR"),
+      tipo: "Entrada",
+      detalhe: "Sem serviços registrados",
+      descricaoOrigem: `Nenhuma atividade de bancada ou tunagem registrada. O encerramento será calculado a partir da entrada às ${entradaObj.toLocaleTimeString("pt-BR")}.`
+    };
+  };
+
   const handleConfirmarFechamentoCrash = async () => {
     if (!funcionarioInspecao) return;
 
-    if (!justificativaCrash.trim()) {
-      alert("⚠️ Por favor, preencha a justificativa da solicitação de fechamento do ponto (motivo do crash).");
-      return;
-    }
-
-    if (!printCrashBase64) {
-      alert("⚠️ É obrigatório anexar o print do crash ou comprovante.");
-      return;
-    }
-
-    if (!saidaDataHoraCrash) {
-      alert("⚠️ Por favor, informe a data e o horário de saída do crash.");
-      return;
-    }
-
-    const dataSaidaObj = new Date(saidaDataHoraCrash);
+    const infoAtiv = obterUltimaAtividadeValida(funcionarioInspecao, atividadesPonto);
+    const dataSaidaISO = infoAtiv?.dataISO || new Date().toISOString();
+    const dataSaidaObj = new Date(dataSaidaISO);
     const dataEntradaObj = new Date(funcionarioInspecao.entrada);
 
     if (dataSaidaObj < dataEntradaObj) {
-      alert("⚠️ O horário de saída do crash não pode ser anterior ao horário de entrada!");
+      alert("⚠️ O horário calculado de encerramento não pode ser anterior à entrada!");
       return;
     }
 
     setEnviandoCrash(true);
     try {
+      const justificativaFinal = justificativaCrash.trim() || (infoAtiv?.temAtividade
+        ? `Queda da cidade / crash. Encerrado na última atividade (${infoAtiv.tipo}: ${infoAtiv.detalhe}).`
+        : "Queda da cidade / crash relatado pelo funcionário.");
+
       const res = await fetch("/api/ponto/fechar-crash", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           funcionarioInspecao,
-          justificativaCrash: justificativaCrash.trim(),
-          printCrashBase64,
-          saidaDataHoraCrash,
+          justificativaCrash: justificativaFinal,
+          printCrashBase64: printCrashBase64 || null,
+          saidaDataHoraCrash: dataSaidaISO,
           usuarioLogado
         })
       });
@@ -2749,98 +2825,128 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
               )}
 
               {/* FORMULÁRIO DE FECHAMENTO POR CRASH (QUANDO ABERTO) */}
-              {!funcionarioInspecao.saida && modoFecharCrash && (
-                <div
-                  style={{
-                    background: "linear-gradient(135deg, rgba(220, 38, 38, 0.15) 0%, rgba(153, 27, 27, 0.25) 100%)",
-                    border: "2px solid #ef4444",
-                    borderRadius: "12px",
-                    padding: "16px",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "12px",
-                    boxShadow: "0 8px 24px rgba(239, 68, 68, 0.2)"
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span style={{ fontSize: "20px" }}>🚨</span>
-                      <div>
-                        <div style={{ fontSize: "14px", fontWeight: "900", color: "#fca5a5" }}>
-                          Solicitação de Fechamento de Ponto por Crash
-                        </div>
-                        <div style={{ fontSize: "11px", color: "#fecaca" }}>
-                          Preencha o motivo da queda/crash e anexe o print comprovando o erro.
+              {!funcionarioInspecao.saida && modoFecharCrash && (() => {
+                const infoAtividade = obterUltimaAtividadeValida(funcionarioInspecao, atividadesPonto);
+                return (
+                  <div
+                    style={{
+                      background: "linear-gradient(135deg, rgba(220, 38, 38, 0.15) 0%, rgba(153, 27, 27, 0.25) 100%)",
+                      border: "2px solid #ef4444",
+                      borderRadius: "12px",
+                      padding: "16px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "12px",
+                      boxShadow: "0 8px 24px rgba(239, 68, 68, 0.2)"
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "20px" }}>🚨</span>
+                        <div>
+                          <div style={{ fontSize: "14px", fontWeight: "900", color: "#fca5a5" }}>
+                            Solicitação de Fechamento de Ponto por Crash
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#fecaca" }}>
+                            O sistema encerra o ponto na sua última atividade válida comprovada (bancada ou tunagem).
+                          </div>
                         </div>
                       </div>
+                      <button
+                        onClick={() => setModoFecharCrash(false)}
+                        style={{
+                          background: "rgba(255,255,255,0.1)",
+                          border: "none",
+                          color: "#cbd5e1",
+                          padding: "4px 8px",
+                          borderRadius: "6px",
+                          fontSize: "11px",
+                          cursor: "pointer",
+                          fontWeight: "700"
+                        }}
+                      >
+                        Cancelar
+                      </button>
                     </div>
-                    <button
-                      onClick={() => setModoFecharCrash(false)}
+
+                    {/* HORÁRIO CALCULADO AUTOMATICAMENTE (SEM INPUT MANUAL) */}
+                    <div
                       style={{
-                        background: "rgba(255,255,255,0.1)",
-                        border: "none",
-                        color: "#cbd5e1",
-                        padding: "4px 8px",
-                        borderRadius: "6px",
-                        fontSize: "11px",
-                        cursor: "pointer",
-                        fontWeight: "700"
+                        background: "rgba(15, 23, 42, 0.9)",
+                        border: "1px solid rgba(239, 68, 68, 0.4)",
+                        borderRadius: "8px",
+                        padding: "10px 14px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "4px"
                       }}
                     >
-                      Cancelar
-                    </button>
-                  </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: "11px", fontWeight: "800", color: "#fca5a5" }}>
+                          ⏰ Horário Calculado de Encerramento (Automático):
+                        </span>
+                        <span
+                          style={{
+                            background: infoAtividade?.temAtividade ? "rgba(34, 197, 94, 0.2)" : "rgba(245, 158, 11, 0.2)",
+                            color: infoAtividade?.temAtividade ? "#4ade80" : "#fbbf24",
+                            border: `1px solid ${infoAtividade?.temAtividade ? "rgba(34, 197, 94, 0.4)" : "rgba(245, 158, 11, 0.4)"}`,
+                            padding: "2px 8px",
+                            borderRadius: "10px",
+                            fontSize: "10px",
+                            fontWeight: "800"
+                          }}
+                        >
+                          {infoAtividade?.temAtividade ? `Última Atividade: ${infoAtividade.tipo}` : "Sem Atividade Registrada"}
+                        </span>
+                      </div>
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <label style={{ fontSize: "11px", fontWeight: "800", color: "#f8fafc" }}>
-                      ⏰ Data e Horário de Saída do Ponto (Crash):
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={saidaDataHoraCrash}
-                      onChange={(e) => setSaidaDataHoraCrash(e.target.value)}
-                      style={{
-                        background: "rgba(15, 23, 42, 0.9)",
-                        border: "1px solid rgba(239, 68, 68, 0.4)",
-                        color: "#fff",
-                        padding: "8px 12px",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                        fontWeight: "700",
-                        outline: "none"
-                      }}
-                    />
-                    <span style={{ fontSize: "10px", color: "#94a3b8" }}>
-                      Entrada registrada: {new Date(funcionarioInspecao.entrada).toLocaleString("pt-BR")}
-                    </span>
-                  </div>
+                      <div style={{ fontSize: "17px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
+                        {infoAtividade?.horaFormatada}
+                        <span style={{ fontSize: "11px", fontWeight: "600", color: "#94a3b8", marginLeft: "8px" }}>
+                          ({infoAtividade?.dataDescricao})
+                        </span>
+                      </div>
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <label style={{ fontSize: "11px", fontWeight: "800", color: "#f8fafc" }}>
-                      📝 Justificativa da Solicitação de Fechamento (Obrigatório):
-                    </label>
-                    <textarea
-                      rows={3}
-                      placeholder="Descreva o motivo do crash ou solicitação (ex: Jogo crashou com erro D3D / queda de energia / desconexão repentina)..."
-                      value={justificativaCrash}
-                      onChange={(e) => setJustificativaCrash(e.target.value)}
-                      style={{
-                        background: "rgba(15, 23, 42, 0.9)",
-                        border: "1px solid rgba(239, 68, 68, 0.4)",
-                        color: "#fff",
-                        padding: "8px 12px",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                        outline: "none",
-                        resize: "vertical"
-                      }}
-                    />
-                  </div>
+                      <div style={{ fontSize: "11px", color: "#cbd5e1", marginTop: "2px", lineHeight: "1.3" }}>
+                        {infoAtividade?.descricaoOrigem}
+                      </div>
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    <label style={{ fontSize: "11px", fontWeight: "800", color: "#f8fafc" }}>
-                      📷 Print do Crash / Comprovante (Obrigatório):
-                    </label>
+                      <span style={{ fontSize: "10px", color: "#94a3b8", marginTop: "2px" }}>
+                        Entrada registrada: {new Date(funcionarioInspecao.entrada).toLocaleString("pt-BR")}
+                      </span>
+                    </div>
+
+                    {/* JUSTIFICATIVA (OPCIONAL) */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      <label style={{ fontSize: "11px", fontWeight: "800", color: "#f8fafc" }}>
+                        📝 Justificativa / Motivo do Crash (Opcional):
+                      </label>
+                      <textarea
+                        rows={2}
+                        placeholder="Descreva o motivo se desejar (ex: jogo fechou com erro D3D, queda de conexão)..."
+                        value={justificativaCrash}
+                        onChange={(e) => setJustificativaCrash(e.target.value)}
+                        style={{
+                          background: "rgba(15, 23, 42, 0.9)",
+                          border: "1px solid rgba(239, 68, 68, 0.4)",
+                          color: "#fff",
+                          padding: "8px 12px",
+                          borderRadius: "8px",
+                          fontSize: "12px",
+                          outline: "none",
+                          resize: "vertical"
+                        }}
+                      />
+                    </div>
+
+                    {/* PRINT DO CRASH (OPCIONAL) */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <label style={{ fontSize: "11px", fontWeight: "800", color: "#f8fafc" }}>
+                          📷 Print do Crash / Comprovante (Opcional - se houver):
+                        </label>
+                        <span style={{ fontSize: "10px", color: "#94a3b8" }}>Não é obrigatório</span>
+                      </div>
 
                     {printCrashBase64 ? (
                       <div
@@ -2989,7 +3095,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                     </button>
                   </div>
                 </div>
-              )}
+              );
+            })()}
 
               {/* ALERTA DE INATIVIDADE EM TEMPO REAL (> 30 MINUTOS SEM AÇÃO) */}
               {!funcionarioInspecao.saida && (() => {
@@ -3073,14 +3180,12 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                       <button
                         onClick={() => {
                           setModoFecharCrash(true);
-                          const dt = new Date(ultAtivMs);
-                          const yyyy = dt.getFullYear();
-                          const mm = String(dt.getMonth() + 1).padStart(2, "0");
-                          const dd = String(dt.getDate()).padStart(2, "0");
-                          const hh = String(dt.getHours()).padStart(2, "0");
-                          const mi = String(dt.getMinutes()).padStart(2, "0");
-                          setSaidaDataHoraCrash(`${yyyy}-${mm}-${dd}T${hh}:${mi}`);
-                          setJustificativaCrash(`Queda da cidade / crash detectado por inatividade (> 30 min sem ações). Última atividade às ${dt.toLocaleTimeString("pt-BR")}.`);
+                          const infoAtiv = obterUltimaAtividadeValida(funcionarioInspecao, atividadesPonto);
+                          setJustificativaCrash(
+                            infoAtiv?.temAtividade
+                              ? `Queda da cidade / crash detectado. Última atividade (${infoAtiv.tipo}: ${infoAtiv.detalhe}) às ${infoAtiv.horaFormatada}.`
+                              : `Queda da cidade / crash logo após a entrada.`
+                          );
                         }}
                         style={{
                           background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)",
@@ -3511,7 +3616,12 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                   <button
                     onClick={() => {
                       setModoFecharCrash(true);
-                      setSaidaDataHoraCrash(getAgoraLocalISO());
+                      const infoAtiv = obterUltimaAtividadeValida(funcionarioInspecao, atividadesPonto);
+                      setJustificativaCrash(
+                        infoAtiv?.temAtividade
+                          ? `Queda da cidade / crash. Encerrado na última atividade (${infoAtiv.tipo}: ${infoAtiv.detalhe}) às ${infoAtiv.horaFormatada}.`
+                          : `Queda da cidade / crash relatado pelo funcionário.`
+                      );
                     }}
                     style={{
                       background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)",

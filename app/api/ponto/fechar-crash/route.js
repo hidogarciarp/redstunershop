@@ -46,26 +46,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Dados do funcionário ausentes." }, { status: 400 });
     }
 
-    if (!justificativaCrash || !justificativaCrash.trim()) {
-      return NextResponse.json(
-        { error: "Por favor, informe a justificativa do crash." },
-        { status: 400 }
-      );
-    }
-
-    if (!printCrashBase64) {
-      return NextResponse.json(
-        { error: "É obrigatório anexar o print do crash ou comprovante." },
-        { status: 400 }
-      );
-    }
-
-    if (!saidaDataHoraCrash) {
-      return NextResponse.json(
-        { error: "Por favor, informe a data e horário de saída do crash." },
-        { status: 400 }
-      );
-    }
+    const justificativaFinal = justificativaCrash?.trim() || "Fechamento por crash solicitado pelo funcionário.";
 
     const dataSaidaObj = new Date(saidaDataHoraCrash);
     if (Number.isNaN(dataSaidaObj.getTime())) {
@@ -94,17 +75,17 @@ export async function POST(request) {
     const contentDiscord = [
       `[ID]: ${idJogo} ${nome} ( SAIU DE SERVIÇO - ${oficina} )`,
       `[DATA]: ${dataFormatadaDiscord}`,
-      `[MOTIVO_CRASH]: ${justificativaCrash.trim()}`,
+      `[MOTIVO_CRASH]: ${justificativaFinal}`,
       `[FECHADO_POR]: ${fechadoPorNome}`,
       `[UUID]: manual-crash-${Date.now()}`,
     ].join("\n");
 
     const embedDataPayload = {
       motivo: "crash",
-      justificativa: justificativaCrash.trim(),
+      justificativa: justificativaFinal,
       fechado_por_nome: fechadoPorNome,
       fechado_por_id: fechadoPorId,
-      imagem_comprovante: printCrashBase64,
+      imagem_comprovante: printCrashBase64 || null,
       horario_saida_manual: dataSaidaISO,
       tipo_fechamento: "manual_crash",
       criado_em: new Date().toISOString(),
@@ -185,12 +166,34 @@ export async function POST(request) {
         .update({
           saida: dataSaidaISO,
           tempo: durMin,
-          observacao: `[Fechamento Manual / Crash]: ${justificativaCrash.trim()} (por ${fechadoPorNome})`,
+          observacao: `[Fechamento Manual / Crash]: ${justificativaFinal} (por ${fechadoPorNome})`,
         })
         .eq("id", String(idJogo))
         .is("saida", null);
     } catch (e) {
       console.warn("[Fechar-Crash] Aviso ao atualizar pontos_reds:", e);
+    }
+
+    // 5. Atualizar log_ponto (tabela principal v2 de pontos)
+    try {
+      const entTs = dataEntradaObj.getTime();
+      const saidaTs = dataSaidaObj.getTime();
+      const durSeg = !isNaN(entTs) ? Math.max(0, Math.round((saidaTs - entTs) / 1000)) : 0;
+      const durMin = Math.round(durSeg / 60);
+
+      await supabaseAdmin
+        .from("log_ponto")
+        .update({
+          saida: dataSaidaISO,
+          total_segundos: durSeg,
+          total_minutos: durMin,
+          tipo_fechamento: "CRASH_MANUAL",
+          observacao: `[Fechamento Manual / Crash]: ${justificativaFinal} (por ${fechadoPorNome})`,
+        })
+        .eq("usuario_id", String(idJogo))
+        .is("saida", null);
+    } catch (e) {
+      console.warn("[Fechar-Crash] Aviso ao atualizar log_ponto:", e);
     }
 
     return NextResponse.json({
