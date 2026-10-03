@@ -246,7 +246,11 @@ function formatarMinutos(minutos) {
 }
 
 function formatarMoeda(val) {
-  return Number(val || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const num = Number(val || 0);
+  if (Number.isInteger(num)) {
+    return num.toLocaleString("pt-BR");
+  }
+  return num.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatarHoraSimples(dtString) {
@@ -477,7 +481,11 @@ export function calcularDadosTurno(turnoId, montante, pontosCarregados, listaDia
   // O rateio e o valor por hora cheia consideram apenas as horas dos mecânicos elegíveis
   const totalHorasEquipe = lista.reduce((acc, m) => acc + (m.elegivelRateio ? m.horasCheias : 0), 0);
   const totalMinutosEquipe = lista.reduce((acc, m) => acc + (m.elegivelRateio ? m.minutosTotal : 0), 0);
-  const valorPorHoraCompleta = totalHorasEquipe > 0 ? montante / totalHorasEquipe : 0;
+  const valorPorHoraBruto = totalHorasEquipe > 0 ? montante / totalHorasEquipe : 0;
+  // Arredondar o valor da hora cheia para o milhar mais próximo (ex: 81.081,08 -> 81.000)
+  const valorPorHoraCompleta = valorPorHoraBruto >= 1000
+    ? Math.round(valorPorHoraBruto / 1000) * 1000
+    : Math.round(valorPorHoraBruto);
 
   const listaComBonus = lista.map((m) => {
     const bonus = m.elegivelRateio ? m.horasCheias * valorPorHoraCompleta : 0;
