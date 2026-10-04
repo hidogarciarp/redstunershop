@@ -107,6 +107,12 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
   const [enviandoCrash, setEnviandoCrash] = useState(false);
   const [imagemZoom, setImagemZoom] = useState(null);
 
+  // Estados de Ausência / Pausa Temporária
+  const [mapaAusencias, setMapaAusencias] = useState({});
+  const [modalAusencia, setModalAusencia] = useState(null); // { ponto }
+  const [motivoAusencia, setMotivoAusencia] = useState("");
+  const [enviandoAusencia, setEnviandoAusencia] = useState(false);
+
   // Permissão: Donos, Gerentes, Admins e Responsáveis pelo Ponto
   const podeAdministrarMonitor = Boolean(
     usuarioLogado &&
@@ -937,6 +943,19 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       todosAbertos.sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
       finalizadosPeriodo.sort((a, b) => new Date(b.saida) - new Date(a.saida));
 
+      // Busca ausências ativas registradas
+      try {
+        const resAus = await fetch("/api/ponto/ausencia");
+        if (resAus.ok) {
+          const dataAus = await resAus.json();
+          if (dataAus.success && dataAus.ausencias) {
+            setMapaAusencias(dataAus.ausencias);
+          }
+        }
+      } catch (errAus) {
+        console.warn("[JanelaPonto] Falha ao carregar ausências:", errAus);
+      }
+
       cachePontosAbertos = todosAbertos;
       cachePontosFinalizados = finalizadosPeriodo;
       cacheCarregado = true;
@@ -967,6 +986,33 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         { event: "INSERT", schema: "public", table: "discord_log_messages" },
         (payload) => {
           const msg = payload?.new;
+          if (msg && msg.log_type === "ausencia") {
+            const embed = msg.embed_data;
+            if (embed && embed.idJogo) {
+              const idJ = String(embed.idJogo);
+              if (embed.tipo === "inicio") {
+                setMapaAusencias((prev) => ({
+                  ...prev,
+                  [idJ]: {
+                    ausente: true,
+                    idJogo: idJ,
+                    nome: embed.nome || msg.author_name,
+                    motivo: embed.motivo || "Ausente / Ocupado",
+                    desdeMs: new Date(embed.timestamp || msg.created_at).getTime(),
+                    timestampISO: embed.timestamp || msg.created_at,
+                  },
+                }));
+              } else if (embed.tipo === "fim") {
+                setMapaAusencias((prev) => {
+                  const copia = { ...prev };
+                  delete copia[idJ];
+                  return copia;
+                });
+              }
+            }
+            return;
+          }
+
           // Egress check: ignora qualquer mensagem que não seja de ponto ou bancada (ex: baú)
           if (msg && msg.log_type && msg.log_type !== "ponto" && msg.log_type !== "bancada") {
             return;
@@ -1200,9 +1246,22 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     return res;
   };
 
+  // Ocultar Hido Garcia da listagem de online (abertos) e da fila de atendimento
+  const isHidoGarcia = useCallback((p) => {
+    if (!p) return false;
+    const nome = (p.nome || "").toLowerCase().trim();
+    const idJogo = String(p.idJogo || "").trim();
+    return (
+      idJogo === "643" ||
+      nome === "hido garcia" ||
+      nome.includes("hido garcia") ||
+      (nome.includes("hido") && nome.includes("garcia"))
+    );
+  }, []);
+
   const pontosAbertosFiltrados = useMemo(
-    () => aplicarFiltrosLista(pontosAbertos),
-    [pontosAbertos, filtroOficina, buscaTexto]
+    () => aplicarFiltrosLista(pontosAbertos).filter((p) => !isHidoGarcia(p)),
+    [pontosAbertos, filtroOficina, buscaTexto, isHidoGarcia]
   );
 
   const pontosFinalizadosFiltrados = useMemo(
@@ -1243,16 +1302,19 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
   }, [podeAdministrarMonitor, filtroOficina, abaAtiva]);
 
   const filaMecanicos = useMemo(() => {
-    const pontosDaFila = isDono
+    const pontosDaFila = (isDono
       ? pontosAbertosFiltrados
-      : aplicarFiltrosLista(pontosAbertos).filter((p) => p.oficinaId === "reds" || (p.oficina || "").toLowerCase().includes("red"));
+      : aplicarFiltrosLista(pontosAbertos).filter((p) => p.oficinaId === "reds" || (p.oficina || "").toLowerCase().includes("red"))
+    ).filter((p) => !isHidoGarcia(p));
     const lista = (pontosDaFila || []).map((p) => {
       const entMs = new Date(p.entrada).getTime();
       // O tempo de espera da fila zera APENAS com atendimento real a clientes (serviço em carro próprio NÃO zera)
       const refMs = p.ultimaTunagemClienteMs || entMs;
       const tempoEsperaMs = Math.max(0, agoraTs - refMs);
+      const ausencia = mapaAusencias[String(p.idJogo)] || null;
       return {
         ...p,
+        ausencia,
         tempoEsperaMs,
         minutosEspera: Math.floor(tempoEsperaMs / 60000),
         referenciaMs: refMs
@@ -1261,7 +1323,83 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     // Quem está há mais tempo esperando fica no topo (1º lugar)
     lista.sort((a, b) => b.tempoEsperaMs - a.tempoEsperaMs);
     return lista;
-  }, [pontosAbertosFiltrados, pontosAbertos, agoraTs, isDono, buscaTexto]);
+  }, [pontosAbertosFiltrados, pontosAbertos, agoraTs, isDono, buscaTexto, mapaAusencias, isHidoGarcia]);
+
+  const meuPontoEmServico = useMemo(() => {
+    if (!usuarioLogado) return null;
+    const uid = String(usuarioLogado.id || usuarioLogado.idJogo || "").trim();
+    const unome = (usuarioLogado.nome || "").toLowerCase().trim();
+    return pontosAbertos.find((p) => {
+      const pid = String(p.idJogo || "").trim();
+      const pnome = (p.nome || "").toLowerCase().trim();
+      return (uid && pid && uid === pid) || (unome && pnome && (unome === pnome || unome.includes(pnome) || pnome.includes(unome)));
+    });
+  }, [usuarioLogado, pontosAbertos]);
+
+  const minhaAusencia = useMemo(() => {
+    if (!meuPontoEmServico) return null;
+    return mapaAusencias[String(meuPontoEmServico.idJogo)] || null;
+  }, [meuPontoEmServico, mapaAusencias]);
+
+  const alternarAusencia = async (ponto, iniciar, motivoEscolhido = "") => {
+    if (!ponto) return;
+    const idJogo = String(ponto.idJogo || "").trim();
+    if (!idJogo) return;
+    setEnviandoAusencia(true);
+    try {
+      const motivoFinal = motivoEscolhido || (iniciar ? "Ausente / Ocupado" : "");
+      if (iniciar) {
+        const agoraMs = Date.now();
+        setMapaAusencias((prev) => ({
+          ...prev,
+          [idJogo]: {
+            ausente: true,
+            idJogo,
+            nome: ponto.nome,
+            motivo: motivoFinal,
+            desdeMs: agoraMs,
+            timestampISO: new Date(agoraMs).toISOString(),
+          },
+        }));
+      } else {
+        setMapaAusencias((prev) => {
+          const copia = { ...prev };
+          delete copia[idJogo];
+          return copia;
+        });
+      }
+
+      const res = await fetch("/api/ponto/ausencia", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idJogo,
+          nome: ponto.nome,
+          acao: iniciar ? "iniciar" : "finalizar",
+          motivo: motivoFinal,
+          usuarioLogado,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Erro ao registrar ausência");
+      }
+      setModalAusencia(null);
+      setMotivoAusencia("");
+    } catch (err) {
+      console.error("Erro ao registrar ausência:", err);
+      alert("Não foi possível registrar a alteração de ausência: " + (err.message || err));
+      try {
+        const resA = await fetch("/api/ponto/ausencia");
+        if (resA.ok) {
+          const dA = await resA.json();
+          if (dA.success && dA.ausencias) setMapaAusencias(dA.ausencias);
+        }
+      } catch (e) {}
+    } finally {
+      setEnviandoAusencia(false);
+    }
+  };
 
   const obterUltimaAtividadeValida = (ponto, atividades) => {
     if (!ponto) return null;
@@ -1871,6 +2009,110 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
               gap: "8px"
             }}
           >
+            {/* Barra de Status e Ausência do Mecânico Conectado */}
+            {meuPontoEmServico && (
+              <div
+                style={{
+                  background: minhaAusencia
+                    ? "linear-gradient(135deg, rgba(245, 158, 11, 0.22) 0%, rgba(180, 83, 9, 0.3) 100%)"
+                    : "rgba(255, 255, 255, 0.04)",
+                  border: minhaAusencia
+                    ? "1px solid rgba(245, 158, 11, 0.5)"
+                    : "1px solid rgba(255, 255, 255, 0.08)",
+                  borderRadius: "10px",
+                  padding: "8px 12px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  boxShadow: minhaAusencia ? "0 0 15px rgba(245, 158, 11, 0.2)" : "none",
+                  transition: "all 0.2s ease"
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: "800", color: minhaAusencia ? "#fde047" : "#e2e8f0" }}>
+                      {minhaAusencia ? "⏸️ Você está Ausente / Ocupado" : "🟢 Você está em Serviço"}
+                    </span>
+                    {minhaAusencia && (
+                      <span
+                        style={{
+                          fontSize: "10px",
+                          fontFamily: "monospace",
+                          fontWeight: "800",
+                          color: "#fbbf24",
+                          background: "rgba(0,0,0,0.35)",
+                          padding: "1px 6px",
+                          borderRadius: "4px"
+                        }}
+                      >
+                        ⏱️ {formatarTempo(Math.max(0, agoraTs - (minhaAusencia.desdeMs || Date.now())))}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: "10px", color: "#94a3b8" }}>
+                    {minhaAusencia
+                      ? `Motivo: ${minhaAusencia.motivo || "Ausente"} • Fila e equipe alertadas`
+                      : "Precisa de uma pausa (banheiro, ligação, casa)? Avise a fila:"}
+                  </div>
+                </div>
+
+                {minhaAusencia ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      alternarAusencia(meuPontoEmServico, false);
+                    }}
+                    disabled={enviandoAusencia}
+                    style={{
+                      background: "linear-gradient(135deg, #22c55e 0%, #16a34a 100%)",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: "7px",
+                      padding: "6px 11px",
+                      fontSize: "11px",
+                      fontWeight: "800",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "5px",
+                      boxShadow: "0 2px 8px rgba(34, 197, 94, 0.35)",
+                      flexShrink: 0
+                    }}
+                  >
+                    <span>🟢</span> Voltei
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMotivoAusencia("");
+                      setModalAusencia({ ponto: meuPontoEmServico });
+                    }}
+                    disabled={enviandoAusencia}
+                    style={{
+                      background: "rgba(245, 158, 11, 0.15)",
+                      color: "#f59e0b",
+                      border: "1px solid rgba(245, 158, 11, 0.35)",
+                      borderRadius: "7px",
+                      padding: "5px 10px",
+                      fontSize: "10.5px",
+                      fontWeight: "700",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "5px",
+                      flexShrink: 0
+                    }}
+                  >
+                    <span>☕</span> Ausentar-se
+                  </button>
+                )}
+              </div>
+            )}
+
             {carregando ? (
               <div style={{ textAlign: "center", padding: "30px", color: "#94a3b8", fontSize: "12px" }}>
                 ⏳ Sincronizando pontos em tempo real...
@@ -1900,7 +2142,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                       marginBottom: "4px"
                     }}
                   >
-                    <span>🎯 <strong>Fila da Vez:</strong> Ordenado por tempo sem atender clientes (veículo próprio não zera)</span>
+                    <span>🎯 <strong>Fila da Vez:</strong> Ordenado por maior tempo sem realizar atendimentos</span>
                     <span style={{ fontSize: "9px", color: "#cbd5e1", background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: "4px" }}>
                       {isDono ? "Todas as oficinas" : "🔴 Somente RED'S"}
                     </span>
@@ -1915,8 +2157,12 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                         key={p.uuidEntrada || idx}
                         onClick={() => podeAdministrarMonitor && abrirAuditoriaFuncionario(p)}
                         style={{
-                          background: "rgba(255, 255, 255, 0.03)",
-                          border: isPrimeiro
+                          background: p.ausencia
+                            ? "linear-gradient(135deg, rgba(245, 158, 11, 0.09) 0%, rgba(180, 83, 9, 0.14) 100%)"
+                            : "rgba(255, 255, 255, 0.03)",
+                          border: p.ausencia
+                            ? "1px solid rgba(245, 158, 11, 0.5)"
+                            : isPrimeiro
                             ? "1px solid rgba(56, 189, 248, 0.4)"
                             : "1px solid rgba(255, 255, 255, 0.08)",
                           borderRadius: "10px",
@@ -1925,7 +2171,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           display: "flex",
                           justifyContent: "space-between",
                           alignItems: "center",
-                          transition: "transform 0.15s, background 0.15s"
+                          transition: "transform 0.15s, background 0.15s",
+                          opacity: p.ausencia ? 0.9 : 1
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.transform = "translateX(3px)")}
                         onMouseLeave={(e) => (e.currentTarget.style.transform = "translateX(0px)")}
@@ -1941,11 +2188,15 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                               justifyContent: "center",
                               fontSize: "12px",
                               fontWeight: "800",
-                              background: isPrimeiro
+                              background: p.ausencia
+                                ? "rgba(245, 158, 11, 0.2)"
+                                : isPrimeiro
                                 ? "rgba(56, 189, 248, 0.15)"
                                 : "rgba(255, 255, 255, 0.05)",
-                              color: isPrimeiro ? "#38bdf8" : "#94a3b8",
-                              border: isPrimeiro
+                              color: p.ausencia ? "#fbbf24" : isPrimeiro ? "#38bdf8" : "#94a3b8",
+                              border: p.ausencia
+                                ? "1px solid rgba(245, 158, 11, 0.4)"
+                                : isPrimeiro
                                 ? "1px solid rgba(56, 189, 248, 0.35)"
                                 : "1px solid rgba(255, 255, 255, 0.08)",
                               flexShrink: 0
@@ -1972,7 +2223,26 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                               >
                                 ID: {p.idJogo}
                               </span>
-                              {isPrimeiro && (
+                              {p.ausencia && (
+                                <span
+                                  style={{
+                                    fontSize: "9.5px",
+                                    fontWeight: "800",
+                                    background: "rgba(245, 158, 11, 0.2)",
+                                    border: "1px solid rgba(245, 158, 11, 0.45)",
+                                    color: "#fde047",
+                                    padding: "1px 6px",
+                                    borderRadius: "4px",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "3px"
+                                  }}
+                                  title={`Ausente desde ${new Date(p.ausencia.desdeMs).toLocaleTimeString("pt-BR")} - Motivo: ${p.ausencia.motivo}`}
+                                >
+                                  ☕ AUSENTE ({formatarTempo(Math.max(0, agoraTs - p.ausencia.desdeMs))}) • {p.ausencia.motivo}
+                                </span>
+                              )}
+                              {isPrimeiro && !p.ausencia && (
                                 <span
                                   style={{
                                     fontSize: "9px",
@@ -2010,22 +2280,6 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                               <span style={{ color: "#86efac" }}>
                                 🚗 {p.qtdTunagensClienteSessao ?? p.qtdTunagensSessao ?? 0} clientes atendidos
                               </span>
-                              {p.qtdTunagensPropriasSessao > 0 && (
-                                <span
-                                  style={{
-                                    color: "#f59e0b",
-                                    marginLeft: "6px",
-                                    background: "rgba(245, 158, 11, 0.15)",
-                                    padding: "1px 5px",
-                                    borderRadius: "4px",
-                                    border: "1px solid rgba(245, 158, 11, 0.3)",
-                                    fontWeight: "700"
-                                  }}
-                                  title="Serviço no próprio veículo: mantido no histórico, mas não zera o tempo de espera da fila"
-                                >
-                                  🚙 {p.qtdTunagensPropriasSessao} no próprio carro (não zera fila)
-                                </span>
-                              )}
                             </div>
                           </div>
                         </div>
@@ -2037,11 +2291,15 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                               fontSize: "12px",
                               fontWeight: "800",
                               fontFamily: "monospace",
-                              color: isPrimeiro ? "#38bdf8" : "#cbd5e1",
+                              color: p.ausencia ? "#f59e0b" : isPrimeiro ? "#38bdf8" : "#cbd5e1",
                               background: "rgba(0,0,0,0.4)",
                               padding: "2px 7px",
                               borderRadius: "6px",
-                              border: isPrimeiro ? "1px solid rgba(56, 189, 248, 0.3)" : "1px solid rgba(255, 255, 255, 0.08)"
+                              border: p.ausencia
+                                ? "1px solid rgba(245, 158, 11, 0.4)"
+                                : isPrimeiro
+                                ? "1px solid rgba(56, 189, 248, 0.3)"
+                                : "1px solid rgba(255, 255, 255, 0.08)"
                             }}
                           >
                             ⏱️ {formatarTempo(p.tempoEsperaMs)}
@@ -2050,12 +2308,50 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                             style={{
                               fontSize: "8.5px",
                               fontWeight: "700",
-                              color: isPrimeiro ? "#38bdf8" : "#64748b",
+                              color: p.ausencia ? "#fbbf24" : isPrimeiro ? "#38bdf8" : "#64748b",
                               textTransform: "uppercase"
                             }}
                           >
-                            {isPrimeiro ? "A VEZ DO ATENDIMENTO" : `ESPERANDO HÁ ${p.minutosEspera}M`}
+                            {p.ausencia
+                              ? "⏸️ AUSENTE NO MOMENTO"
+                              : isPrimeiro
+                              ? "A VEZ DO ATENDIMENTO"
+                              : `ESPERANDO HÁ ${p.minutosEspera}M`}
                           </span>
+
+                          {/* Botão rápido para gerenciar ausência deste mecânico */}
+                          {(podeAdministrarMonitor || String(usuarioLogado?.id || usuarioLogado?.idJogo) === String(p.idJogo)) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (p.ausencia) {
+                                  alternarAusencia(p, false);
+                                } else {
+                                  setMotivoAusencia("");
+                                  setModalAusencia({ ponto: p });
+                                }
+                              }}
+                              disabled={enviandoAusencia}
+                              style={{
+                                marginTop: "3px",
+                                background: p.ausencia ? "rgba(34, 197, 94, 0.15)" : "rgba(245, 158, 11, 0.12)",
+                                border: p.ausencia ? "1px solid rgba(34, 197, 94, 0.35)" : "1px solid rgba(245, 158, 11, 0.3)",
+                                color: p.ausencia ? "#4ade80" : "#f59e0b",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                fontSize: "9px",
+                                fontWeight: "700",
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "3px"
+                              }}
+                              title={p.ausencia ? "Marcar retorno ao serviço" : "Indicar ausência deste mecânico"}
+                            >
+                              {p.ausencia ? "🟢 Voltou" : "☕ Ausente"}
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
@@ -2080,19 +2376,24 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                   const minutosSemAtividade = Math.floor(msSemAtividade / 60000);
                   const isInativo30 = minutosSemAtividade >= 30;
                   const isMenor30 = minutosDecorrido < 30;
+                  const ausencia = mapaAusencias[String(p.idJogo)] || null;
 
                   return (
                     <div
                       key={p.uuidEntrada || idx}
                       onClick={() => abrirAuditoriaFuncionario(p)}
                       style={{
-                        background: isInativo30
+                        background: ausencia
+                          ? "linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(180, 83, 9, 0.18) 100%)"
+                          : isInativo30
                           ? "linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(185, 28, 28, 0.22) 100%)"
                           : isMenor30
                           ? "rgba(245, 158, 11, 0.08)"
                           : "rgba(34, 197, 94, 0.08)",
                         border: `1.5px solid ${
-                          isInativo30
+                          ausencia
+                            ? "rgba(245, 158, 11, 0.55)"
+                            : isInativo30
                             ? "#ef4444"
                             : isMenor30
                             ? "rgba(245, 158, 11, 0.35)"
@@ -2126,6 +2427,25 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           >
                             ID: {p.idJogo}
                           </span>
+                          {ausencia && (
+                            <span
+                              style={{
+                                fontSize: "9.5px",
+                                fontWeight: "800",
+                                background: "rgba(245, 158, 11, 0.2)",
+                                border: "1px solid rgba(245, 158, 11, 0.45)",
+                                color: "#fde047",
+                                padding: "1px 6px",
+                                borderRadius: "4px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "3px"
+                              }}
+                              title={`Ausente desde ${new Date(ausencia.desdeMs).toLocaleTimeString("pt-BR")} - Motivo: ${ausencia.motivo}`}
+                            >
+                              ☕ AUSENTE ({formatarTempo(Math.max(0, agoraTs - ausencia.desdeMs))}) • {ausencia.motivo}
+                            </span>
+                          )}
                           {p.isAutoRecuperado && (
                             <span
                               title={`Ponto recuperado automaticamente pela atividade de ${p.motivoRecuperacao || "bancada"}`}
@@ -2184,12 +2504,14 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                             fontSize: "12px",
                             fontWeight: "900",
                             fontFamily: "monospace",
-                            color: isInativo30 ? "#fca5a5" : isMenor30 ? "#fbbf24" : "#4ade80",
+                            color: ausencia ? "#f59e0b" : isInativo30 ? "#fca5a5" : isMenor30 ? "#fbbf24" : "#4ade80",
                             background: "rgba(0,0,0,0.4)",
                             padding: "2px 6px",
                             borderRadius: "6px",
                             border: `1px solid ${
-                              isInativo30
+                              ausencia
+                                ? "rgba(245, 158, 11, 0.4)"
+                                : isInativo30
                                 ? "rgba(239, 68, 68, 0.5)"
                                 : isMenor30
                                 ? "rgba(245, 158, 11, 0.4)"
@@ -2203,16 +2525,52 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                           style={{
                             fontSize: "9px",
                             fontWeight: "800",
-                            color: isInativo30 ? "#ef4444" : isMenor30 ? "#f59e0b" : "#22c55e",
+                            color: ausencia ? "#fbbf24" : isInativo30 ? "#ef4444" : isMenor30 ? "#f59e0b" : "#22c55e",
                             textTransform: "uppercase"
                           }}
                         >
-                          {isInativo30
+                          {ausencia
+                            ? `☕ Ausente há ${Math.floor(Math.max(0, agoraTs - ausencia.desdeMs) / 60000)}m`
+                            : isInativo30
                             ? `⚠️ Inativo há ${minutosSemAtividade}m`
                             : isMenor30
                             ? "⚠️ < 30 Minutos"
                             : "✅ Regular (Ativo)"}
                         </span>
+
+                        {/* Botão rápido para gerenciar ausência deste mecânico */}
+                        {(podeAdministrarMonitor || String(usuarioLogado?.id || usuarioLogado?.idJogo) === String(p.idJogo)) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (ausencia) {
+                                alternarAusencia(p, false);
+                              } else {
+                                setMotivoAusencia("");
+                                setModalAusencia({ ponto: p });
+                              }
+                            }}
+                            disabled={enviandoAusencia}
+                            style={{
+                              marginTop: "3px",
+                              background: ausencia ? "rgba(34, 197, 94, 0.15)" : "rgba(245, 158, 11, 0.12)",
+                              border: ausencia ? "1px solid rgba(34, 197, 94, 0.35)" : "1px solid rgba(245, 158, 11, 0.3)",
+                              color: ausencia ? "#4ade80" : "#f59e0b",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              fontSize: "9px",
+                              fontWeight: "700",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px"
+                            }}
+                            title={ausencia ? "Marcar retorno ao serviço" : "Indicar ausência deste mecânico"}
+                          >
+                            {ausencia ? "🟢 Voltou" : "☕ Ausente"}
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -3886,6 +4244,173 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             >
               ✕
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Indicar Ausência / Pausa */}
+      {modalAusencia && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.78)",
+            backdropFilter: "blur(6px)",
+            zIndex: 100002,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px"
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setModalAusencia(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#0f172a",
+              border: "1.5px solid rgba(245, 158, 11, 0.5)",
+              borderRadius: "16px",
+              padding: "22px",
+              width: "100%",
+              maxWidth: "430px",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.8), 0 0 30px rgba(245, 158, 11, 0.2)",
+              color: "#fff",
+              display: "flex",
+              flexDirection: "column",
+              gap: "14px"
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "20px" }}>☕</span>
+                <span style={{ fontSize: "15px", fontWeight: "900", color: "#fde047" }}>
+                  Indicar Ausência / Pausa
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalAusencia(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#94a3b8",
+                  fontSize: "18px",
+                  cursor: "pointer"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ fontSize: "12px", color: "#cbd5e1", lineHeight: 1.4 }}>
+              Mecânico: <strong style={{ color: "#fff" }}>{modalAusencia.ponto?.nome}</strong>{" "}
+              <span style={{ color: "#94a3b8" }}>(ID: {modalAusencia.ponto?.idJogo})</span>
+              <p style={{ marginTop: "6px", color: "#94a3b8", fontSize: "11px" }}>
+                Ao indicar ausência, um aviso com contador de tempo será exibido na Fila e na lista de serviço para que a equipe saiba que você está temporariamente indisponível.
+              </p>
+            </div>
+
+            <div>
+              <label style={{ fontSize: "11px", fontWeight: "700", color: "#fbbf24", display: "block", marginBottom: "6px" }}>
+                Escolha rápida de motivo:
+              </label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                {[
+                  "🚻 Banheiro",
+                  "📞 Ligação Pessoal",
+                  "⚠️ Problema em Casa",
+                  "☕ Pausa Rápida",
+                  "🍽️ Almoço / Lanche",
+                  "🚗 Assunto Externo"
+                ].map((sug) => (
+                  <button
+                    key={sug}
+                    type="button"
+                    onClick={() => setMotivoAusencia(sug)}
+                    style={{
+                      background: motivoAusencia === sug ? "rgba(245, 158, 11, 0.35)" : "rgba(255, 255, 255, 0.05)",
+                      border: motivoAusencia === sug ? "1px solid #f59e0b" : "1px solid rgba(255, 255, 255, 0.1)",
+                      color: motivoAusencia === sug ? "#fde047" : "#cbd5e1",
+                      borderRadius: "6px",
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      fontWeight: "600",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {sug}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label style={{ fontSize: "11px", fontWeight: "700", color: "#94a3b8", display: "block", marginBottom: "4px" }}>
+                Ou descreva o motivo (opcional):
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: Fui atender a porta, volto em 5 min..."
+                value={motivoAusencia}
+                onChange={(e) => setMotivoAusencia(e.target.value)}
+                maxLength={60}
+                style={{
+                  width: "100%",
+                  background: "rgba(0, 0, 0, 0.4)",
+                  border: "1px solid rgba(255, 255, 255, 0.15)",
+                  borderRadius: "8px",
+                  padding: "8px 10px",
+                  color: "#fff",
+                  fontSize: "12px",
+                  outline: "none",
+                  boxSizing: "border-box"
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "4px" }}>
+              <button
+                type="button"
+                onClick={() => setModalAusencia(null)}
+                style={{
+                  background: "rgba(255, 255, 255, 0.08)",
+                  border: "none",
+                  color: "#cbd5e1",
+                  borderRadius: "8px",
+                  padding: "8px 14px",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  cursor: "pointer"
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={enviandoAusencia}
+                onClick={() => alternarAusencia(modalAusencia.ponto, true, motivoAusencia || "Ausente / Ocupado")}
+                style={{
+                  background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
+                  border: "none",
+                  color: "#fff",
+                  borderRadius: "8px",
+                  padding: "8px 16px",
+                  fontSize: "12px",
+                  fontWeight: "800",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  boxShadow: "0 2px 10px rgba(245, 158, 11, 0.4)"
+                }}
+              >
+                {enviandoAusencia ? "⏳ Registrando..." : "☕ Confirmar Ausência"}
+              </button>
+            </div>
           </div>
         </div>
       )}
