@@ -44,6 +44,7 @@ const buildMenuItems = ({ userPodeNotificar, userPodeFinancas, userIsAdmin, user
     { id: "ponto", label: "Ponto" },
     { id: "hierarquia", label: "Hierarquia" },
     { id: "minha-conta", label: "Minha Conta" },
+    { id: "pagamentos", label: "Pagamentos" },
     { id: "avisos", label: "Quadro de Avisos" },
     { id: "ouvidoria", label: "Ouvidoria & Feedback" },
     { id: "tunagens", label: "Tunagens" },

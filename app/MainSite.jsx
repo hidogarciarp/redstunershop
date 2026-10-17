@@ -60,7 +60,7 @@ import { analisarServicoTunagem, parseLogsTunagemTexto } from "./utils/calculado
 const PAGINAS_OCULTAS = new Set([
   "financas", "cursos", "missoes", "relatorio-publico",
   "outras-mecanicas", "recrutamento", "evento-derby",
-  "evento-triathlon", "pagamentos"
+  "evento-triathlon"
 ]);
 
 async function otimizarImagem(file) {
@@ -6014,6 +6014,8 @@ export function MainSite({ isV2 = true } = {}) {
         previewPagamento={previewPagamento}
         enviarRegistroPagamento={enviarRegistroPagamento}
         meusPagamentos={meusPagamentos}
+        buscarMeusPagamentos={buscarMeusPagamentos}
+        setPaginaAtual={setPaginaAtual}
         AppHeaderBar={AppHeaderBar}
         AppModalNotificacao={AppModalNotificacao}
       />
