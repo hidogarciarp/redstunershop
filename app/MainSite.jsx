@@ -55,10 +55,12 @@ import AvisosPage from "./components/pages/AvisosPage";
 import OuvidoriaPage from "./components/pages/OuvidoriaPage";
 import CursosPage from "./components/pages/CursosPage";
 import ModalDetalheTunagem from "./components/ModalDetalheTunagem";
+import ModalConfirmacaoDialog from "./components/ModalConfirmacaoDialog";
+import FeedbackOverlayModerno from "./components/FeedbackOverlayModerno";
 import { analisarServicoTunagem, parseLogsTunagemTexto } from "./utils/calculadoraTunagem";
 
 const PAGINAS_OCULTAS = new Set([
-  "financas", "cursos", "missoes", "relatorio-publico",
+  "cursos", "missoes", "relatorio-publico",
   "outras-mecanicas", "recrutamento", "evento-derby",
   "evento-triathlon"
 ]);
@@ -130,6 +132,210 @@ export function MainSite({ isV2 = true } = {}) {
 
   const [v1BannerMinimizado, setV1BannerMinimizado] = useState(false);
   const [v1BannerFechado, setV1BannerFechado] = useState(false);
+  const [modalFeedbackGlobal, setModalFeedbackGlobal] = useState(null);
+  const [toasts, setToasts] = useState([]);
+
+  const removerToast = (id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const ultimoToastRef = useRef({ texto: "", time: 0 });
+
+  const adicionarToast = ({ mensagem, tipo = "info", titulo = "", duracao = 4200 }) => {
+    if (!mensagem) return;
+    const str = String(mensagem);
+
+    // Evita duplicar notificações de cópia sucessivas em menos de 800ms
+    const agora = Date.now();
+    const ehCopia = str.toLowerCase().includes("copiad") || str.toLowerCase().includes("clipboard");
+    if (ehCopia && ultimoToastRef.current.texto === "copia" && agora - ultimoToastRef.current.time < 800) {
+      return;
+    }
+    if (ehCopia) {
+      ultimoToastRef.current = { texto: "copia", time: agora };
+    }
+
+    let tipoFinal = tipo;
+    let tituloFinal = titulo;
+    if (tipo === "info" || !tipo) {
+      if (ehCopia || str.includes("✅") || str.toLowerCase().includes("sucesso") || str.toLowerCase().includes("concluíd") || str.toLowerCase().includes("salvo")) {
+        tipoFinal = "sucesso";
+        if (!tituloFinal) tituloFinal = ehCopia ? "Copiado com Sucesso" : "Sucesso";
+      } else if (str.includes("❌") || str.includes("🚫") || str.toLowerCase().includes("erro") || str.toLowerCase().includes("falha")) {
+        tipoFinal = "erro";
+        if (!tituloFinal) tituloFinal = "Erro";
+      } else if (str.includes("⚠️") || str.toLowerCase().includes("atenção") || str.toLowerCase().includes("aviso")) {
+        tipoFinal = "aviso";
+        if (!tituloFinal) tituloFinal = "Atenção";
+      } else {
+        tipoFinal = "info";
+        if (!tituloFinal) tituloFinal = "Notificação";
+      }
+    }
+
+    let msgLimpa = str;
+    if (msgLimpa.startsWith("✅ ") || msgLimpa.startsWith("❌ ") || msgLimpa.startsWith("⚠️ ") || msgLimpa.startsWith("🚫 ") || msgLimpa.startsWith("ℹ️ ") || msgLimpa.startsWith("📋 ")) {
+      msgLimpa = msgLimpa.substring(2).trim();
+    }
+
+    const novoId = Date.now() + "-" + Math.random().toString(36).substring(2, 7);
+    const novoToast = {
+      id: novoId,
+      mensagem: msgLimpa,
+      tipo: tipoFinal,
+      titulo: tituloFinal,
+      duracao,
+    };
+
+    setToasts((prev) => [novoToast, ...prev].slice(0, 4));
+
+    setTimeout(() => {
+      removerToast(novoId);
+    }, duracao);
+  };
+
+  const mostrarFeedback = (msg, tipo = "sucesso", titulo = "", onConfirmar = null) => {
+    if (!onConfirmar && typeof msg === "string" && msg.length < 240) {
+      adicionarToast({ mensagem: msg, tipo, titulo });
+      return;
+    }
+
+    setModalFeedbackGlobal({
+      tipo: tipo || "sucesso",
+      titulo: titulo || (tipo === "sucesso" ? "Sucesso!" : tipo === "erro" ? "Atenção" : tipo === "aviso" ? "Aviso" : "Informação"),
+      mensagem: msg,
+      textoConfirmar: "Entendido",
+      onConfirmar: () => {
+        setModalFeedbackGlobal(null);
+        if (typeof onConfirmar === "function") onConfirmar();
+      },
+    });
+  };
+
+  const confirmPromiseRef = useRef(null);
+
+  const confirmarModal = (configOuMsg, tituloCustom = "") => {
+    return new Promise((resolve) => {
+      confirmPromiseRef.current = resolve;
+
+      let config = {};
+      if (typeof configOuMsg === "string") {
+        const textoMsg = configOuMsg;
+        const ehPerigo =
+          textoMsg.toLowerCase().includes("apagar") ||
+          textoMsg.toLowerCase().includes("excluir") ||
+          textoMsg.toLowerCase().includes("deletar") ||
+          textoMsg.toLowerCase().includes("remover") ||
+          textoMsg.toLowerCase().includes("certeza");
+
+        config = {
+          mensagem: textoMsg,
+          titulo: tituloCustom || (ehPerigo ? "Atenção" : "Confirmação"),
+          tipo: ehPerigo ? "perigo" : "pergunta",
+          textoConfirmar: ehPerigo ? "Sim, Confirmar" : "Confirmar",
+          textoCancelar: "Cancelar",
+        };
+      } else {
+        config = configOuMsg || {};
+      }
+
+      setModalFeedbackGlobal({
+        tipo: config.tipo || "pergunta",
+        titulo: config.titulo || "Confirmação",
+        mensagem: config.mensagem || "",
+        textoConfirmar: config.textoConfirmar || "Confirmar",
+        textoCancelar: config.textoCancelar || "Cancelar",
+        onConfirmar: () => {
+          setModalFeedbackGlobal(null);
+          if (confirmPromiseRef.current) {
+            confirmPromiseRef.current(true);
+            confirmPromiseRef.current = null;
+          }
+        },
+        onCancelar: () => {
+          setModalFeedbackGlobal(null);
+          if (confirmPromiseRef.current) {
+            confirmPromiseRef.current(false);
+            confirmPromiseRef.current = null;
+          }
+        },
+      });
+    });
+  };
+
+  const mostrarConfirmacao = ({ titulo, mensagem, onConfirmar, onCancelar, textoConfirmar = "Confirmar", textoCancelar = "Cancelar", tipo = "pergunta" }) => {
+    confirmarModal({ titulo, mensagem, textoConfirmar, textoCancelar, tipo }).then((confirmou) => {
+      if (confirmou) {
+        if (typeof onConfirmar === "function") onConfirmar();
+      } else {
+        if (typeof onCancelar === "function") onCancelar();
+      }
+    });
+  };
+
+  // Interceptação global de window.alert, window.confirm e clipboard para transformar tudo no padrão visual moderno Dark Glassmorphism
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      // 1. Interceptar alert nativo
+      window.alert = (mensagem) => {
+        adicionarToast({ mensagem });
+      };
+
+      // 2. Disponibilizar confirmarModal e confirmarAsync globalmente
+      window.confirmarModal = confirmarModal;
+      window.confirmarAsync = confirmarModal;
+
+      // 3. Interceptar navigator.clipboard.writeText para dar feedback em QUALQUER cópia
+      if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        const originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
+        navigator.clipboard.writeText = async (text) => {
+          try {
+            await originalWriteText(text);
+            adicionarToast({
+              mensagem: "Texto copiado para a área de transferência!",
+              tipo: "sucesso",
+              titulo: "Copiado com Sucesso",
+              duracao: 3200,
+            });
+            return Promise.resolve();
+          } catch (err) {
+            // Fallback seguro via execCommand
+            try {
+              const ta = document.createElement("textarea");
+              ta.value = text;
+              ta.style.position = "fixed";
+              ta.style.left = "-9999px";
+              ta.style.top = "-9999px";
+              document.body.appendChild(ta);
+              ta.focus();
+              ta.select();
+              document.execCommand("copy");
+              document.body.removeChild(ta);
+              adicionarToast({
+                mensagem: "Texto copiado para a área de transferência!",
+                tipo: "sucesso",
+                titulo: "Copiado com Sucesso",
+                duracao: 3200,
+              });
+              return Promise.resolve();
+            } catch (errFallback) {
+              adicionarToast({
+                mensagem: "Não foi possível copiar o texto automaticamente.",
+                tipo: "erro",
+                titulo: "Erro ao Copiar",
+                duracao: 3800,
+              });
+              return Promise.reject(err);
+            }
+          }
+        };
+      }
+
+      window.mostrarFeedback = mostrarFeedback;
+      window.mostrarToast = (msg, tipo, tit) => adicionarToast({ mensagem: msg, tipo, titulo: tit });
+      window.mostrarConfirmacao = mostrarConfirmacao;
+    }
+  }, []);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -525,7 +731,13 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const deletarParticipacao = async (id) => {
-    if (!window.confirm("Tem certeza que deseja apagar este registro? Esta ação não pode ser desfeita.")) return;
+    const ok = await confirmarModal({
+      tipo: "perigo",
+      titulo: "Apagar Registro",
+      mensagem: "Tem certeza que deseja apagar este registro? Esta ação não pode ser desfeita.",
+      textoConfirmar: "Sim, Apagar",
+    });
+    if (!ok) return;
 
     // Buscar participação para saber se estava aprovada
     const { data: part } = await supabase
@@ -548,7 +760,7 @@ export function MainSite({ isV2 = true } = {}) {
     }
 
     const { error } = await supabase.from("missao_participacoes").delete().eq("id", id);
-    if (error) alert("Erro ao apagar registro: " + error.message);
+    if (error) mostrarFeedback("Erro ao apagar registro: " + error.message, "erro");
   };
 
   const criarMissao = async (dados) => {
@@ -559,7 +771,7 @@ export function MainSite({ isV2 = true } = {}) {
       data_expiracao: dados.data_expiracao ? new Date(dados.data_expiracao).toISOString() : null,
       criado_por: usuarioLogado?.id,
     });
-    if (error) alert("Erro ao criar missão: " + error.message);
+    if (error) mostrarFeedback("Erro ao criar missão: " + error.message, "erro");
   };
 
   const editarMissao = async (id, dados) => {
@@ -570,15 +782,21 @@ export function MainSite({ isV2 = true } = {}) {
       pontos_recompensa: parseInt(dados.pontos_recompensa) || 150,
       data_expiracao: dados.data_expiracao ? new Date(dados.data_expiracao).toISOString() : null,
     }).eq("id", id);
-    if (error) alert("Erro ao editar missão: " + error.message);
+    if (error) mostrarFeedback("Erro ao editar missão: " + error.message, "erro");
   };
 
   const finalizarMissao = async (id) => {
-    if (!confirm("⚠️ Tem certeza que deseja ENCERRAR esta missão? Ela deixará de ser visível para os funcionários, mas os dados não serão apagados.")) return;
+    const ok = await confirmarModal({
+      tipo: "aviso",
+      titulo: "Encerrar Missão",
+      mensagem: "Tem certeza que deseja ENCERRAR esta missão? Ela deixará de ser visível para os funcionários, mas os dados não serão apagados.",
+      textoConfirmar: "Sim, Encerrar",
+    });
+    if (!ok) return;
     const { error } = await supabase.from("missoes").update({ ativa: false }).eq("id", id);
-    if (error) alert("❌ Erro ao encerrar: " + error.message);
+    if (error) mostrarFeedback("Erro ao encerrar: " + error.message, "erro");
     else {
-      alert("✅ Missão encerrada e arquivada com sucesso!");
+      mostrarFeedback("Missão encerrada e arquivada com sucesso!", "sucesso");
       buscarMissoes();
     }
   };
@@ -918,8 +1136,14 @@ export function MainSite({ isV2 = true } = {}) {
     setAvisoSendoEditado(novoQuadro);
   };
 
-  const apagarQuadro = (id) => {
-    if (window.confirm("🗑️ Apagar este quadro de avisos em definitivo?")) {
+  const apagarQuadro = async (id) => {
+    const ok = await confirmarModal({
+      tipo: "perigo",
+      titulo: "Apagar Quadro de Avisos",
+      mensagem: "Deseja apagar este quadro de avisos em definitivo?",
+      textoConfirmar: "Sim, Apagar",
+    });
+    if (ok) {
       const novaLista = listaAvisos.filter(q => q.id !== id);
       salvarQuadroAvisos(novaLista);
       setAvisoSendoEditado(null);
@@ -1242,14 +1466,14 @@ export function MainSite({ isV2 = true } = {}) {
     if (parseInt(editFuncNovoId) !== id) {
       const userExist = await buscarUsuarioNoBanco(editFuncNovoId);
       if (userExist) {
-        alert("❌ Este ID já está em uso por outro funcionário!");
+        mostrarFeedback("Este ID já está em uso por outro funcionário!", "erro");
         return;
       }
     }
 
     const { error } = await supabase.from("usuarios").update(updateData).eq("id", id);
-    if (error) { alert("❌ Erro ao atualizar: " + error.message); return; }
-    alert("✅ Funcionário atualizado com sucesso!");
+    if (error) { mostrarFeedback("Erro ao atualizar: " + error.message, "erro"); return; }
+    mostrarFeedback("Funcionário atualizado com sucesso!", "sucesso", "Atualizado com Sucesso");
     setEditandoFuncionarioId(null);
     setEditFuncNovoId("");
     setEditFuncNome("");
@@ -1270,13 +1494,19 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const deletarCliente = async (id, nome) => {
-    if (!usuarioLogado) { alert("⚠️ Usuário não identificado!"); return; }
-    if (confirm(`⚠️ TEM CERTEZA?\n\nDeseja realmente apagar o cliente "${nome}" (ID ${id})?\nEsta ação apagará o registro dele permanentemente.`)) {
+    if (!usuarioLogado) { mostrarFeedback("Usuário não identificado!", "aviso"); return; }
+    const ok = await confirmarModal({
+      tipo: "perigo",
+      titulo: "Apagar Cliente",
+      mensagem: `Deseja realmente apagar o cliente "${nome}" (ID ${id})?\nEsta ação apagará o registro dele permanentemente.`,
+      textoConfirmar: "Sim, Apagar",
+    });
+    if (ok) {
       const { error } = await supabase.from("clientes").delete().eq("id", id);
       if (error) {
-        alert("❌ Erro ao excluir cliente: " + error.message);
+        mostrarFeedback("Erro ao excluir cliente: " + error.message, "erro");
       } else {
-        alert(`✅ Cliente "${nome}" apagado com sucesso!`);
+        mostrarFeedback(`Cliente "${nome}" apagado com sucesso!`, "sucesso", "Apagado");
         buscarClientes();
       }
     }
@@ -2161,12 +2391,17 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const apagarNotificacao = async (notifId) => {
-    const confirmar = window.confirm("Tem certeza que deseja APAGAR esta notificação?");
-    if (!confirmar) return;
+    const ok = await confirmarModal({
+      tipo: "perigo",
+      titulo: "Apagar Notificação",
+      mensagem: "Tem certeza que deseja APAGAR esta notificação?",
+      textoConfirmar: "Sim, Apagar",
+    });
+    if (!ok) return;
     const { error } = await supabase.from("notificacoes").delete().eq("id", notifId);
-    if (error) { alert("❌ Erro ao apagar a notificação."); }
+    if (error) { mostrarFeedback("Erro ao apagar a notificação.", "erro"); }
     else { 
-      alert("🗑️ Notificação apagada com sucesso!"); 
+      mostrarFeedback("Notificação apagada com sucesso!", "sucesso", "Apagada"); 
       buscarHistoricoNotificacoes(); 
     }
   };
@@ -2193,21 +2428,31 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const fecharPontoAdmin = async (pontoId) => {
-    const confirmar = window.confirm("Deseja fechar este ponto agora?");
-    if (!confirmar) return;
+    const ok = await confirmarModal({
+      tipo: "pergunta",
+      titulo: "Encerrar Ponto",
+      mensagem: "Deseja fechar este ponto agora?",
+      textoConfirmar: "Sim, Fechar Ponto",
+    });
+    if (!ok) return;
     const agora = new Date().toISOString();
     const { error } = await supabase.from("ponto_horas").update({ saida: agora }).eq("id", pontoId);
-    if (error) { alert("❌ Erro ao fechar o ponto."); }
-    else { alert("✅ Ponto fechado com sucesso!"); buscarEmServico(); buscarHistoricoPonto(); verificarPontoAtivo(); buscarTotalHoras(); buscarHistoricoAdmin(); }
+    if (error) { mostrarFeedback("Erro ao fechar o ponto.", "erro"); }
+    else { mostrarFeedback("Ponto fechado com sucesso!", "sucesso"); buscarEmServico(); buscarHistoricoPonto(); verificarPontoAtivo(); buscarTotalHoras(); buscarHistoricoAdmin(); }
   };
 
   const apagarPonto = async (pontoId) => {
-    const confirmar = window.confirm("Tem certeza que deseja APAGAR este ponto? Esta ação não pode ser desfeita.");
-    if (!confirmar) return;
+    const ok = await confirmarModal({
+      tipo: "perigo",
+      titulo: "Apagar Ponto",
+      mensagem: "Tem certeza que deseja APAGAR este ponto? Esta ação não pode ser desfeita.",
+      textoConfirmar: "Sim, Apagar",
+    });
+    if (!ok) return;
     const { error } = await supabase.from("ponto_horas").delete().eq("id", pontoId);
-    if (error) { alert("❌ Erro ao apagar o ponto."); }
+    if (error) { mostrarFeedback("Erro ao apagar o ponto.", "erro"); }
     else { 
-      alert("🗑️ Ponto apagado com sucesso!"); 
+      mostrarFeedback("Ponto apagado com sucesso!", "sucesso", "Apagado"); 
       buscarEmServico(); 
       buscarHistoricoPonto(); 
       verificarPontoAtivo(); 
@@ -2236,18 +2481,15 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const apagarPagamento = async (pagId) => {
-    const confirmar = window.confirm("Tem certeza que deseja apagar este pagamento?");
-    if (!confirmar) return;
-
     const { error } = await supabase
       .from("pagamentos_semanais")
       .delete()
       .eq("id", pagId);
 
     if (error) {
-      alert("❌ Erro ao apagar pagamento.");
+      mostrarFeedback("Erro ao apagar pagamento: " + error.message, "erro");
     } else {
-      alert("🗑️ Pagamento apagado!");
+      mostrarFeedback("Pagamento apagado com sucesso!", "sucesso", "Apagado");
       buscarPagamentosSemanais(); // recarrega lista
     }
   };
@@ -2952,8 +3194,8 @@ export function MainSite({ isV2 = true } = {}) {
       updateData.data_vencimento = editFinancaVencimento;
     }
     const { error } = await supabase.from("usuarios").update(updateData).eq("id", funcId);
-    if (error) { alert("❌ Erro ao salvar: " + error.message); return; }
-    alert("✅ Configuração de cobrança salva!");
+    if (error) { mostrarFeedback("Erro ao salvar: " + error.message, "erro", "Erro ao Salvar"); return; }
+    mostrarFeedback("Configuração de cobrança salva com sucesso!", "sucesso", "Cobrança Salva");
     setEditandoFinancaId(null);
     buscarFinancas();
     if (funcId === usuarioLogado?.id) buscarDadosUsuario();
@@ -2973,7 +3215,7 @@ export function MainSite({ isV2 = true } = {}) {
     });
 
     if (error) {
-      alert("❌ Erro ao registrar pagamento: " + error.message);
+      mostrarFeedback("Erro ao registrar pagamento: " + error.message, "erro", "Erro no Registro");
       return;
     }
 
@@ -2993,7 +3235,7 @@ export function MainSite({ isV2 = true } = {}) {
       }
     }
 
-    alert("✅ Pagamento retroativo registrado e confirmado!");
+    mostrarFeedback("Pagamento retroativo registrado e confirmado com sucesso!", "sucesso", "Pagamento Confirmado");
     buscarPagamentosSemanais();
     buscarFinancas();
   };
@@ -3013,7 +3255,7 @@ export function MainSite({ isV2 = true } = {}) {
       .eq("id", pagId);
 
     if (errorPag) {
-      alert("❌ Erro ao confirmar pagamento: " + errorPag.message);
+      mostrarFeedback("Erro ao confirmar pagamento: " + errorPag.message, "erro", "Erro no Pagamento");
       return;
     }
 
@@ -3056,7 +3298,7 @@ export function MainSite({ isV2 = true } = {}) {
 
     await supabase.from("usuarios").update(updateData).eq("id", funcId);
 
-    alert(`✅ Pagamento de ${funcNome} confirmado! Acesso atualizado.`);
+    mostrarFeedback(`Pagamento de ${funcNome} confirmado com sucesso! Acesso atualizado.`, "sucesso", "Pagamento Aprovado");
     buscarFinancas();
     buscarPagamentosSemanais();
     if (funcId === usuarioLogado?.id) buscarDadosUsuario();
@@ -3065,17 +3307,14 @@ export function MainSite({ isV2 = true } = {}) {
   const atualizarVencimentoManual = async (funcId, novaData) => {
     const { error } = await supabase.from("usuarios").update({ data_vencimento: novaData }).eq("id", funcId);
     if (error) {
-      alert("❌ Erro ao atualizar vencimento.");
+      mostrarFeedback("Erro ao atualizar vencimento.", "erro", "Erro");
     } else {
-      alert(`✅ Vencimento atualizado para ${novaData}`);
+      mostrarFeedback(`Vencimento atualizado para ${novaData} com sucesso!`, "sucesso", "Vencimento Atualizado");
       buscarFinancas();
     }
   };
 
   const desbloquearFuncionario = async (funcId, funcNome) => {
-    const confirmar = window.confirm(`Deseja desbloquear o acesso de ${funcNome}?`);
-    if (!confirmar) return;
-
     // 🔹 pega dados atuais
     const func = financasFuncionarios.find((f) => f.id === funcId);
 
@@ -3107,11 +3346,11 @@ export function MainSite({ isV2 = true } = {}) {
       .eq("id", funcId);
 
     if (error) {
-      alert("❌ Erro: " + error.message);
+      mostrarFeedback("Erro ao desbloquear: " + error.message, "erro");
       return;
     }
 
-    alert(`✅ ${funcNome} desbloqueado + vencimento atualizado!`);
+    mostrarFeedback(`${funcNome} desbloqueado e vencimento regularizado com sucesso!`, "sucesso", "Acesso Liberado");
     buscarFinancas();
     if (funcId === usuarioLogado?.id) buscarDadosUsuario();
   };
@@ -3121,7 +3360,8 @@ export function MainSite({ isV2 = true } = {}) {
       .from("usuarios")
       .update({ data_vencimento: novaData })
       .eq("id", funcId);
-    if (error) { alert("❌ Erro ao alterar data: " + error.message); return; }
+    if (error) { mostrarFeedback("Erro ao alterar data: " + error.message, "erro"); return; }
+    mostrarFeedback("Data de vencimento alterada com sucesso!", "sucesso");
     buscarFinancas();
   };
 
@@ -3316,9 +3556,18 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const deletarCurriculo = async (id) => {
-    if (!window.confirm("Tem certeza que deseja APAGAR este currículo?")) return;
+    const ok = await confirmarModal({
+      tipo: "perigo",
+      titulo: "Apagar Currículo",
+      mensagem: "Tem certeza que deseja APAGAR este currículo?",
+      textoConfirmar: "Sim, Apagar",
+    });
+    if (!ok) return;
     const { error } = await supabase.from("curriculos").delete().eq("id", id);
-    if (!error) buscarCurriculos();
+    if (!error) {
+      mostrarFeedback("Currículo apagado com sucesso!", "sucesso");
+      buscarCurriculos();
+    }
   };
 
   const toggleContatadoCurriculo = async (id, statusAtual) => {
@@ -3555,9 +3804,9 @@ export function MainSite({ isV2 = true } = {}) {
     if (salvandoServico) return;
     try {
       if (reportBugs) {
-        if (!passaporte) { alert("⚠️ Informe o ID do cliente!"); return; }
-        if (!imagemBugs) { alert("⚠️ Envie a imagem!"); return; }
-        if (!nomeVeiculoBugs) { alert("⚠️ Informe o nome do veículo!"); return; }
+        if (!passaporte) { mostrarFeedback("Informe o ID do cliente!", "aviso"); return; }
+        if (!imagemBugs) { mostrarFeedback("Envie a imagem comprobatória do bug!", "aviso"); return; }
+        if (!nomeVeiculoBugs) { mostrarFeedback("Informe o nome do veículo!", "aviso"); return; }
         setSalvandoServico(true);
         const formData = new FormData();
         const embedFields = [
@@ -3571,21 +3820,21 @@ export function MainSite({ isV2 = true } = {}) {
         formData.append("files[0]", imagemBugs, "veiculo.png");
         const response = await fetch(WEBHOOK_REPORT, { method: "POST", body: formData });
         if (WEBHOOK_RODAS) await fetch(WEBHOOK_RODAS, { method: "POST", body: formData });
-        if (!response.ok) { alert("❌ Erro ao enviar report!"); setSalvandoServico(false); return; }
-        alert("✅ Report enviado!");
+        if (!response.ok) { mostrarFeedback("Erro ao enviar report para o Discord!", "erro"); setSalvandoServico(false); return; }
+        mostrarFeedback("Report de bug enviado com sucesso para o Discord!", "sucesso", "Report Enviado");
         setReportBugs(false); setNomeVeiculoBugs(""); setDescricaoBug(""); setImagemBugs(null); setPreviewBugs(null);
         setSalvandoServico(false);
         return;
       }
 
       const temReboque = Boolean(reboque);
-      if (!temReboque && (!cliente || !passaporte)) { alert("⚠️ Preencha o nome e o ID do cliente antes de registrar!"); return; }
-      if (temReboque && !arquivoImagem) { alert("⚠️ Envie a foto da apreensão / serviço de reboque!"); return; }
+      if (!temReboque && (!cliente || !passaporte)) { mostrarFeedback("Preencha o nome e o ID do cliente antes de registrar!", "aviso"); return; }
+      if (temReboque && !arquivoImagem) { mostrarFeedback("Envie a foto da apreensão / serviço de reboque!", "aviso"); return; }
 
       // Verificação de Blacklist
       if (passaporte && isClienteBanido(passaporte)) {
         const banInfo = blacklist.find(b => String(b.passaporte) === String(passaporte));
-        alert(`🚫 OPERAÇÃO BLOQUEADA!\n\nEste cliente está na BLACKLIST.\nMotivo: ${banInfo?.motivo || "Não informado"}`);
+        mostrarFeedback(`OPERAÇÃO BLOQUEADA!\n\nEste cliente está na BLACKLIST.\nMotivo: ${banInfo?.motivo || "Não informado"}`, "erro", "Cliente na Blacklist");
         return;
       }
 
@@ -3594,20 +3843,19 @@ export function MainSite({ isV2 = true } = {}) {
       const temAlgumaPeca = Object.values(servicosSelecionados).some((v) => v === true);
       const total = calcularTotal();
 
-
       const soGuincho = temGuincho && !temEstetica && !temAlgumaPeca;
       const temItensVenda = servicosSelecionados["n1"] || servicosSelecionados["d1"] || servicosSelecionados["rd1"];
       const temPerformance = Object.keys(servicosSelecionados).some((id) => servicosSelecionados[id] && id !== "n1" && id !== "d1" && id !== "rd1");
 
       const roleBase = usuarioLogado?.role?.split("|")[0]?.toLowerCase()?.trim();
       if ((roleBase === "estagiario" || roleBase === "jovem_aprendiz") && temPerformance && (!autorizadoPor.trim() || !autorizadorId)) {
-        alert("⚠️ Estagiários e Jovens Aprendizes precisam selecionar quem autorizou a tunagem de Performance no campo 'Autorizado Por'!");
+        mostrarFeedback("Estagiários e Jovens Aprendizes precisam selecionar quem autorizou a tunagem de Performance!", "aviso");
         return;
       }
 
-      if (!temEstetica && !temAlgumaPeca && !temGuincho) { alert("⚠️ O formulário está vazio!"); return; }
-      if ((temEstetica || temPerformance) && !arquivoImagem) { alert("⚠️ É obrigatório enviar uma imagem para serviços de estética ou tunagem!"); return; }
-      if ((camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca) && Number(valorDigitadoEstetica) <= 0) { alert("⚠️ Ao selecionar Camaleão ou outros extras, informe o valor do painel in-game."); return; }
+      if (!temEstetica && !temAlgumaPeca && !temGuincho) { mostrarFeedback("O formulário de registro está vazio!", "aviso"); return; }
+      if ((temEstetica || temPerformance) && !arquivoImagem) { mostrarFeedback("É obrigatório anexar uma imagem para serviços de estética ou tunagem!", "aviso"); return; }
+      if ((camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca) && Number(valorDigitadoEstetica) <= 0) { mostrarFeedback("Ao selecionar Camaleão ou outros extras, informe o valor do painel in-game.", "aviso"); return; }
 
       setSalvandoServico(true);
 
@@ -3631,7 +3879,7 @@ export function MainSite({ isV2 = true } = {}) {
       const custoMinimoPainel = somaExtras + valorFumacaPainel + descontoCamaleaoDiscord + somaPainelPerformanceDiscord;
 
       if (valorPainel > 0 && valorPainel < custoMinimoPainel) {
-        alert(`⚠️ Inconsistência matemática: O valor do painel in-game (R$ ${valorPainel.toLocaleString("pt-BR")}) não cobre o custo dos itens selecionados (R$ ${custoMinimoPainel.toLocaleString("pt-BR")})! Fumaça, camaleão ou performance excedem o valor pago.`);
+        mostrarFeedback(`O valor do painel in-game (R$ ${valorPainel.toLocaleString("pt-BR")}) não cobre o custo mínimo dos itens selecionados (R$ ${custoMinimoPainel.toLocaleString("pt-BR")})!`, "erro", "Inconsistência de Valores");
         setSalvandoServico(false);
         return;
       }
@@ -3786,7 +4034,8 @@ export function MainSite({ isV2 = true } = {}) {
               if (j.error) msgAmigavel = j.error;
             } catch (_) {}
           }
-          alert("❌ " + msgAmigavel);
+          mostrarFeedback(msgAmigavel, "erro", "Erro no Discord");
+          setSalvandoServico(false);
           return;
         }
       }
@@ -3868,7 +4117,12 @@ export function MainSite({ isV2 = true } = {}) {
         limparFormulario();
         setSalvandoServico(false);
         buscarNotificacaoPendente();
-        alert(temReboque ? "✅ Apreensão / Reboque registrado com sucesso!" : "✅ Serviço registrado com sucesso!");
+
+        const resumoSucesso = temReboque
+          ? `🚨 Apreensão de veículo registrada e enviada para o canal de Reboque no Discord com sucesso!`
+          : `✅ Serviço registrado e enviado para o Discord com sucesso!\n\n👤 Cliente: ${cliente} (ID: ${passaporte})\n💰 Total: R$ ${total.toLocaleString("pt-BR")}\n🛠️ Itens: ${detalhesServico}`;
+
+        mostrarFeedback(resumoSucesso, "sucesso", "Enviado com Sucesso!");
       }
 
       if (temItensVenda && WEBHOOK_VENDAS) {
@@ -3876,7 +4130,7 @@ export function MainSite({ isV2 = true } = {}) {
       }
     } catch (err) {
       console.error("Erro ao registrar serviço:", err);
-      alert("❌ Erro ao registrar serviço: " + (err?.message || "Falha desconhecida"));
+      mostrarFeedback("Erro ao registrar serviço: " + (err?.message || "Falha desconhecida"), "erro");
     } finally {
       setSalvandoServico(false);
     }
@@ -5706,18 +5960,34 @@ export function MainSite({ isV2 = true } = {}) {
     );
   };
 
-  // Modal de Notificação Global
+  // Modal de Notificação Global e Diálogos de Feedback
   const AppModalNotificacao = () => (
-    <ModalNotificacao
-      notificacaoPendente={notificacaoPendente}
-      isDarkMode={isDarkMode}
-      theme={theme}
-      formatarDataHora={formatarDataHora}
-      renderMensagemComLinks={renderMensagemComLinks}
-      confirmarLeituraNotificacao={confirmarLeituraNotificacao}
-      onEnviarFeedback={handleEnviarFeedbackAuditoria}
-      onNaoAutorizei={handleNaoAutorizeiAuditoria}
-    />
+    <>
+      <ModalNotificacao
+        notificacaoPendente={notificacaoPendente}
+        isDarkMode={isDarkMode}
+        theme={theme}
+        formatarDataHora={formatarDataHora}
+        renderMensagemComLinks={renderMensagemComLinks}
+        confirmarLeituraNotificacao={confirmarLeituraNotificacao}
+        onEnviarFeedback={handleEnviarFeedbackAuditoria}
+        onNaoAutorizei={handleNaoAutorizeiAuditoria}
+      />
+      {modalFeedbackGlobal && (
+        <ModalConfirmacaoDialog
+          isOpen={Boolean(modalFeedbackGlobal)}
+          tipo={modalFeedbackGlobal.tipo || "sucesso"}
+          titulo={modalFeedbackGlobal.titulo}
+          mensagem={modalFeedbackGlobal.mensagem}
+          textoConfirmar={modalFeedbackGlobal.textoConfirmar || "OK"}
+          textoCancelar={modalFeedbackGlobal.textoCancelar || "Cancelar"}
+          onConfirmar={modalFeedbackGlobal.onConfirmar}
+          onCancelar={modalFeedbackGlobal.onCancelar}
+          isDarkMode={isDarkMode}
+          theme={theme}
+        />
+      )}
+    </>
   );
 
   // Header reutilizável
@@ -6137,6 +6407,7 @@ export function MainSite({ isV2 = true } = {}) {
         apagarPagamento={apagarPagamento}
         atualizarVencimentoManual={atualizarVencimentoManual}
         enviarNotificacao={enviarNotificacao}
+        mostrarFeedback={mostrarFeedback}
         AppHeaderBar={AppHeaderBar}
         AppModalNotificacao={AppModalNotificacao}
       />
@@ -6801,6 +7072,14 @@ export function MainSite({ isV2 = true } = {}) {
           />
         )}
       </main>
+
+      {/* FEEDBACK OVERLAY MODERNO (TOASTS + MODAL DE DIÁLOGO FLUTUANTE) */}
+      <FeedbackOverlayModerno
+        toasts={toasts}
+        removerToast={removerToast}
+        modalDialog={modalFeedbackGlobal}
+        fecharModalDialog={() => setModalFeedbackGlobal(null)}
+      />
     </div>
   );
 }

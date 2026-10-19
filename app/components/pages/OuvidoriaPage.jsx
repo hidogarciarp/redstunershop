@@ -182,7 +182,15 @@ export default function OuvidoriaPage({ theme, styles, usuarioLogado }) {
 
   // Excluir feedback
   const excluirFeedback = async (id) => {
-    if (!window.confirm("Deseja realmente excluir este feedback?")) return;
+    const confirmar = typeof window !== "undefined" && window.confirmarModal
+      ? await window.confirmarModal({
+          tipo: "perigo",
+          titulo: "Excluir Feedback",
+          mensagem: "Deseja realmente excluir este feedback da Ouvidoria?",
+          textoConfirmar: "Sim, Excluir",
+        })
+      : window.confirm("Deseja realmente excluir este feedback?");
+    if (!confirmar) return;
 
     // Atualização otimista na interface
     setFeedbacks((prev) => prev.filter((f) => f.id !== id));

@@ -720,7 +720,14 @@ export default function PontoPage({
   }, [usuarioLogado, podeVerTodosPontos, filtroNome, filtroInicio, filtroFim]);
 
   const handleFecharPontoAoVivo = async (ponto) => {
-    const confirmar = window.confirm(`Deseja realmente encerrar o ponto de ${ponto.nome}?`);
+    const confirmar = typeof window !== "undefined" && window.confirmarModal
+      ? await window.confirmarModal({
+          tipo: "pergunta",
+          titulo: "Encerrar Ponto",
+          mensagem: `Deseja realmente encerrar o ponto de ${ponto.nome}?`,
+          textoConfirmar: "Sim, Encerrar",
+        })
+      : window.confirm(`Deseja realmente encerrar o ponto de ${ponto.nome}?`);
     if (!confirmar) return;
 
     try {

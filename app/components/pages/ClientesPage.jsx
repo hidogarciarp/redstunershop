@@ -53,9 +53,15 @@ export default function ClientesPage({
   };
 
   const deletarServico = async (servico) => {
-    if (!confirm(`⚠️ TEM CERTEZA?\n\nDeseja realmente apagar este serviço de R$ ${Number(servico.valor_total).toLocaleString("pt-BR")}?\nEsta ação é irreversível.`)) {
-      return;
-    }
+    const confirmar = typeof window !== "undefined" && window.confirmarModal
+      ? await window.confirmarModal({
+          tipo: "perigo",
+          titulo: "Apagar Registro de Serviço",
+          mensagem: `Deseja realmente apagar este serviço de R$ ${Number(servico.valor_total).toLocaleString("pt-BR")}?\nEsta ação é irreversível.`,
+          textoConfirmar: "Sim, Apagar",
+        })
+      : window.confirm(`Deseja realmente apagar este serviço?`);
+    if (!confirmar) return;
     
     try {
       const { error } = await supabase.from("servicos").delete().eq("id", servico.id);

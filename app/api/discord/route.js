@@ -53,26 +53,41 @@ export async function POST(request) {
     }
 
     const contentType = request.headers.get("content-type") || "";
-    let discordResponse;
+    const isFormData = contentType.includes("multipart/form-data");
+    let outgoingBody;
+    let outgoingHeaders = {};
 
-    if (contentType.includes("multipart/form-data")) {
+    if (isFormData) {
       const incomingFormData = await request.formData();
       const outgoingFormData = new FormData();
-
       for (const [key, value] of incomingFormData.entries()) {
         outgoingFormData.append(key, value);
       }
-
-      discordResponse = await fetch(webhookUrl + "?wait=true", {
-        method: "POST",
-        body: outgoingFormData,
-      });
+      outgoingBody = outgoingFormData;
     } else {
       const jsonBody = await request.json();
-      discordResponse = await fetch(webhookUrl + "?wait=true", {
+      outgoingBody = JSON.stringify(jsonBody);
+      outgoingHeaders = { "Content-Type": "application/json" };
+    }
+
+    const buildUrl = (target) => {
+      const sep = target.includes("?") ? "&" : "?";
+      return target.includes("wait=") ? target : `${target}${sep}wait=true`;
+    };
+
+    let discordResponse = await fetch(buildUrl(webhookUrl), {
+      method: "POST",
+      headers: Object.keys(outgoingHeaders).length > 0 ? outgoingHeaders : undefined,
+      body: outgoingBody,
+    });
+
+    // Se o webhook configurado responder 404 e houver DEFAULT diferente, faz fallback automático
+    if (!discordResponse.ok && discordResponse.status === 404 && DEFAULT_WEBHOOKS[tipo] && DEFAULT_WEBHOOKS[tipo] !== webhookUrl) {
+      console.warn(`[Discord Proxy] Webhook de ${tipo} retornou 404. Acionando DEFAULT_WEBHOOKS.`);
+      discordResponse = await fetch(buildUrl(DEFAULT_WEBHOOKS[tipo]), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(jsonBody),
+        headers: Object.keys(outgoingHeaders).length > 0 ? outgoingHeaders : undefined,
+        body: outgoingBody,
       });
     }
 

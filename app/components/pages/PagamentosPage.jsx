@@ -23,6 +23,13 @@ export default function PagamentosPage({
   const [enviando, setEnviando] = useState(false);
   const vencimento = usuarioLogado?.data_vencimento;
 
+  const roleStr = String(usuarioLogado?.role || "").toLowerCase();
+  const isDonoOuAdmin =
+    roleStr.includes("dono") ||
+    roleStr.includes("admin") ||
+    roleStr.includes("gerente_geral") ||
+    roleStr.includes("financeiro");
+
   useEffect(() => {
     const semanas = [];
     const hoje = new Date();
@@ -144,23 +151,48 @@ export default function PagamentosPage({
             </div>
           </div>
 
-          {/* BADGE DE SITUAÇÃO DO VENCIMENTO */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              padding: "7px 14px",
-              borderRadius: "12px",
-              background: statusVenc.bg,
-              border: `1px solid ${statusVenc.color}40`,
-              fontSize: "12px",
-              fontWeight: "700",
-              color: statusVenc.color,
-            }}
-          >
-            <span>📅 Vencimento:</span>
-            <span>{statusVenc.label}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            {isDonoOuAdmin && setPaginaAtual && (
+              <button
+                type="button"
+                onClick={() => setPaginaAtual("financas")}
+                style={{
+                  background: "rgba(234,179,8,0.14)",
+                  border: "1px solid rgba(234,179,8,0.4)",
+                  color: "#facc15",
+                  padding: "7px 14px",
+                  borderRadius: "12px",
+                  cursor: "pointer",
+                  fontSize: "12px",
+                  fontWeight: "800",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  transition: "all 0.2s",
+                }}
+              >
+                👑 Painel de Gestão Financeira (Donos) ➔
+              </button>
+            )}
+
+            {/* BADGE DE SITUAÇÃO DO VENCIMENTO */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "7px 14px",
+                borderRadius: "12px",
+                background: statusVenc.bg,
+                border: `1px solid ${statusVenc.color}40`,
+                fontSize: "12px",
+                fontWeight: "700",
+                color: statusVenc.color,
+              }}
+            >
+              <span>📅 Vencimento:</span>
+              <span>{statusVenc.label}</span>
+            </div>
           </div>
         </div>
 
@@ -171,9 +203,43 @@ export default function PagamentosPage({
               <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#22c55e", display: "inline-block", boxShadow: "0 0 8px #22c55e" }}></span>
               Registrar Pagamento de Taxa Semanal
             </div>
-            <div style={{ background: "rgba(234,179,8,0.12)", border: "1px solid rgba(234,179,8,0.3)", padding: "5px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: "800", color: "#facc15" }}>
-              🔑 Chave Pix: <strong style={{ letterSpacing: "1px", color: "#fff" }}>RED</strong>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (navigator.clipboard?.writeText) {
+                  navigator.clipboard.writeText("RED");
+                }
+              }}
+              style={{
+                background: "rgba(234,179,8,0.12)",
+                border: "1px solid rgba(234,179,8,0.35)",
+                padding: "6px 14px",
+                borderRadius: "10px",
+                fontSize: "12px",
+                fontWeight: "800",
+                color: "#facc15",
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.2s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(234,179,8,0.22)";
+                e.currentTarget.style.borderColor = "#facc15";
+                e.currentTarget.style.transform = "scale(1.02)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(234,179,8,0.12)";
+                e.currentTarget.style.borderColor = "rgba(234,179,8,0.35)";
+                e.currentTarget.style.transform = "scale(1)";
+              }}
+              title="Clique para copiar a Chave Pix RED"
+            >
+              <span>🔑 Chave Pix:</span>
+              <strong style={{ letterSpacing: "1px", color: "#fff", background: "rgba(0,0,0,0.3)", padding: "2px 6px", borderRadius: "4px" }}>RED</strong>
+              <span style={{ fontSize: "11px", opacity: 0.85 }}>📋 Copiar</span>
+            </button>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "16px" }}>

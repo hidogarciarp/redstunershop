@@ -111,7 +111,17 @@ export default function BlacklistPage({
                     </td>
                     <td style={{ padding: "16px", textAlign: "right" }}>
                       <button 
-                        onClick={() => window.confirm("Remover este cliente da blacklist?") && removerBlacklist(item.id)}
+                        onClick={async () => {
+                          const ok = typeof window !== "undefined" && window.confirmarModal
+                            ? await window.confirmarModal({
+                                tipo: "pergunta",
+                                titulo: "Remover da Blacklist",
+                                mensagem: `Deseja realmente remover o cliente ${item.nome || ""} (ID ${item.cliente_id}) da blacklist?`,
+                                textoConfirmar: "Sim, Remover",
+                              })
+                            : window.confirm("Remover este cliente da blacklist?");
+                          if (ok) removerBlacklist(item.id);
+                        }}
                         style={{ 
                           background: "rgba(180,13,13,0.1)", 
                           color: "#b40d0d", 
