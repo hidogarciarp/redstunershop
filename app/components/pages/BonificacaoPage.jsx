@@ -266,7 +266,8 @@ export function isMecanicoAtivo(func) {
   const statusLower = (func.status || "").toLowerCase().trim();
   if (statusLower && statusLower !== "ativo") return false;
 
-  if (func.data_demissao) return false;
+  // A data_demissao só deve desconsiderar o funcionário se o status dele não for explicitamente "ativo"
+  if (statusLower !== "ativo" && func.data_demissao) return false;
   if (func.oculto_hierarquia) return false;
 
   const nomeLower = (func.nome || func.nome_personagem || "").toLowerCase().trim();
@@ -533,10 +534,21 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
   // ==========================================
   // ESTADOS DO RATEIO POR HORAS CHEIAS (TURNOS)
   // ==========================================
-  const [offsetSemana, setOffsetSemana] = useState(0);
+  const [offsetSemana, setOffsetSemana] = useState(() => {
+    const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+    return agora.getDay() === 0 ? 0 : -1;
+  });
   const semanaInfo = useMemo(() => getSemanaSegundaADomingo(offsetSemana), [offsetSemana]);
-  const [filtroDataInicio, setFiltroDataInicio] = useState(() => getSemanaSegundaADomingo(0).inicio);
-  const [filtroDataFim, setFiltroDataFim] = useState(() => getSemanaSegundaADomingo(0).fim);
+  const [filtroDataInicio, setFiltroDataInicio] = useState(() => {
+    const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+    const defOff = agora.getDay() === 0 ? 0 : -1;
+    return getSemanaSegundaADomingo(defOff).inicio;
+  });
+  const [filtroDataFim, setFiltroDataFim] = useState(() => {
+    const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+    const defOff = agora.getDay() === 0 ? 0 : -1;
+    return getSemanaSegundaADomingo(defOff).fim;
+  });
   const [modoPeriodo, setModoPeriodo] = useState("semana"); // "semana" | "custom"
   
   // Montante por turno salvo individualmente
@@ -1215,7 +1227,7 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                       setModoPeriodo("semana");
                       setOffsetSemana((prev) => prev - 1);
                     }}
-                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 14px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
+                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 12px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
                     title="Semana Anterior"
                   >
                     ◀
@@ -1223,9 +1235,18 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                   <button
                     onClick={() => {
                       setModoPeriodo("semana");
+                      setOffsetSemana(-1);
+                    }}
+                    style={{ background: offsetSemana === -1 && modoPeriodo === "semana" ? turnoAtualConfig.bgBadge : "transparent", border: "none", color: offsetSemana === -1 ? turnoAtualConfig.cor : theme.text, padding: "8px 13px", cursor: "pointer", fontSize: "12px", fontWeight: "800", borderRadius: "8px" }}
+                  >
+                    Semana Passada
+                  </button>
+                  <button
+                    onClick={() => {
+                      setModoPeriodo("semana");
                       setOffsetSemana(0);
                     }}
-                    style={{ background: offsetSemana === 0 && modoPeriodo === "semana" ? turnoAtualConfig.bgBadge : "transparent", border: "none", color: offsetSemana === 0 ? turnoAtualConfig.cor : theme.text, padding: "8px 16px", cursor: "pointer", fontSize: "13px", fontWeight: "800" }}
+                    style={{ background: offsetSemana === 0 && modoPeriodo === "semana" ? turnoAtualConfig.bgBadge : "transparent", border: "none", color: offsetSemana === 0 ? turnoAtualConfig.cor : theme.text, padding: "8px 13px", cursor: "pointer", fontSize: "12px", fontWeight: "800", borderRadius: "8px" }}
                   >
                     Semana Atual
                   </button>
@@ -1234,7 +1255,7 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                       setModoPeriodo("semana");
                       setOffsetSemana((prev) => prev + 1);
                     }}
-                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 14px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
+                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 12px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
                     title="Próxima Semana"
                   >
                     ▶
@@ -1965,7 +1986,7 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                       setModoPeriodo("semana");
                       setOffsetSemana((prev) => prev - 1);
                     }}
-                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 14px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
+                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 12px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
                     title="Semana Anterior"
                   >
                     ◀
@@ -1973,9 +1994,18 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                   <button
                     onClick={() => {
                       setModoPeriodo("semana");
+                      setOffsetSemana(-1);
+                    }}
+                    style={{ background: offsetSemana === -1 && modoPeriodo === "semana" ? "rgba(16, 185, 129, 0.2)" : "transparent", border: "none", color: offsetSemana === -1 ? "#10b981" : theme.text, padding: "8px 13px", cursor: "pointer", fontSize: "12px", fontWeight: "800", borderRadius: "8px" }}
+                  >
+                    Semana Passada
+                  </button>
+                  <button
+                    onClick={() => {
+                      setModoPeriodo("semana");
                       setOffsetSemana(0);
                     }}
-                    style={{ background: offsetSemana === 0 && modoPeriodo === "semana" ? "rgba(16, 185, 129, 0.2)" : "transparent", border: "none", color: offsetSemana === 0 ? "#10b981" : theme.text, padding: "8px 16px", cursor: "pointer", fontSize: "13px", fontWeight: "800" }}
+                    style={{ background: offsetSemana === 0 && modoPeriodo === "semana" ? "rgba(16, 185, 129, 0.2)" : "transparent", border: "none", color: offsetSemana === 0 ? "#10b981" : theme.text, padding: "8px 13px", cursor: "pointer", fontSize: "12px", fontWeight: "800", borderRadius: "8px" }}
                   >
                     Semana Atual
                   </button>
@@ -1984,7 +2014,7 @@ export default function BonificacaoPage({ theme, styles, usuarioLogado, listaFun
                       setModoPeriodo("semana");
                       setOffsetSemana((prev) => prev + 1);
                     }}
-                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 14px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
+                    style={{ background: "transparent", border: "none", color: theme.text, padding: "8px 12px", cursor: "pointer", fontSize: "14px", fontWeight: "800" }}
                     title="Próxima Semana"
                   >
                     ▶

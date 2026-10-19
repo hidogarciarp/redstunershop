@@ -355,7 +355,17 @@ export default function AdminPage({
                       </div>
                       <div>
                         <label style={styles.miniLabel}>STATUS</label>
-                        <select style={{ ...styles.select, fontSize: "13px", padding: "8px 12px" }} value={editFuncStatus} onChange={(e) => setEditFuncStatus(e.target.value)}>
+                        <select
+                          style={{ ...styles.select, fontSize: "13px", padding: "8px 12px" }}
+                          value={editFuncStatus}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEditFuncStatus(val);
+                            if (val === "ativo") {
+                              setEditFuncDemissao("");
+                            }
+                          }}
+                        >
                           <option value="ativo">✅ Ativo</option>
                           <option value="inativo">❌ Inativo</option>
                           <option value="demitido">👋 Demitido</option>

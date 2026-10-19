@@ -59,7 +59,7 @@ export default function FinancasPage({
     if (!func) return false;
     const statusLower = (func.status || "ativo").toLowerCase().trim();
     if (func.status && statusLower !== "ativo") return false;
-    if (func.data_demissao) return false;
+    if (statusLower !== "ativo" && func.data_demissao) return false;
     if (func.oculto_hierarquia) return false;
 
     const r = (func.role || "").split("|")[0].toLowerCase().trim();

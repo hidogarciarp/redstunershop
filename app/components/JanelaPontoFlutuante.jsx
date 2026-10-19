@@ -10,7 +10,7 @@ let cachePontosAbertos = [];
 let cachePontosFinalizados = [];
 let cacheCarregado = false;
 
-export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode }) {
+export default function JanelaPontoFlutuante({ usuarioLogado, theme }) {
   const [minimizado, setMinimizado] = useState(() => {
     if (typeof window !== "undefined") {
       const saved = sessionStorage.getItem("janela_ponto_flutuante_minimizado");
@@ -101,7 +101,6 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
 
   // Estados do Fechamento por Crash / Manual
   const [modoFecharCrash, setModoFecharCrash] = useState(false);
-  const [saidaDataHoraCrash, setSaidaDataHoraCrash] = useState("");
   const [justificativaCrash, setJustificativaCrash] = useState("");
   const [printCrashBase64, setPrintCrashBase64] = useState(null);
   const [enviandoCrash, setEnviandoCrash] = useState(false);
@@ -211,7 +210,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             ctx.drawImage(img, 0, 0, width, height);
             const dataUrl = canvas.toDataURL("image/jpeg", 0.78);
             resolve(dataUrl);
-          } catch (err) {
+          } catch {
             resolve(e.target.result);
           }
         };
@@ -224,7 +223,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
   };
 
   // Helper para colar imagem da área de transferência (Ctrl+V)
-  const handleColarImagem = async (e) => {
+  const handleColarImagem = useCallback(async (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
     for (let i = 0; i < items.length; i++) {
@@ -240,7 +239,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         }
       }
     }
-  };
+  }, []);
 
   // Listener de colar imagem globalmente quando o modal de crash estiver aberto
   useEffect(() => {
@@ -250,7 +249,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     };
     window.addEventListener("paste", handlePasteGlobal);
     return () => window.removeEventListener("paste", handlePasteGlobal);
-  }, [modoFecharCrash]);
+  }, [modoFecharCrash, handleColarImagem]);
 
   // Helper para tocar som de alerta (entrada, saída ou inatividade)
   const tocarSomNotificacao = (tipo = "entrada") => {
@@ -295,7 +294,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         osc.start();
         osc.stop(ctx.currentTime + 0.55);
       }
-    } catch (e) {}
+    } catch {}
   };
 
   // Parser de mensagens do Discord para extrair dados do ponto
@@ -330,7 +329,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     let timestamp = createdAt ? new Date(createdAt).toISOString() : new Date().toISOString();
 
     if (dataMatch) {
-      const [_, dataStr, horaStr] = dataMatch;
+      const [, dataStr, horaStr] = dataMatch;
       const [dia, mes, ano] = dataStr.split("/");
       timestamp = new Date(`${ano}-${mes}-${dia}T${horaStr}-03:00`).toISOString();
     }
@@ -466,7 +465,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         .eq("log_type", "ponto")
         .gte("created_at", lookbackISO)
         .order("id", { ascending: true })
-        .limit(2000);
+        .limit(400);
 
       if (error) throw error;
 
@@ -476,7 +475,8 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         .select("id, log_type, content, created_at")
         .eq("log_type", "bancada")
         .gte("created_at", lookbackISO)
-        .order("id", { ascending: true });
+        .order("id", { ascending: false })
+        .limit(300);
 
       // 3. Logs de tunagem (prioriza logs_tunagem_reds)
       let logsTunagem = [];
@@ -494,7 +494,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             .gte("data", lookbackStrSP);
           logsTunagem = dataTunGeral || [];
         }
-      } catch (e) {
+      } catch {
         logsTunagem = [];
       }
 
@@ -517,7 +517,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         const dataMatch = c.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
         let ts = msg.created_at;
         if (dataMatch) {
-          const [_, dStr, hStr] = dataMatch;
+          const [, dStr, hStr] = dataMatch;
           const [dia, mes, ano] = dStr.split("/");
           ts = new Date(`${ano}-${mes}-${dia}T${hStr}-03:00`).toISOString();
         }
@@ -967,13 +967,13 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     } finally {
       setCarregando(false);
     }
-  }, [filtroPeriodo, dataPersonalizada]);
+  }, [filtroPeriodo, dataPersonalizada, persistirPontoRecuperado]);
 
   useEffect(() => {
-    if (isAuthorized) {
+    if (isAuthorized && !minimizado) {
       carregarPontosRecentes();
     }
-  }, [isAuthorized, carregarPontosRecentes]);
+  }, [isAuthorized, minimizado, carregarPontosRecentes]);
 
   // Realtime subscription com Debounce (4s), filtro de tipo e pausa quando minimizado/background
   useEffect(() => {
@@ -983,7 +983,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       .channel("janela-ponto-realtime")
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "discord_log_messages" },
+        { event: "INSERT", schema: "public", table: "discord_log_messages", filter: "log_type=in.(ponto,bancada,ausencia)" },
         (payload) => {
           const msg = payload?.new;
           if (msg && msg.log_type === "ausencia") {
@@ -1069,7 +1069,6 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     setModoFecharCrash(false);
     setJustificativaCrash("");
     setPrintCrashBase64(null);
-    setSaidaDataHoraCrash(getAgoraLocalISO());
     setCarregandoAtividades(true);
     setAtividadesPonto(null);
 
@@ -1094,7 +1093,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             .gte("data", dataEntradaISO.split("T")[0]);
           logsTunagem = dataTunGeral || [];
         }
-      } catch (e) {
+      } catch {
         logsTunagem = [];
       }
 
@@ -1107,7 +1106,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
             const ent = new Date(dataEntradaISO).getTime();
             const sai = new Date(dataSaidaISO).getTime();
             return dt >= ent - 60000 && dt <= sai + 60000;
-          } catch (e) {
+          } catch {
             return false;
           }
         })
@@ -1232,7 +1231,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     return `${String(horas).padStart(2, "0")}:${String(minutos).padStart(2, "0")}:${String(segundos).padStart(2, "0")}`;
   };
 
-  const aplicarFiltrosLista = (lista) => {
+  const aplicarFiltrosLista = useCallback((lista) => {
     let res = lista;
     if (filtroOficina !== "todas") {
       res = res.filter((p) => p.oficinaId === filtroOficina);
@@ -1244,7 +1243,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
       );
     }
     return res;
-  };
+  }, [filtroOficina, buscaTexto]);
 
   // Ocultar Hido Garcia da listagem de online (abertos) e da fila de atendimento
   const isHidoGarcia = useCallback((p) => {
@@ -1261,12 +1260,12 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
 
   const pontosAbertosFiltrados = useMemo(
     () => aplicarFiltrosLista(pontosAbertos).filter((p) => !isHidoGarcia(p)),
-    [pontosAbertos, filtroOficina, buscaTexto, isHidoGarcia]
+    [pontosAbertos, isHidoGarcia, aplicarFiltrosLista]
   );
 
   const pontosFinalizadosFiltrados = useMemo(
     () => aplicarFiltrosLista(pontosFinalizados),
-    [pontosFinalizados, filtroOficina, buscaTexto]
+    [pontosFinalizados, aplicarFiltrosLista]
   );
 
   const todosDoDiaFiltrados = useMemo(() => {
@@ -1283,7 +1282,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     const todos = Array.from(mapa.values());
     todos.sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
     return aplicarFiltrosLista(todos);
-  }, [pontosAbertos, pontosFinalizados, filtroOficina, buscaTexto]);
+  }, [pontosAbertos, pontosFinalizados, aplicarFiltrosLista]);
 
   const isDono = Boolean(
     usuarioLogado &&
@@ -1323,7 +1322,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
     // Quem está há mais tempo esperando fica no topo (1º lugar)
     lista.sort((a, b) => b.tempoEsperaMs - a.tempoEsperaMs);
     return lista;
-  }, [pontosAbertosFiltrados, pontosAbertos, agoraTs, isDono, buscaTexto, mapaAusencias, isHidoGarcia]);
+  }, [isDono, pontosAbertosFiltrados, aplicarFiltrosLista, pontosAbertos, agoraTs, mapaAusencias, isHidoGarcia]);
 
   const meuPontoEmServico = useMemo(() => {
     if (!usuarioLogado) return null;
@@ -1395,7 +1394,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
           const dA = await resA.json();
           if (dA.success && dA.ausencias) setMapaAusencias(dA.ausencias);
         }
-      } catch (e) {}
+      } catch {}
     } finally {
       setEnviandoAusencia(false);
     }
@@ -1420,7 +1419,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                 detalhe: `${t.veiculo_nome || "Veículo"}${t.placa ? ` (${t.placa})` : ""}`
               });
             }
-          } catch (_) {}
+          } catch {}
         } else if (t.created_at) {
           const ts = new Date(t.created_at).getTime();
           if (!isNaN(ts) && ts >= entMs - 60000) {
@@ -1439,7 +1438,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         if (bc.rawLog) {
           const dataMatch = bc.rawLog.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
           if (dataMatch) {
-            const [_, dia, mes, ano, hora] = dataMatch;
+            const [, dia, mes, ano, hora] = dataMatch;
             ts = new Date(`${ano}-${mes}-${dia}T${hora}-03:00`).getTime();
           }
         }
@@ -1815,7 +1814,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                     outline: "none"
                   }}
                 >
-                  <option value="reds">🔴 Red's Tunershop</option>
+                  <option value="reds">🔴 Red&apos;s Tunershop</option>
                   {isDono && <option value="todas">⚙️ Todas as Oficinas</option>}
                   {isDono && <option value="vespucci">🟣 Vespucci</option>}
                   {isDono && <option value="harmony">🔵 Harmony</option>}
@@ -3232,6 +3231,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                       <div style={{ fontSize: "11px", color: "#cbd5e1", marginBottom: "6px", fontWeight: "700" }}>
                         📷 Print do Crash Anexado (clique para ampliar):
                       </div>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={funcionarioInspecao.comprovanteImg}
                         alt="Comprovante de Crash"
@@ -3388,6 +3388,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                         }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={printCrashBase64}
                             alt="Preview do Print"
@@ -3542,7 +3543,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                     if (b.rawLog) {
                       const dataMatch = b.rawLog.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
                       if (dataMatch) {
-                        const [_, dStr, hStr] = dataMatch;
+                        const [, dStr, hStr] = dataMatch;
                         const [dia, mes, ano] = dStr.split("/");
                         const ts = new Date(`${ano}-${mes}-${dia}T${hStr}-03:00`).getTime();
                         if (ts >= entMs) timestamps.push(ts);
@@ -3553,7 +3554,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
                     if (b.rawLog) {
                       const dataMatch = b.rawLog.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4}),\s*(\d{2}:\d{2}:\d{2})/i);
                       if (dataMatch) {
-                        const [_, dStr, hStr] = dataMatch;
+                        const [, dStr, hStr] = dataMatch;
                         const [dia, mes, ano] = dStr.split("/");
                         const ts = new Date(`${ano}-${mes}-${dia}T${hStr}-03:00`).getTime();
                         if (ts >= entMs) timestamps.push(ts);
@@ -4113,7 +4114,6 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
         <div
           style={{
             position: "fixed",
-            zIndex: 1000000,
             top: Math.min(typeof window !== "undefined" ? window.innerHeight - 280 : 500, hoveredLog.y + 10),
             left: Math.min(typeof window !== "undefined" ? window.innerWidth - 440 : 600, Math.max(20, hoveredLog.x - 210)),
             background: "#090d16",
@@ -4214,6 +4214,7 @@ export default function JanelaPontoFlutuante({ usuarioLogado, theme, isDarkMode 
           }}
         >
           <div style={{ position: "relative", maxWidth: "90vw", maxHeight: "90vh" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={imagemZoom}
               alt="Print Ampliado"

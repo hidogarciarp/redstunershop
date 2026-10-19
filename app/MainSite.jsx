@@ -9,19 +9,10 @@ import {
   getNivel,
   isAdminOuDono,
   isResponsavelPonto,
-  podeNotificar,
   podeSendNotif,
   podeEditarFuncionario,
   formatarTelefone
 } from "./utils/helpers";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
 import HeaderBar, { TopHeaderBar } from "./components/HeaderBar";
 import ModalNotificacao from "./components/ModalNotificacao";
 import LoginPage from "./components/pages/LoginPage";
@@ -1915,8 +1906,12 @@ export function MainSite({ isV2 = true } = {}) {
     let hasMore = true;
 
     try {
-      while (hasMore && allData.length < 30000) {
-        let query = supabase.from("ponto_horas").select("*").order("entrada", { ascending: false });
+      const maxRows = (nome.trim() || dataInicio || dataFim) ? 10000 : 1500;
+      while (hasMore && allData.length < maxRows) {
+        let query = supabase
+          .from("ponto_horas")
+          .select("id, usuario_id, nome, entrada, saida, data, tempo_formatado, verificado, observacao, estrela")
+          .order("entrada", { ascending: false });
 
         if (podeVerTodosPontos) {
           if (nome.trim()) {
@@ -2013,13 +2008,20 @@ export function MainSite({ isV2 = true } = {}) {
 
     const filtro = getPeriodoFiltro(periodo);
     
-    // 1. Buscar horas da cidade (Log da Cidade) - Busca em lotes
+    // 1. Buscar horas da cidade (Log da Cidade) - Busca em lotes com colunas essenciais
     let dataCidade = [];
     let pageC = 0;
     const pageSize = 1000;
     let hasMoreC = true;
-    while (hasMoreC && dataCidade.length < 50000) {
-      let q = supabase.from("ponto_cidade_reds").select("*").not("saida", "is", null).or("oculto.is.null,oculto.eq.false").order("id", { ascending: true }).range(pageC * pageSize, (pageC + 1) * pageSize - 1);
+    const maxRankingRows = filtro ? 10000 : 3000;
+    while (hasMoreC && dataCidade.length < maxRankingRows) {
+      let q = supabase
+        .from("ponto_cidade_reds")
+        .select("nome, entrada, saida, data")
+        .not("saida", "is", null)
+        .or("oculto.is.null,oculto.eq.false")
+        .order("id", { ascending: true })
+        .range(pageC * pageSize, (pageC + 1) * pageSize - 1);
       if (filtro) q = q.gte("data", filtro.inicio).lte("data", filtro.fim);
       const { data, error } = await q;
       if (error || !data || data.length === 0) hasMoreC = false;
@@ -2030,7 +2032,7 @@ export function MainSite({ isV2 = true } = {}) {
     let dataEstrelas = [];
     let pageE = 0;
     let hasMoreE = true;
-    while (hasMoreE && dataEstrelas.length < 50000) {
+    while (hasMoreE && dataEstrelas.length < maxRankingRows) {
       let q = supabase.from("ponto_horas").select("nome, estrela").eq("estrela", true).range(pageE * pageSize, (pageE + 1) * pageSize - 1);
       if (filtro) q = q.gte("data", filtro.inicio).lte("data", filtro.fim);
       const { data, error } = await q;
@@ -2078,8 +2080,6 @@ export function MainSite({ isV2 = true } = {}) {
       setRanking(rankingCalculado);
     }
   };
-
-  const buscarRanking = async () => { await buscarRankingComPeriodo("total"); };
 
   const buscarRankingClientes = async (periodo) => {
     const filtro = getPeriodoFiltro(periodo);
@@ -2423,7 +2423,7 @@ export function MainSite({ isV2 = true } = {}) {
   const limparOffline = async () => {};
 
   const buscarEmServico = async () => {
-    const { data } = await supabase.from("ponto_horas").select("*").is("saida", null);
+    const { data } = await supabase.from("ponto_horas").select("id, usuario_id, nome, entrada, saida, tempo_formatado").is("saida", null);
     if (data) setEmServico(data);
   };
 
@@ -2910,7 +2910,8 @@ export function MainSite({ isV2 = true } = {}) {
       const pageSize = 1000;
       let hasMore = true;
 
-      while (hasMore && allData.length < 20000) {
+      const maxNitroRows = (dataInicio || dataFim) ? 20000 : 2000;
+      while (hasMore && allData.length < maxNitroRows) {
         let query = supabase.from("vendas_nitro_cidade").select("*").order("data_compra", { ascending: false }).range(page * pageSize, (page + 1) * pageSize - 1);
         if (dataInicio) query = query.gte("data_compra", `${dataInicio}T00:00:00-03:00`);
         if (dataFim) query = query.lte("data_compra", `${dataFim}T23:59:59-03:00`);
@@ -2979,7 +2980,8 @@ export function MainSite({ isV2 = true } = {}) {
       const pageSize = 1000;
       let hasMore = true;
 
-      while (hasMore && allData.length < 20000) {
+      const maxDriftRows = (dataInicio || dataFim) ? 20000 : 2000;
+      while (hasMore && allData.length < maxDriftRows) {
         let query = supabase.from("vendas_drift_cidade").select("*").order("data_compra", { ascending: false }).range(page * pageSize, (page + 1) * pageSize - 1);
         if (dataInicio) query = query.gte("data_compra", `${dataInicio}T00:00:00-03:00`);
         if (dataFim) query = query.lte("data_compra", `${dataFim}T23:59:59-03:00`);
@@ -3070,7 +3072,7 @@ export function MainSite({ isV2 = true } = {}) {
     while (hasMore && allData.length < 5000) {
       const { data, error } = await supabase
         .from("usuarios")
-        .select("*")
+        .select("id, nome, role, status, data_admissao, data_vencimento, valor_semanal, renovacao_auto, bloqueado_financeiro, credito_24h_disponivel, credito_24h_usado_em, oculto_hierarquia, data_demissao")
         .or("status.is.null,status.neq.inativo")
         .order("id", { ascending: true })
         .range(page * pageSize, (page + 1) * pageSize - 1);
@@ -3090,14 +3092,13 @@ export function MainSite({ isV2 = true } = {}) {
       // Mapear dados para processar bloqueios e renovações localmente (apenas funcionários com perfis ativos)
       const dadosProcessados = await Promise.all(allData.map(async (f) => {
         const statusLower = (f.status || "").toLowerCase().trim();
-        const ehInativo = (statusLower && statusLower !== "ativo") || Boolean(f.data_demissao);
+        const ehInativo = (statusLower && statusLower !== "ativo") || (statusLower !== "ativo" && Boolean(f.data_demissao));
         const r = (f.role || "").split("|")[0].toLowerCase().trim();
         if (ehInativo || r === "user" || r === "admin") {
           return f;
         }
 
-        const dVenc = f.data_vencimento ? new Date(f.data_vencimento + "T12:00:00") : null;
-        const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+        const hojeLocal = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
         
         // Regra de isenção por data de admissão
         let isentoPorAdmissao = false;
@@ -3172,7 +3173,7 @@ export function MainSite({ isV2 = true } = {}) {
       .from("pagamentos_semanais")
       .select("*")
       .order("criado_em", { ascending: false })
-      .limit(3000);
+      .limit(500);
     if (data) setPagamentosSemanais(data);
   };
 
@@ -4285,20 +4286,14 @@ export function MainSite({ isV2 = true } = {}) {
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "usuarios", filter: `id=eq.${usuarioId}` }, () => aplicarUsuarioAtualizado(null))
       .subscribe();
 
-    const validarVisibilidade = () => {
-      if (document.visibilityState === "visible") validarSessao();
-    };
+    // Backup passivo a cada 10 minutos (Realtime já entrega alterações de senha/status instantaneamente)
     const intervalo = window.setInterval(() => {
       if (document.visibilityState === "visible") validarSessao();
-    }, 120000);
-    window.addEventListener("focus", validarSessao);
-    document.addEventListener("visibilitychange", validarVisibilidade);
+    }, 600000);
 
     return () => {
       ativo = false;
       window.clearInterval(intervalo);
-      window.removeEventListener("focus", validarSessao);
-      document.removeEventListener("visibilitychange", validarVisibilidade);
       supabase.removeChannel(canalSessao);
     };
   }, [usuarioLogado?.id, usuarioLogado?.senha, usuarioLogado?.status, usuarioLogado?.role, sessionCarregada]);
@@ -4404,33 +4399,30 @@ export function MainSite({ isV2 = true } = {}) {
   }, [paginaAtual]);
 
   useEffect(() => {
-    if (usuarioLogado) {
-      buscarTotalHoras(); buscarHistoricoPonto(); verificarPontoAtivo(); buscarRanking(); buscarEmServico(); buscarNotificacaoPendente();
+    if (usuarioLogado?.id) {
+      buscarTotalHoras();
+      verificarPontoAtivo();
+      buscarEmServico();
+      buscarNotificacaoPendente();
       buscarListaFuncionarios();
       buscarTunagensEstagiarioAbertas();
     }
-  }, [usuarioLogado]);
+  }, [usuarioLogado?.id]);
 
   useEffect(() => {
     if (!usuarioLogado) return;
 
     verificarPontoAtivo();
+    // Verificação de contingência a cada 5 min (Realtime já cobre novos pontos)
     const intervalPonto = setInterval(() => {
       if (document.visibilityState === "visible") {
         verificarPontoAtivo();
       }
-    }, 120000);
-
-    const handleVisibilidadePonto = () => {
-      if (document.visibilityState === "visible") {
-        verificarPontoAtivo();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilidadePonto);
+    }, 300000);
 
     const canalPontoRealtime = supabase
       .channel("global-ponto-realtime")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages" }, (payload) => {
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages", filter: "log_type=eq.ponto" }, (payload) => {
         const novo = payload.new;
         if (novo && novo.log_type === "ponto") {
           verificarPontoAtivo();
@@ -4440,10 +4432,9 @@ export function MainSite({ isV2 = true } = {}) {
 
     return () => {
       clearInterval(intervalPonto);
-      document.removeEventListener("visibilitychange", handleVisibilidadePonto);
       supabase.removeChannel(canalPontoRealtime);
     };
-  }, [usuarioLogado]);
+  }, [usuarioLogado?.id]);
 
   // Usuários Online em tempo real via Presence (100% em memória, zero gravação/leitura de disco)
   useEffect(() => {
@@ -4502,13 +4493,13 @@ export function MainSite({ isV2 = true } = {}) {
     // 1. Busca imediata
     buscarNotificacaoPendente();
 
-    // 2. Canal Realtime individual para o usuário
-    const canalNome = `canal-notif-usuario-${uidStr}-${Date.now()}`;
+    // 2. Canal Realtime individual filtrado estritamente por ID do usuário
+    const canalNome = `canal-notif-usuario-${uidStr}`;
     const canal = supabase
       .channel(canalNome)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "notificacoes" },
+        { event: "*", schema: "public", table: "notificacoes", filter: `funcionario_id=eq.${uidStr}` },
         (payload) => {
           const reg = payload.new;
           if (!reg) return;
@@ -4534,41 +4525,22 @@ export function MainSite({ isV2 = true } = {}) {
               buscarNotificacaoPendente();
             }
           } else if (payload.eventType === "UPDATE") {
-            // Se qualquer notificação foi atualizada/lida, recalcula pendências para fechar modal instantaneamente em outras telas
             buscarNotificacaoPendente();
           }
         }
       )
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") {
-          buscarNotificacaoPendente();
-        }
-      });
+      .subscribe();
 
-    // 3. Polling de contingência a cada 60s se a aba estiver ativa (Realtime já entrega instantâneo)
+    // 3. Polling de contingência passivo a cada 5 min (Realtime já entrega instantâneo)
     const intervalNotif = setInterval(() => {
       if (document.visibilityState === "visible") {
         buscarNotificacaoPendente();
       }
-    }, 60000);
-
-    // 4. Checar instantaneamente ao focar na janela ou mudar de aba
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        buscarNotificacaoPendente();
-      }
-    };
-    const handleFocus = () => {
-      buscarNotificacaoPendente();
-    };
-    window.addEventListener("focus", handleFocus);
-    document.addEventListener("visibilitychange", handleVisibility);
+    }, 300000);
 
     return () => {
       supabase.removeChannel(canal);
       clearInterval(intervalNotif);
-      window.removeEventListener("focus", handleFocus);
-      document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [usuarioLogado?.id]);
 
@@ -4615,10 +4587,10 @@ export function MainSite({ isV2 = true } = {}) {
       })
       .subscribe();
 
-    // 2. Canal de contingência pelo stream bruto de mensagens do Discord
+    // 2. Canal de contingência pelo stream filtrado de mensagens do Discord
     const canalDiscordServicos = supabase
       .channel("global-discord-servicos")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages" }, async (payload) => {
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages", filter: "log_type=in.(servicos,tunagem)" }, async (payload) => {
         const msg = payload.new;
         if (!msg || !msg.content) return;
 
@@ -5054,7 +5026,7 @@ export function MainSite({ isV2 = true } = {}) {
           <div style={styles.whiteCard}>
             <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "24px" }}>
               <button style={{ background: theme.card2, border: `1px solid ${theme.border}`, color: theme.text, padding: "8px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" }} onClick={() => setPaginaAtual("dashboard")}>⬅ Voltar</button>
-              <h3 style={{ margin: 0, fontSize: "18px" }}>🏁 RED's Demolition Derby</h3>
+              <h3 style={{ margin: 0, fontSize: "18px" }}>🏁 RED&apos;s Demolition Derby</h3>
             </div>
 
             {/* ========================= */}
@@ -5526,7 +5498,7 @@ export function MainSite({ isV2 = true } = {}) {
           <div style={styles.whiteCard}>
             <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "24px", flexWrap: "wrap" }}>
               <button style={{ background: theme.card2, border: `1px solid ${theme.border}`, color: theme.text, padding: "8px 16px", borderRadius: "8px", cursor: "pointer", fontSize: "13px" }} onClick={() => setPaginaAtual("dashboard")}>⬅ Voltar</button>
-              <h3 style={{ margin: 0, fontSize: "18px" }}>🏊 Red's Triathlon</h3>
+              <h3 style={{ margin: 0, fontSize: "18px" }}>🏊 Red&apos;s Triathlon</h3>
               <span style={{ color: theme.subtext, fontSize: "13px" }}>23/05 às 20h30</span>
             </div>
 
@@ -5986,7 +5958,7 @@ export function MainSite({ isV2 = true } = {}) {
                   🔔 Compra na Bancada
                 </span>
                 <span style={{ fontSize: "9.5px", background: "rgba(34,197,94,0.2)", color: "#4ade80", border: "1px solid rgba(34,197,94,0.4)", padding: "1px 5px", borderRadius: "5px", fontWeight: "800" }}>
-                  RED'S
+                  RED&apos;S
                 </span>
               </div>
               <div style={{ fontSize: "14px", fontWeight: "900", color: "#fff", marginTop: "2px" }}>
