@@ -32,6 +32,8 @@ export default function FinancasPage({
   formatarData,
   iniciarEdicaoFinanca,
   desbloquearFuncionario,
+  bloquearFuncionario,
+  reabrirPagamento,
   isAdminOuDono,
   usuarioLogado,
   apagarPagamento,
@@ -45,10 +47,44 @@ export default function FinancasPage({
   const [funcSelecionado, setFuncSelecionado] = useState(null);
   const [linksTemporarios, setLinksTemporarios] = useState({});
   const [rowsEmEdicao, setRowsEmEdicao] = useState({});
-  const [subAba, setSubAba] = useState("geral"); // "geral" | "devedores"
+  const [subAba, setSubAba] = useState("aprovacoes"); // "aprovacoes" | "geral" | "devedores"
+  const [filtroFila, setFiltroFila] = useState("pendentes"); // "pendentes" | "todos" | "aprovados" | "bloqueados" | "comprovante"
+  const [buscaFila, setBuscaFila] = useState("");
   const [modalContratacoesSemCobranca, setModalContratacoesSemCobranca] = useState(false);
   const [dialogConfig, setDialogConfig] = useState(null);
   const [executandoLote, setExecutandoLote] = useState(false);
+
+  // Regra padrão de validação de funcionário com perfil ativo
+  const isMecanicoAtivo = (func) => {
+    if (!func) return false;
+    const statusLower = (func.status || "ativo").toLowerCase().trim();
+    if (func.status && statusLower !== "ativo") return false;
+    if (func.data_demissao) return false;
+    if (func.oculto_hierarquia) return false;
+
+    const r = (func.role || "").split("|")[0].toLowerCase().trim();
+    if (r === "user" || r === "admin") return false;
+
+    const nomeLower = (func.nome || func.nome_personagem || "").toLowerCase().trim();
+    if (
+      nomeLower.startsWith("staff ") ||
+      nomeLower.startsWith("staff_") ||
+      (nomeLower.startsWith("staff") && nomeLower.length <= 6) ||
+      nomeLower.startsWith("admin ") ||
+      nomeLower.startsWith("teste") ||
+      nomeLower === "testes" ||
+      nomeLower === "teste login"
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  const funcsAtivos = financasFuncionarios.filter(isMecanicoAtivo);
+  const idsAtivos = new Set(funcsAtivos.map((f) => f.id));
+  const pagamentosAtivos = pagamentosSemanais.filter((p) => idsAtivos.has(p.funcionario_id));
+
+  const qtdPendentesComprovante = pagamentosAtivos.filter((p) => !p.confirmado && p.comprovante_link).length;
 
   // Helper para abrir modais flutuantes de alerta/confirmação
   const abrirDialogo = ({ tipo = "info", titulo, mensagem, onConfirmar, onCancelar, textoConfirmar = "OK", textoCancelar = "Cancelar", valorInputPadrao = "", placeholderInput = "" }) => {
@@ -130,11 +166,9 @@ export default function FinancasPage({
   };
 
   const obterContratacoesSemCobranca = () => {
-    return financasFuncionarios.filter((func) => {
-      const r = func.role?.split("|")[0].toLowerCase().trim();
-      const ehFunc = r !== "user" && r !== "admin";
+    return funcsAtivos.filter((func) => {
       const semCobranca = !func.data_vencimento || !func.valor_semanal || Number(func.valor_semanal) === 0;
-      return ehFunc && semCobranca;
+      return semCobranca;
     });
   };
 
@@ -215,21 +249,30 @@ export default function FinancasPage({
       return;
     }
 
-    if (pagId) {
-      await confirmarPagamentoSemanal(pagId, funcId, funcNome, link, dataDomingo);
-    } else {
-      await registrarPagamentoManual(funcId, funcNome, valorSemanal, semanaLabel, link, dataDomingo);
-    }
+    abrirDialogo({
+      tipo: "confirmacao",
+      titulo: "Confirmar Pagamento Semanal",
+      mensagem: `Confirmação de Pagamento Individual:\n\n👤 Funcionário: ${funcNome} (ID: ${funcId})\n📅 Período: ${semanaLabel}\n💰 Valor: $${Number(valorSemanal).toLocaleString("pt-BR")}\n📎 Comprovante: ${link}\n\nO que será realizado:\n• Registro/Aprovação do pagamento para ${funcNome}\n• Regularização do vencimento para o próximo ciclo\n• Desbloqueio de acesso caso estivesse bloqueado\n• Apenas este funcionário será alterado`,
+      textoConfirmar: "Sim, Confirmar Pagamento",
+      textoCancelar: "Cancelar",
+      onConfirmar: async () => {
+        if (pagId) {
+          await confirmarPagamentoSemanal(pagId, funcId, funcNome, link, dataDomingo);
+        } else {
+          await registrarPagamentoManual(funcId, funcNome, valorSemanal, semanaLabel, link, dataDomingo);
+        }
 
-    setLinksTemporarios((prev) => {
-      const n = { ...prev };
-      delete n[rowKey];
-      return n;
-    });
-    setRowsEmEdicao((prev) => {
-      const n = { ...prev };
-      delete n[rowKey];
-      return n;
+        setLinksTemporarios((prev) => {
+          const n = { ...prev };
+          delete n[rowKey];
+          return n;
+        });
+        setRowsEmEdicao((prev) => {
+          const n = { ...prev };
+          delete n[rowKey];
+          return n;
+        });
+      },
     });
   };
 
@@ -339,8 +382,8 @@ export default function FinancasPage({
     abrirDialogo({
       tipo: "confirmacao",
       titulo: `Regularizar ${func.nome}`,
-      mensagem: `Deseja isentar e aprovar todas as semanas anteriores a 12/10/2026 de ${func.nome}?\nO vencimento será ajustado para a semana atual em diante.`,
-      textoConfirmar: "Sim, Regularizar",
+      mensagem: `Confirmação de Regularização Individual:\n\n👤 Funcionário: ${func.nome} (ID: ${func.id})\n\nDeseja isentar e aprovar as semanas anteriores a 12/10/2026 EXCLUSIVAMENTE para ${func.nome}?\n\nO que será realizado:\n• Pendências anteriores a 12/10/2026 deste funcionário serão quitadas\n• O vencimento deste funcionário será ajustado para 18/10/2026\n• Acesso desbloqueado\n• NENHUM OUTRO MECÂNICO SERÁ ALTERADO`,
+      textoConfirmar: "Sim, Regularizar Apenas Este",
       textoCancelar: "Cancelar",
       onConfirmar: async () => {
         try {
@@ -953,12 +996,9 @@ export default function FinancasPage({
   const renderResumoAtrasos = () => {
     const devedoresMap = {};
 
-    financasFuncionarios.forEach((func) => {
-      const r = func.role?.split("|")[0].toLowerCase().trim();
-      if (r === "user" || r === "admin") return;
-
+    funcsAtivos.forEach((func) => {
       const semanasEsperadas = gerarSemanasDossie(func);
-      const historicoFunc = pagamentosSemanais.filter((p) => p.funcionario_id === func.id);
+      const historicoFunc = pagamentosAtivos.filter((p) => p.funcionario_id === func.id);
 
       const pendencias = [];
       let totalDevido = 0;
@@ -1094,6 +1134,652 @@ export default function FinancasPage({
     );
   };
 
+  // 📥 FILA DE APROVAÇÕES E ÚLTIMOS PAGAMENTOS (Apenas Funcionários Ativos)
+  const renderFilaAprovacoes = () => {
+    const pendentesComprovante = pagamentosAtivos.filter((p) => !p.confirmado && p.comprovante_link);
+    const aprovadosRecentes = pagamentosAtivos.filter((p) => p.confirmado);
+    const mecanicosBloqueados = funcsAtivos.filter((f) => f.bloqueado_financeiro);
+
+    let listaFiltrada = [...pagamentosAtivos];
+
+    if (filtroFila === "pendentes") {
+      listaFiltrada = listaFiltrada.filter((p) => !p.confirmado);
+    } else if (filtroFila === "aprovados") {
+      listaFiltrada = listaFiltrada.filter((p) => p.confirmado);
+    } else if (filtroFila === "comprovante") {
+      listaFiltrada = listaFiltrada.filter((p) => Boolean(p.comprovante_link));
+    } else if (filtroFila === "bloqueados") {
+      const idsBloqueados = new Set(mecanicosBloqueados.map((m) => m.id));
+      listaFiltrada = listaFiltrada.filter((p) => idsBloqueados.has(p.funcionario_id));
+    }
+
+    if (buscaFila.trim()) {
+      const termo = buscaFila.toLowerCase().trim();
+      listaFiltrada = listaFiltrada.filter((p) => {
+        const nome = (p.funcionario_nome || "").toLowerCase();
+        const idStr = String(p.funcionario_id || "");
+        const obs = (p.observacao || "").toLowerCase();
+        return nome.includes(termo) || idStr.includes(termo) || obs.includes(termo);
+      });
+    }
+
+    const listaExibicao = listaFiltrada.slice(0, 150);
+
+    return (
+      <div style={{ animation: "fadeLogin 0.25s ease-out" }}>
+        {/* CARDS DE RESUMO TOPO */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px", marginBottom: "20px" }}>
+          {/* Card 1: Aguardando Confirmação */}
+          <div
+            onClick={() => setFiltroFila("pendentes")}
+            style={{
+              background: filtroFila === "pendentes" ? "rgba(250, 204, 21, 0.15)" : theme.card2,
+              border: `1.5px solid ${filtroFila === "pendentes" ? "#facc15" : "rgba(250, 204, 21, 0.3)"}`,
+              borderRadius: "16px",
+              padding: "18px 20px",
+              cursor: "pointer",
+              transition: "all 0.18s ease",
+              boxShadow: filtroFila === "pendentes" ? "0 8px 24px rgba(250, 204, 21, 0.2)" : "none",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+              <span style={{ fontSize: "12px", fontWeight: "800", color: "#facc15", textTransform: "uppercase" }}>
+                ⏳ Aguardando Aprovação
+              </span>
+              <span style={{ fontSize: "20px" }}>📥</span>
+            </div>
+            <div style={{ fontSize: "28px", fontWeight: "900", color: "#ffffff", letterSpacing: "-0.5px" }}>
+              {pendentesComprovante.length}
+            </div>
+            <div style={{ fontSize: "11px", color: theme.subtext, marginTop: "4px" }}>
+              Comprovantes aguardando conferência
+            </div>
+          </div>
+
+          {/* Card 2: Aprovados Recentemente */}
+          <div
+            onClick={() => setFiltroFila("aprovados")}
+            style={{
+              background: filtroFila === "aprovados" ? "rgba(34, 197, 94, 0.15)" : theme.card2,
+              border: `1.5px solid ${filtroFila === "aprovados" ? "#22c55e" : "rgba(34, 197, 94, 0.3)"}`,
+              borderRadius: "16px",
+              padding: "18px 20px",
+              cursor: "pointer",
+              transition: "all 0.18s ease",
+              boxShadow: filtroFila === "aprovados" ? "0 8px 24px rgba(34, 197, 94, 0.2)" : "none",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+              <span style={{ fontSize: "12px", fontWeight: "800", color: "#22c55e", textTransform: "uppercase" }}>
+                ✓ Aprovados Recentemente
+              </span>
+              <span style={{ fontSize: "20px" }}>🟢</span>
+            </div>
+            <div style={{ fontSize: "28px", fontWeight: "900", color: "#ffffff", letterSpacing: "-0.5px" }}>
+              {aprovadosRecentes.length}
+            </div>
+            <div style={{ fontSize: "11px", color: theme.subtext, marginTop: "4px" }}>
+              Pagamentos já confirmados no ciclo
+            </div>
+          </div>
+
+          {/* Card 3: Mecânicos Bloqueados */}
+          <div
+            onClick={() => setFiltroFila("bloqueados")}
+            style={{
+              background: filtroFila === "bloqueados" ? "rgba(239, 68, 68, 0.15)" : theme.card2,
+              border: `1.5px solid ${filtroFila === "bloqueados" ? "#ef4444" : "rgba(239, 68, 68, 0.3)"}`,
+              borderRadius: "16px",
+              padding: "18px 20px",
+              cursor: "pointer",
+              transition: "all 0.18s ease",
+              boxShadow: filtroFila === "bloqueados" ? "0 8px 24px rgba(239, 68, 68, 0.2)" : "none",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+              <span style={{ fontSize: "12px", fontWeight: "800", color: "#ef4444", textTransform: "uppercase" }}>
+                🚫 Acesso Bloqueado
+              </span>
+              <span style={{ fontSize: "20px" }}>🔒</span>
+            </div>
+            <div style={{ fontSize: "28px", fontWeight: "900", color: "#ffffff", letterSpacing: "-0.5px" }}>
+              {mecanicosBloqueados.length}
+            </div>
+            <div style={{ fontSize: "11px", color: theme.subtext, marginTop: "4px" }}>
+              Mecânicos com acesso restrito
+            </div>
+          </div>
+        </div>
+
+        {/* BARRA DE CONTROLE: FILTROS E BUSCA */}
+        <div
+          style={{
+            ...styles.whiteCard,
+            padding: "16px 20px",
+            marginBottom: "18px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "12px",
+          }}
+        >
+          {/* Botões de Filtro */}
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: "12px", fontWeight: "700", color: theme.subtext, marginRight: "4px" }}>
+              Filtro:
+            </span>
+            <button
+              type="button"
+              onClick={() => setFiltroFila("pendentes")}
+              style={{
+                background: filtroFila === "pendentes" ? "#facc15" : "rgba(255,255,255,0.06)",
+                color: filtroFila === "pendentes" ? "#000" : theme.text,
+                border: "1px solid rgba(250,204,21,0.4)",
+                padding: "6px 14px",
+                borderRadius: "8px",
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: "800",
+              }}
+            >
+              🟡 Aguardando Confirmação ({pendentesComprovante.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFiltroFila("aprovados")}
+              style={{
+                background: filtroFila === "aprovados" ? "#22c55e" : "rgba(255,255,255,0.06)",
+                color: filtroFila === "aprovados" ? "#000" : theme.text,
+                border: "1px solid rgba(34,197,94,0.4)",
+                padding: "6px 14px",
+                borderRadius: "8px",
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: "800",
+              }}
+            >
+              🟢 Aprovados Recentemente ({aprovadosRecentes.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFiltroFila("bloqueados")}
+              style={{
+                background: filtroFila === "bloqueados" ? "#ef4444" : "rgba(255,255,255,0.06)",
+                color: filtroFila === "bloqueados" ? "#fff" : theme.text,
+                border: "1px solid rgba(239,68,68,0.4)",
+                padding: "6px 14px",
+                borderRadius: "8px",
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: "800",
+              }}
+            >
+              🚫 Mecânicos Bloqueados ({mecanicosBloqueados.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFiltroFila("todos")}
+              style={{
+                background: filtroFila === "todos" ? theme.accent : "rgba(255,255,255,0.06)",
+                color: filtroFila === "todos" ? "#000" : theme.text,
+                border: `1px solid ${theme.border}`,
+                padding: "6px 14px",
+                borderRadius: "8px",
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: "800",
+              }}
+            >
+              🔘 Todos ({pagamentosAtivos.length})
+            </button>
+          </div>
+
+          {/* Campo de Busca */}
+          <div style={{ position: "relative", minWidth: "260px", flex: 1, maxWidth: "380px" }}>
+            <input
+              type="text"
+              placeholder="🔍 Buscar por nome ou ID..."
+              value={buscaFila}
+              onChange={(e) => setBuscaFila(e.target.value)}
+              style={{
+                width: "100%",
+                background: "rgba(0,0,0,0.35)",
+                border: `1px solid ${theme.border}`,
+                borderRadius: "10px",
+                padding: "8px 14px",
+                color: "#fff",
+                fontSize: "12px",
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+            {buscaFila && (
+              <button
+                type="button"
+                onClick={() => setBuscaFila("")}
+                style={{
+                  position: "absolute",
+                  right: "10px",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "transparent",
+                  border: "none",
+                  color: theme.subtext,
+                  cursor: "pointer",
+                  fontSize: "12px",
+                  fontWeight: "bold",
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* TABELA DE FILA DE PAGAMENTOS */}
+        <div style={styles.whiteCard}>
+          <div style={{ ...styles.cardHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <span style={{ ...styles.dot, background: filtroFila === "pendentes" ? "#facc15" : filtroFila === "aprovados" ? "#22c55e" : theme.accent }}></span>
+              <span>
+                {filtroFila === "pendentes"
+                  ? "Aguardando Aprovação (Comprovantes)"
+                  : filtroFila === "aprovados"
+                  ? "Pagamentos Aprovados Recentemente"
+                  : filtroFila === "bloqueados"
+                  ? "Pagamentos de Mecânicos Bloqueados"
+                  : "Todos os Registros de Pagamentos"}
+              </span>
+            </div>
+            <span style={{ fontSize: "11px", color: theme.subtext }}>
+              Exibindo <b style={{ color: "#fff" }}>{listaExibicao.length}</b> de {listaFiltrada.length}
+            </span>
+          </div>
+
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+              <thead>
+                <tr style={{ background: theme.card2, textAlign: "left" }}>
+                  <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", color: theme.subtext }}>
+                    Data / Envio
+                  </th>
+                  <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", color: theme.subtext }}>
+                    Funcionário & Acesso
+                  </th>
+                  <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", color: theme.subtext }}>
+                    Período / Referência
+                  </th>
+                  <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", color: theme.subtext }}>
+                    Valor
+                  </th>
+                  <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", color: theme.subtext }}>
+                    Comprovante
+                  </th>
+                  <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", color: theme.subtext }}>
+                    Status Pagamento
+                  </th>
+                  <th style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: "11px", textTransform: "uppercase", color: theme.subtext, textAlign: "right" }}>
+                    Ações Rápidas
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {listaExibicao.length === 0 ? (
+                  <tr>
+                    <td colSpan="7" style={{ padding: "48px 20px", textAlign: "center", color: theme.subtext }}>
+                      <div style={{ fontSize: "32px", marginBottom: "10px" }}>📭</div>
+                      <div style={{ fontSize: "15px", fontWeight: "700", color: "#fff" }}>
+                        Nenhum registro encontrado
+                      </div>
+                      <div style={{ fontSize: "12px", marginTop: "4px" }}>
+                        Não há pagamentos correspondentes ao filtro selecionado no momento.
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  listaExibicao.map((pag) => {
+                    const func = financasFuncionarios.find((f) => f.id === pag.funcionario_id);
+                    const estaBloqueado = func?.bloqueado_financeiro;
+
+                    return (
+                      <tr
+                        key={pag.id}
+                        style={{
+                          borderBottom: `1px solid ${theme.border}`,
+                          background: !pag.confirmado ? "rgba(250,204,21,0.03)" : "transparent",
+                          transition: "background 0.15s",
+                        }}
+                      >
+                        {/* Data / Hora de Envio */}
+                        <td style={{ padding: "12px 14px", color: theme.subtext, whiteSpace: "nowrap", fontSize: "11.5px" }}>
+                          {formatarDataHora ? formatarDataHora(pag.criado_em) : (pag.criado_em || "—")}
+                        </td>
+
+                        {/* Funcionário, Cargo e Status de Acesso */}
+                        <td style={{ padding: "12px 14px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <div style={{ fontWeight: "800", color: theme.text, fontSize: "13.5px" }}>
+                              {pag.funcionario_nome}
+                            </div>
+                            <span style={{ fontSize: "11px", color: theme.subtext }}>
+                              (ID: {pag.funcionario_id})
+                            </span>
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "4px", flexWrap: "wrap" }}>
+                            {func && (
+                              <span style={{ fontSize: "11px", color: theme.subtext }}>
+                                {getLabelCargo ? getLabelCargo(func.role) : func.role}
+                              </span>
+                            )}
+                            {estaBloqueado ? (
+                              <span
+                                style={{
+                                  background: "rgba(239,68,68,0.15)",
+                                  color: "#ef4444",
+                                  border: "1px solid rgba(239,68,68,0.35)",
+                                  padding: "1px 7px",
+                                  borderRadius: "6px",
+                                  fontSize: "10px",
+                                  fontWeight: "800",
+                                }}
+                              >
+                                🚫 Acesso Bloqueado
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  background: "rgba(34,197,94,0.15)",
+                                  color: "#22c55e",
+                                  border: "1px solid rgba(34,197,94,0.35)",
+                                  padding: "1px 7px",
+                                  borderRadius: "6px",
+                                  fontSize: "10px",
+                                  fontWeight: "800",
+                                }}
+                              >
+                                🔓 Acesso Liberado
+                              </span>
+                            )}
+                            {func?.data_vencimento && (
+                              <span style={{ fontSize: "10.5px", color: theme.subtext }}>
+                                • Venc: <b style={{ color: "#fff" }}>{formatarData(func.data_vencimento)}</b>
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Período */}
+                        <td style={{ padding: "12px 14px", color: theme.subtext, fontSize: "12px" }}>
+                          {(pag.observacao || "").replace("Cobrança automática - ", "") || "—"}
+                        </td>
+
+                        {/* Valor */}
+                        <td style={{ padding: "12px 14px", color: "#facc15", fontWeight: "900", fontSize: "14px", whiteSpace: "nowrap" }}>
+                          ${Number(pag.valor || 0).toLocaleString("pt-BR")}
+                        </td>
+
+                        {/* Comprovante */}
+                        <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
+                          {pag.comprovante_link ? (
+                            <a
+                              href={pag.comprovante_link}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                background: "rgba(56,189,248,0.12)",
+                                color: "#38bdf8",
+                                border: "1px solid rgba(56,189,248,0.35)",
+                                padding: "6px 12px",
+                                borderRadius: "8px",
+                                fontSize: "11px",
+                                fontWeight: "800",
+                                textDecoration: "none",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "5px",
+                                transition: "all 0.15s",
+                              }}
+                            >
+                              🔗 Ver Comprovante
+                            </a>
+                          ) : (
+                            <span style={{ color: theme.subtext, fontSize: "11px" }}>Sem anexo</span>
+                          )}
+                        </td>
+
+                        {/* Status Pagamento */}
+                        <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
+                          {pag.confirmado ? (
+                            <div>
+                              <span style={{ color: "#22c55e", fontWeight: "800", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                ✓ Aprovado
+                              </span>
+                              {pag.confirmado_em && (
+                                <div style={{ fontSize: "10px", color: theme.subtext }}>
+                                  {formatarDataHora ? formatarDataHora(pag.confirmado_em) : pag.confirmado_em}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ color: "#facc15", fontWeight: "800", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                              ⏳ Pendente
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Ações Rápidas */}
+                        <td style={{ padding: "12px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                          <div style={{ display: "flex", gap: "6px", justifyContent: "flex-end", alignItems: "center" }}>
+                            {/* Botão APROVAR (se pendente) */}
+                            {!pag.confirmado && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  let dataDom = null;
+                                  if (pag.observacao?.includes("até ")) {
+                                    const partes = pag.observacao.split("até ");
+                                    if (partes[1]) {
+                                      const dataBR = partes[1].split("]")[0].trim();
+                                      if (dataBR.includes("/")) {
+                                        const [d, m] = dataBR.split("/");
+                                        const ano = new Date().getFullYear();
+                                        dataDom = `${ano}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+                                      }
+                                    }
+                                  }
+
+                                  abrirDialogo({
+                                    tipo: "confirmacao",
+                                    titulo: "Confirmar Aprovação de Pagamento",
+                                    mensagem: `Confirmação de Pagamento Individual:\n\n👤 Funcionário: ${pag.funcionario_nome} (ID: ${pag.funcionario_id})\n💰 Valor: $${Number(pag.valor).toLocaleString("pt-BR")}\n📅 Período: ${(pag.observacao || "").replace("Cobrança automática - ", "") || "Semana Atual"}\n📎 Comprovante: Anexado para conferência\n\nO que será realizado:\n• Pagamento marcado como APROVADO\n• Acesso do funcionário DESBLOQUEADO imediatamente\n• Vencimento estendido para o próximo ciclo\n• Apenas este funcionário será alterado`,
+                                    textoConfirmar: "Sim, Aprovar Pagamento",
+                                    textoCancelar: "Cancelar",
+                                    onConfirmar: () => {
+                                      confirmarPagamentoSemanal(
+                                        pag.id,
+                                        pag.funcionario_id,
+                                        pag.funcionario_nome,
+                                        pag.comprovante_link,
+                                        dataDom
+                                      );
+                                    },
+                                  });
+                                }}
+                                style={{
+                                  background: "linear-gradient(135deg, #15803d 0%, #16a34a 100%)",
+                                  color: "#fff",
+                                  border: "none",
+                                  padding: "7px 14px",
+                                  borderRadius: "8px",
+                                  cursor: "pointer",
+                                  fontWeight: "800",
+                                  fontSize: "11px",
+                                  boxShadow: "0 4px 10px rgba(34,197,94,0.25)",
+                                }}
+                              >
+                                ✓ APROVAR
+                              </button>
+                            )}
+
+                            {/* Botão REABRIR (se aprovado, para desfazer liberação indevida) */}
+                            {pag.confirmado && reabrirPagamento && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  abrirDialogo({
+                                    tipo: "aviso",
+                                    titulo: "Reabrir Pagamento (Marcar Pendente)",
+                                    mensagem: `Deseja desmarcar a confirmação deste pagamento de ${pag.funcionario_nome}?\n\nEle voltará para o status de 'Pendente' para que você possa reavaliar o comprovante.`,
+                                    textoConfirmar: "Sim, Marcar Pendente",
+                                    textoCancelar: "Cancelar",
+                                    onConfirmar: () => reabrirPagamento(pag.id, pag.funcionario_nome),
+                                  });
+                                }}
+                                style={{
+                                  background: "rgba(245,158,11,0.12)",
+                                  color: "#f59e0b",
+                                  border: "1px solid rgba(245,158,11,0.35)",
+                                  padding: "6px 10px",
+                                  borderRadius: "8px",
+                                  cursor: "pointer",
+                                  fontWeight: "800",
+                                  fontSize: "11px",
+                                }}
+                                title="Desmarcar confirmação e reabrir como pendente"
+                              >
+                                ↺ Reabrir
+                              </button>
+                            )}
+
+                            {/* Botão Liberar / Bloquear Acesso do Funcionário */}
+                            {func && (
+                              estaBloqueado ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const hoje = new Date();
+                                    const diasAteDom = 7 - hoje.getDay();
+                                    const proxDom = new Date(hoje);
+                                    proxDom.setDate(hoje.getDate() + (diasAteDom === 0 ? 7 : diasAteDom));
+                                    const proxDomStr = proxDom.toLocaleDateString("pt-BR");
+
+                                    abrirDialogo({
+                                      tipo: "confirmacao",
+                                      titulo: "Confirmar Liberação de Acesso",
+                                      mensagem: `Confirmação de Liberação Individual:\n\n👤 Funcionário: ${func.nome} (ID: ${func.id})\n📅 Vencimento Atual: ${func.data_vencimento ? formatarData(func.data_vencimento) : "Pendente"}\n\nO que será realizado:\n• Acesso ao sistema DESBLOQUEADO imediatamente\n• Vencimento estendido para o próximo domingo (${proxDomStr})\n• Crédito de 24h restaurado\n• Apenas este funcionário será liberado`,
+                                      textoConfirmar: "Sim, Liberar Acesso",
+                                      textoCancelar: "Cancelar",
+                                      onConfirmar: () => desbloquearFuncionario(func.id, func.nome),
+                                    });
+                                  }}
+                                  style={{
+                                    background: "rgba(34,197,94,0.15)",
+                                    color: "#22c55e",
+                                    border: "1px solid #22c55e",
+                                    padding: "6px 10px",
+                                    borderRadius: "8px",
+                                    cursor: "pointer",
+                                    fontWeight: "800",
+                                    fontSize: "11px",
+                                  }}
+                                  title="Desbloquear acesso de funcionário"
+                                >
+                                  🔓 Liberar
+                                </button>
+                              ) : (
+                                bloquearFuncionario && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      abrirDialogo({
+                                        tipo: "perigo",
+                                        titulo: "Bloquear Acesso Financeiro",
+                                        mensagem: `Deseja realmente BLOQUEAR o acesso de ${func.nome} (ID: ${func.id})?\n\nO funcionário ficará impedido de utilizar o sistema até que regularize o pagamento.`,
+                                        textoConfirmar: "Sim, Bloquear",
+                                        textoCancelar: "Cancelar",
+                                        onConfirmar: () => bloquearFuncionario(func.id, func.nome),
+                                      });
+                                    }}
+                                    style={{
+                                      background: "rgba(239,68,68,0.1)",
+                                      color: "#ef4444",
+                                      border: "1px solid rgba(239,68,68,0.25)",
+                                      padding: "6px 10px",
+                                      borderRadius: "8px",
+                                      cursor: "pointer",
+                                      fontWeight: "800",
+                                      fontSize: "11px",
+                                    }}
+                                    title="Bloquear acesso financeiro deste mecânico"
+                                  >
+                                    🚫 Bloquear
+                                  </button>
+                                )
+                              )
+                            )}
+
+                            {/* Botão Dossiê */}
+                            {func && (
+                              <button
+                                type="button"
+                                onClick={() => setFuncSelecionado(func)}
+                                style={{
+                                  background: "rgba(255,255,255,0.06)",
+                                  color: "#fff",
+                                  border: `1px solid ${theme.border}`,
+                                  padding: "6px 10px",
+                                  borderRadius: "8px",
+                                  cursor: "pointer",
+                                  fontSize: "11px",
+                                  fontWeight: "700",
+                                }}
+                                title="Abrir Dossiê deste mecânico"
+                              >
+                                📜 Dossiê
+                              </button>
+                            )}
+
+                            {/* Botão Apagar / Recusar */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                abrirDialogo({
+                                  tipo: "perigo",
+                                  titulo: "Recusar / Apagar Pagamento",
+                                  mensagem: `Deseja recusar ou apagar este registro de pagamento de ${pag.funcionario_nome}?`,
+                                  textoConfirmar: "Sim, Apagar",
+                                  onConfirmar: () => apagarPagamento(pag.id),
+                                });
+                              }}
+                              style={{
+                                background: "rgba(239,68,68,0.08)",
+                                color: "#ef4444",
+                                border: "1px solid rgba(239,68,68,0.2)",
+                                padding: "6px 8px",
+                                borderRadius: "8px",
+                                cursor: "pointer",
+                                fontSize: "11px",
+                              }}
+                              title="Recusar / Apagar registro"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={styles.dashContainer}>
       <style>{`
@@ -1163,24 +1849,6 @@ export default function FinancasPage({
           </div>
 
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button
-              type="button"
-              disabled={executandoLote}
-              onClick={executarRegularizacaoGeral}
-              style={{
-                background: "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
-                border: "none",
-                color: "#fff",
-                padding: "9px 16px",
-                borderRadius: "10px",
-                cursor: executandoLote ? "not-allowed" : "pointer",
-                fontWeight: "800",
-                fontSize: "12px",
-                boxShadow: "0 4px 14px rgba(2,132,199,0.3)",
-              }}
-            >
-              {executandoLote ? "⏳ Regularizando..." : "⚡ Regularizar Períodos Anteriores"}
-            </button>
 
             <button
               type="button"
@@ -1222,7 +1890,42 @@ export default function FinancasPage({
         </div>
 
         {/* SUB-ABAS DE NAVEGAÇÃO */}
-        <div style={{ display: "flex", gap: "8px", marginBottom: "22px", background: "rgba(0,0,0,0.35)", padding: "5px", borderRadius: "12px", width: "fit-content" }}>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "22px", background: "rgba(0,0,0,0.35)", padding: "5px", borderRadius: "12px", width: "fit-content", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => setSubAba("aprovacoes")}
+            style={{
+              background: subAba === "aprovacoes" ? "#facc15" : "transparent",
+              color: subAba === "aprovacoes" ? "#000" : theme.subtext,
+              border: "none",
+              padding: "9px 20px",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: "900",
+              fontSize: "12px",
+              transition: "all 0.2s",
+              display: "flex",
+              alignItems: "center",
+              gap: "7px",
+            }}
+          >
+            📥 Fila de Aprovações & Pagamentos
+            {qtdPendentesComprovante > 0 && (
+              <span
+                style={{
+                  background: subAba === "aprovacoes" ? "#000" : "#ef4444",
+                  color: "#fff",
+                  fontSize: "10px",
+                  fontWeight: "900",
+                  padding: "1px 7px",
+                  borderRadius: "10px",
+                }}
+              >
+                {qtdPendentesComprovante}
+              </span>
+            )}
+          </button>
+
           <button
             type="button"
             onClick={() => setSubAba("geral")}
@@ -1240,6 +1943,7 @@ export default function FinancasPage({
           >
             📊 Visão Geral dos Mecânicos
           </button>
+
           <button
             type="button"
             onClick={() => setSubAba("devedores")}
@@ -1259,8 +1963,58 @@ export default function FinancasPage({
           </button>
         </div>
 
-        {subAba === "geral" ? (
+        {subAba === "aprovacoes" ? (
+          renderFilaAprovacoes()
+        ) : subAba === "geral" ? (
           <>
+            {/* Banner de alerta no topo se houver comprovantes pendentes */}
+            {qtdPendentesComprovante > 0 && (
+              <div
+                style={{
+                  background: "linear-gradient(135deg, rgba(234,179,8,0.15) 0%, rgba(202,138,4,0.08) 100%)",
+                  border: "1px solid rgba(250,204,21,0.4)",
+                  borderRadius: "14px",
+                  padding: "14px 20px",
+                  marginBottom: "20px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "12px",
+                  animation: "fadeLogin 0.25s ease-out",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <div style={{ fontSize: "24px" }}>📥</div>
+                  <div>
+                    <div style={{ color: "#facc15", fontWeight: "800", fontSize: "14px" }}>
+                      Existem {qtdPendentesComprovante} comprovante(s) aguardando sua aprovação!
+                    </div>
+                    <div style={{ color: theme.subtext, fontSize: "12px" }}>
+                      Mecânicos enviaram novos comprovantes para quitação da taxa semanal.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSubAba("aprovacoes")}
+                  style={{
+                    background: "linear-gradient(135deg, #eab308 0%, #ca8a04 100%)",
+                    color: "#000",
+                    border: "none",
+                    padding: "8px 18px",
+                    borderRadius: "9px",
+                    cursor: "pointer",
+                    fontWeight: "900",
+                    fontSize: "12px",
+                    boxShadow: "0 4px 14px rgba(234,179,8,0.3)",
+                  }}
+                >
+                  ⚡ Ver Fila de Aprovação
+                </button>
+              </div>
+            )}
+
             {financasCarregando && (
               <div style={{ textAlign: "center", padding: "14px", color: theme.subtext, fontSize: "13px" }}>
                 ⏳ Verificando status financeiro dos funcionários...
@@ -1274,7 +2028,7 @@ export default function FinancasPage({
                   <span style={styles.dot}></span> Controle de Taxas por Funcionário
                 </div>
                 <span style={{ fontSize: "11px", color: theme.subtext }}>
-                  Total: <b style={{ color: "#fff" }}>{financasFuncionarios.filter((f) => f.role?.split("|")[0] !== "User").length}</b> ativos
+                  Total: <b style={{ color: "#fff" }}>{funcsAtivos.length}</b> ativos
                 </span>
               </div>
 
@@ -1309,11 +2063,7 @@ export default function FinancasPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {[...financasFuncionarios]
-                      .filter((f) => {
-                        const r = f.role?.split("|")[0].toLowerCase().trim();
-                        return r !== "user" && r !== "admin";
-                      })
+                    {[...funcsAtivos]
                       .sort((a, b) => (a.nome || "").localeCompare(b.nome || ""))
                       .map((func) => {
                         const vencido = func.data_vencimento && func.data_vencimento < hoje;
@@ -1533,11 +2283,18 @@ export default function FinancasPage({
                                       <button
                                         type="button"
                                         onClick={() => {
+                                          const hoje = new Date();
+                                          const diasAteDom = 7 - hoje.getDay();
+                                          const proxDom = new Date(hoje);
+                                          proxDom.setDate(hoje.getDate() + (diasAteDom === 0 ? 7 : diasAteDom));
+                                          const proxDomStr = proxDom.toLocaleDateString("pt-BR");
+
                                           abrirDialogo({
                                             tipo: "confirmacao",
-                                            titulo: "Liberar Acesso",
-                                            mensagem: `Deseja desbloquear o acesso de ${func.nome}?`,
-                                            textoConfirmar: "Sim, Desbloquear",
+                                            titulo: "Confirmar Liberação de Acesso",
+                                            mensagem: `Confirmação de Liberação Individual:\n\n👤 Funcionário: ${func.nome} (ID: ${func.id})\n💼 Cargo: ${getLabelCargo ? getLabelCargo(func.role) : (func.role || "Mecânico")}\n📅 Vencimento Atual: ${func.data_vencimento ? formatarData(func.data_vencimento) : "Pendente/Sem data"}\n💰 Taxa Semanal: $${Number(func.valor_semanal || 0).toLocaleString("pt-BR")}\n\nO que será realizado:\n• Desbloqueio imediato do acesso de ${func.nome}\n• Vencimento estendido para o próximo domingo (${proxDomStr})\n• Crédito de 24h restaurado\n• Apenas este funcionário será liberado (nenhum outro será modificado)`,
+                                            textoConfirmar: "Sim, Liberar Acesso",
+                                            textoCancelar: "Cancelar",
                                             onConfirmar: () => desbloquearFuncionario(func.id, func.nome),
                                           });
                                         }}
@@ -1568,7 +2325,7 @@ export default function FinancasPage({
             </div>
 
             {/* COMPROVANTES AGUARDANDO CONFIRMAÇÃO */}
-            {pagamentosSemanais.filter((p) => !p.confirmado && p.comprovante_link).length > 0 && (
+            {pagamentosAtivos.filter((p) => !p.confirmado && p.comprovante_link).length > 0 && (
               <div style={{ ...styles.whiteCard, marginTop: "24px", border: "1px solid rgba(250,204,21,0.35)" }}>
                 <div style={styles.cardHeader}>
                   <span style={{ ...styles.dot, background: "#facc15" }}></span>
@@ -1596,7 +2353,7 @@ export default function FinancasPage({
                       </tr>
                     </thead>
                     <tbody>
-                      {pagamentosSemanais
+                      {pagamentosAtivos
                         .filter((p) => !p.confirmado && p.comprovante_link)
                         .map((pag) => (
                           <tr key={pag.id} style={{ borderBottom: `1px solid ${theme.border}` }}>
@@ -1647,13 +2404,23 @@ export default function FinancasPage({
                                         }
                                       }
                                     }
-                                    confirmarPagamentoSemanal(
-                                      pag.id,
-                                      pag.funcionario_id,
-                                      pag.funcionario_nome,
-                                      pag.comprovante_link,
-                                      dataDom
-                                    );
+
+                                    abrirDialogo({
+                                      tipo: "confirmacao",
+                                      titulo: "Confirmar Aprovação de Pagamento",
+                                      mensagem: `Confirmação de Pagamento:\n\n👤 Funcionário: ${pag.funcionario_nome} (ID: ${pag.funcionario_id})\n💰 Valor: $${Number(pag.valor).toLocaleString("pt-BR")}\n📅 Período: ${(pag.observacao || "").replace("Cobrança automática - ", "") || "Semana Atual"}\n📎 Comprovante: Anexado para conferência\n\nO que será realizado:\n• O pagamento desta semana será marcado como APROVADO\n• O funcionário será DESBLOQUEADO caso esteja bloqueado\n• O vencimento será estendido para o próximo ciclo\n• Apenas este pagamento de ${pag.funcionario_nome} será processado`,
+                                      textoConfirmar: "Sim, Aprovar Pagamento",
+                                      textoCancelar: "Cancelar",
+                                      onConfirmar: () => {
+                                        confirmarPagamentoSemanal(
+                                          pag.id,
+                                          pag.funcionario_id,
+                                          pag.funcionario_nome,
+                                          pag.comprovante_link,
+                                          dataDom
+                                        );
+                                      },
+                                    });
                                   }}
                                   style={{
                                     background: "linear-gradient(135deg, #15803d 0%, #16a34a 100%)",

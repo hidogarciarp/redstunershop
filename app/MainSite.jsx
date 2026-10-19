@@ -3087,8 +3087,15 @@ export function MainSite({ isV2 = true } = {}) {
       const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
       let houveAlteracao = false;
 
-      // Mapear dados para processar bloqueios e renovações localmente
+      // Mapear dados para processar bloqueios e renovações localmente (apenas funcionários com perfis ativos)
       const dadosProcessados = await Promise.all(allData.map(async (f) => {
+        const statusLower = (f.status || "").toLowerCase().trim();
+        const ehInativo = (statusLower && statusLower !== "ativo") || Boolean(f.data_demissao);
+        const r = (f.role || "").split("|")[0].toLowerCase().trim();
+        if (ehInativo || r === "user" || r === "admin") {
+          return f;
+        }
+
         const dVenc = f.data_vencimento ? new Date(f.data_vencimento + "T12:00:00") : null;
         const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
         
@@ -3150,11 +3157,6 @@ export function MainSite({ isV2 = true } = {}) {
               return { ...f, ...updateData };
             }
           }
-        } else if (f.bloqueado_financeiro) {
-          // Se não está vencido mas está marcado como bloqueado no banco, desbloqueia automaticamente
-          houveAlteracao = true;
-          await supabase.from("usuarios").update({ bloqueado_financeiro: false }).eq("id", f.id);
-          return { ...f, bloqueado_financeiro: false };
         }
         return f;
       }));
@@ -3353,6 +3355,34 @@ export function MainSite({ isV2 = true } = {}) {
     mostrarFeedback(`${funcNome} desbloqueado e vencimento regularizado com sucesso!`, "sucesso", "Acesso Liberado");
     buscarFinancas();
     if (funcId === usuarioLogado?.id) buscarDadosUsuario();
+  };
+
+  const bloquearFuncionario = async (funcId, funcNome) => {
+    const { error } = await supabase
+      .from("usuarios")
+      .update({ bloqueado_financeiro: true })
+      .eq("id", funcId);
+    if (error) {
+      mostrarFeedback("Erro ao bloquear: " + error.message, "erro");
+      return;
+    }
+    mostrarFeedback(`${funcNome} foi bloqueado financeiramente!`, "aviso", "Acesso Bloqueado");
+    buscarFinancas();
+    if (funcId === usuarioLogado?.id) buscarDadosUsuario();
+  };
+
+  const reabrirPagamento = async (pagId, funcNome) => {
+    const { error } = await supabase
+      .from("pagamentos_semanais")
+      .update({ confirmado: false, confirmado_em: null, confirmado_por: null })
+      .eq("id", pagId);
+    if (error) {
+      mostrarFeedback("Erro ao reabrir pagamento: " + error.message, "erro");
+      return;
+    }
+    mostrarFeedback(`Pagamento de ${funcNome} reaberto com sucesso (marcado como pendente)!`, "aviso", "Pagamento Reaberto");
+    buscarPagamentosSemanais();
+    buscarFinancas();
   };
 
   const alterarDataVencimento = async (funcId, novaData) => {
@@ -3849,13 +3879,26 @@ export function MainSite({ isV2 = true } = {}) {
 
       const roleBase = usuarioLogado?.role?.split("|")[0]?.toLowerCase()?.trim();
       if ((roleBase === "estagiario" || roleBase === "jovem_aprendiz") && temPerformance && (!autorizadoPor.trim() || !autorizadorId)) {
+        alert("⚠️ Estagiários e Jovens Aprendizes precisam selecionar quem autorizou a tunagem de Performance!");
         mostrarFeedback("Estagiários e Jovens Aprendizes precisam selecionar quem autorizou a tunagem de Performance!", "aviso");
         return;
       }
 
-      if (!temEstetica && !temAlgumaPeca && !temGuincho) { mostrarFeedback("O formulário de registro está vazio!", "aviso"); return; }
-      if ((temEstetica || temPerformance) && !arquivoImagem) { mostrarFeedback("É obrigatório anexar uma imagem para serviços de estética ou tunagem!", "aviso"); return; }
-      if ((camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca) && Number(valorDigitadoEstetica) <= 0) { mostrarFeedback("Ao selecionar Camaleão ou outros extras, informe o valor do painel in-game.", "aviso"); return; }
+      if (!temEstetica && !temAlgumaPeca && !temGuincho) {
+        alert("⚠️ O formulário de registro está vazio!");
+        mostrarFeedback("O formulário de registro está vazio!", "aviso");
+        return;
+      }
+      if ((temEstetica || temPerformance) && !arquivoImagem) {
+        alert("⚠️ É obrigatório anexar uma imagem para serviços de estética ou tunagem!");
+        mostrarFeedback("É obrigatório anexar uma imagem para serviços de estética ou tunagem!", "aviso");
+        return;
+      }
+      if ((camaleao1 || camaleao2 || camaleaoRodas || quantidadeExtras > 0 || fumaca) && Number(valorDigitadoEstetica) <= 0) {
+        alert("⚠️ Ao selecionar Camaleão ou outros extras, informe o valor do painel in-game.");
+        mostrarFeedback("Ao selecionar Camaleão ou outros extras, informe o valor do painel in-game.", "aviso");
+        return;
+      }
 
       setSalvandoServico(true);
 
@@ -4034,6 +4077,8 @@ export function MainSite({ isV2 = true } = {}) {
               if (j.error) msgAmigavel = j.error;
             } catch (_) {}
           }
+          const msgAlerta = "❌ " + msgAmigavel;
+          alert(msgAlerta);
           mostrarFeedback(msgAmigavel, "erro", "Erro no Discord");
           setSalvandoServico(false);
           return;
@@ -4114,14 +4159,23 @@ export function MainSite({ isV2 = true } = {}) {
           }
         }
 
+        const clienteSalvo = cliente;
+        const passaporteSalvo = passaporte;
+        const totalSalvo = total;
+        const detalhesSalvos = detalhesServico;
+
         limparFormulario();
         setSalvandoServico(false);
         buscarNotificacaoPendente();
 
         const resumoSucesso = temReboque
           ? `🚨 Apreensão de veículo registrada e enviada para o canal de Reboque no Discord com sucesso!`
-          : `✅ Serviço registrado e enviado para o Discord com sucesso!\n\n👤 Cliente: ${cliente} (ID: ${passaporte})\n💰 Total: R$ ${total.toLocaleString("pt-BR")}\n🛠️ Itens: ${detalhesServico}`;
+          : `✅ Serviço registrado e enviado para o Discord com sucesso!\n\n👤 Cliente: ${clienteSalvo || "Não informado"} (ID: ${passaporteSalvo || "N/A"})\n💰 Total: R$ ${totalSalvo.toLocaleString("pt-BR")}\n🛠️ Itens: ${detalhesSalvos}`;
 
+        // Alerta na tela para confirmação imediata
+        alert(resumoSucesso);
+
+        // Feedback moderno no app
         mostrarFeedback(resumoSucesso, "sucesso", "Enviado com Sucesso!");
       }
 
@@ -4130,7 +4184,9 @@ export function MainSite({ isV2 = true } = {}) {
       }
     } catch (err) {
       console.error("Erro ao registrar serviço:", err);
-      mostrarFeedback("Erro ao registrar serviço: " + (err?.message || "Falha desconhecida"), "erro");
+      const msgErro = "Erro ao registrar serviço: " + (err?.message || "Falha desconhecida");
+      alert("❌ " + msgErro);
+      mostrarFeedback(msgErro, "erro");
     } finally {
       setSalvandoServico(false);
     }
@@ -6402,6 +6458,8 @@ export function MainSite({ isV2 = true } = {}) {
         formatarData={formatarData}
         iniciarEdicaoFinanca={iniciarEdicaoFinanca}
         desbloquearFuncionario={desbloquearFuncionario}
+        bloquearFuncionario={bloquearFuncionario}
+        reabrirPagamento={reabrirPagamento}
         isAdminOuDono={isAdminOuDono}
         usuarioLogado={usuarioLogado}
         apagarPagamento={apagarPagamento}
