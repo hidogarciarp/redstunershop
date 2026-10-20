@@ -54,48 +54,63 @@ export async function POST(request) {
 
     const contentType = request.headers.get("content-type") || "";
     const isFormData = contentType.includes("multipart/form-data");
-    let outgoingBody;
     let outgoingHeaders = {};
+    let formEntries = null;
+    let jsonBodyStr = null;
 
     if (isFormData) {
       const incomingFormData = await request.formData();
-      const outgoingFormData = new FormData();
-      for (const [key, value] of incomingFormData.entries()) {
-        outgoingFormData.append(key, value);
-      }
-      outgoingBody = outgoingFormData;
+      formEntries = Array.from(incomingFormData.entries());
     } else {
       const jsonBody = await request.json();
-      outgoingBody = JSON.stringify(jsonBody);
+      jsonBodyStr = JSON.stringify(jsonBody);
       outgoingHeaders = { "Content-Type": "application/json" };
     }
+
+    const createOutgoingBody = () => {
+      if (isFormData) {
+        const fd = new FormData();
+        for (const [key, value] of formEntries) {
+          fd.append(key, value);
+        }
+        return fd;
+      }
+      return jsonBodyStr;
+    };
 
     const buildUrl = (target) => {
       const sep = target.includes("?") ? "&" : "?";
       return target.includes("wait=") ? target : `${target}${sep}wait=true`;
     };
 
-    let discordResponse = await fetch(buildUrl(webhookUrl), {
+    let activeWebhookUrl = webhookUrl;
+    let discordResponse = await fetch(buildUrl(activeWebhookUrl), {
       method: "POST",
       headers: Object.keys(outgoingHeaders).length > 0 ? outgoingHeaders : undefined,
-      body: outgoingBody,
+      body: createOutgoingBody(),
     });
 
-    // Se o webhook configurado responder 404 e houver DEFAULT diferente, faz fallback automático
-    if (!discordResponse.ok && discordResponse.status === 404 && DEFAULT_WEBHOOKS[tipo] && DEFAULT_WEBHOOKS[tipo] !== webhookUrl) {
-      console.warn(`[Discord Proxy] Webhook de ${tipo} retornou 404. Acionando DEFAULT_WEBHOOKS.`);
-      discordResponse = await fetch(buildUrl(DEFAULT_WEBHOOKS[tipo]), {
+    // Se o webhook configurado responder 404 ou 401 e houver DEFAULT diferente, faz fallback automático
+    if (
+      !discordResponse.ok &&
+      (discordResponse.status === 404 || discordResponse.status === 401) &&
+      DEFAULT_WEBHOOKS[tipo] &&
+      DEFAULT_WEBHOOKS[tipo] !== activeWebhookUrl
+    ) {
+      console.warn(`[Discord Proxy] Webhook de ${tipo} retornou ${discordResponse.status}. Acionando DEFAULT_WEBHOOKS.`);
+      activeWebhookUrl = DEFAULT_WEBHOOKS[tipo];
+      discordResponse = await fetch(buildUrl(activeWebhookUrl), {
         method: "POST",
         headers: Object.keys(outgoingHeaders).length > 0 ? outgoingHeaders : undefined,
-        body: outgoingBody,
+        body: createOutgoingBody(),
       });
     }
 
     const responseData = await discordResponse.json().catch(() => ({}));
 
     // Injeta channel_id se ausente para facilitar a geração de link pelo cliente
-    if (responseData && !responseData.channel_id && webhookUrl.includes("/webhooks/")) {
-      responseData.channel_id = webhookUrl.split("/webhooks/")[1]?.split("/")[0];
+    if (responseData && !responseData.channel_id && activeWebhookUrl.includes("/webhooks/")) {
+      responseData.channel_id = activeWebhookUrl.split("/webhooks/")[1]?.split("/")[0];
     }
 
     return NextResponse.json(responseData, {

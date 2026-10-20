@@ -32,6 +32,19 @@ export default function BloqueadoFinanceiroPage({
 
   const [semanaSelecionada, setSemanaSelecionada] = useState("");
   const [semanasDisponiveis, setSemanasDisponiveis] = useState([]);
+  const [enviando, setEnviando] = useState(false);
+
+  const handleEnviarComprovante = async () => {
+    try {
+      setEnviando(true);
+      await enviarRegistroPagamento(semanaSelecionada === "Outra" ? "" : semanaSelecionada);
+      if (usuarioLogado?.id && typeof buscarMeusPagamentos === "function") {
+        await buscarMeusPagamentos(usuarioLogado.id);
+      }
+    } finally {
+      setEnviando(false);
+    }
+  };
 
   // Pré-preenche o valor semanal caso ainda não esteja preenchido
   useEffect(() => {
@@ -342,7 +355,8 @@ export default function BloqueadoFinanceiroPage({
 
               <button
                 type="button"
-                onClick={() => enviarRegistroPagamento(semanaSelecionada === "Outra" ? "" : semanaSelecionada)}
+                disabled={enviando}
+                onClick={handleEnviarComprovante}
                 style={{
                   background: "linear-gradient(135deg, #15803d 0%, #16a34a 100%)",
                   color: "#fff",
@@ -352,12 +366,13 @@ export default function BloqueadoFinanceiroPage({
                   width: "100%",
                   marginTop: "6px",
                   fontWeight: "800",
-                  cursor: "pointer",
+                  cursor: enviando ? "not-allowed" : "pointer",
                   fontSize: "14px",
                   boxShadow: "0 4px 14px rgba(22, 163, 74, 0.35)",
+                  opacity: enviando ? 0.7 : 1,
                 }}
               >
-                📨 Enviar Comprovante para Análise
+                {enviando ? "⏳ Enviando Comprovante..." : "📨 Enviar Comprovante para Análise"}
               </button>
             </div>
 

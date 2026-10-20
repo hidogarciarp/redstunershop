@@ -3477,6 +3477,49 @@ export function MainSite({ isV2 = true } = {}) {
     if (typeof semanaSelecionada === 'string' && semanaSelecionada) {
       obs = `[${semanaSelecionada}] ${obs}`.trim();
     }
+    const linkComprovante = reportLinkSemanal.trim() || null;
+
+    // Envio para Discord (mesmo para reports manuais de comprovante/link)
+    try {
+      const embedFields = [
+        { name: "👨‍🔧 Funcionário", value: usuarioLogado?.nome || "Não informado", inline: true },
+        { name: "🪪 ID", value: String(usuarioLogado?.id || "N/A"), inline: true },
+        { name: "💰 Valor", value: `$${valor.toLocaleString("pt-BR")}`, inline: true },
+        { name: "📝 Observação", value: obs || "Sem observações.", inline: false },
+      ];
+      if (linkComprovante) {
+        embedFields.push({ name: "📎 Comprovante / Link", value: linkComprovante, inline: false });
+      }
+
+      const embed = {
+        title: "💸 REGISTRO DE PAGAMENTO (REPORT MANUAL)",
+        color: 5763719,
+        fields: embedFields,
+        footer: { text: "RED'S TUNERSHOP - Registro de Pagamentos" },
+        timestamp: new Date(),
+        ...(linkComprovante && linkComprovante.match(/\.(jpeg|jpg|png|webp|gif)($|\?)/i) ? { image: { url: linkComprovante } } : {}),
+      };
+
+      const buildEndpoint = (baseUrl) => {
+        const sep = baseUrl.includes("?") ? "&" : "?";
+        return baseUrl.includes("wait=") ? baseUrl : `${baseUrl}${sep}wait=true`;
+      };
+
+      await Promise.allSettled([
+        fetch(buildEndpoint(WEBHOOK_PAGAMENTOS), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ embeds: [embed] }),
+        }),
+        fetch(buildEndpoint(WEBHOOK_CAIXA2), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ embeds: [embed] }),
+        }),
+      ]);
+    } catch (e) {
+      console.warn("Falha ao encaminhar pagamento manual para o Discord:", e);
+    }
 
     const { error } = await supabase.from("pagamentos_semanais").insert({
       funcionario_id: usuarioLogado.id,
@@ -3484,12 +3527,16 @@ export function MainSite({ isV2 = true } = {}) {
       valor,
       observacao: obs || null,
       confirmado: false,
-      comprovante_link: reportLinkSemanal.trim() || null,
+      comprovante_link: linkComprovante,
       criado_em: new Date().toISOString(),
     });
     if (error) { alert("❌ Erro ao reportar pagamento: " + error.message); return; }
     alert("✅ Pagamento reportado! Aguarde confirmação do administrador para liberar o acesso.");
-    buscarMeusPagamentos();
+    if (usuarioLogado?.id && typeof buscarMeusPagamentos === "function") {
+      buscarMeusPagamentos(usuarioLogado.id);
+    } else if (typeof buscarMeusPagamentos === "function") {
+      buscarMeusPagamentos();
+    }
     setReportValorSemanal("");
     setReportObsSemanal("");
     setReportLinkSemanal("");
@@ -3736,57 +3783,81 @@ export function MainSite({ isV2 = true } = {}) {
     if (!imagemPagamento) { alert("⚠️ Envie a foto do comprovante."); return; }
     const valorNumerico = Number(String(valorPagamentoRegistro).replace(/\D/g, ""));
     if (!valorNumerico || valorNumerico <= 0) { alert("⚠️ Informe um valor válido."); return; }
-      const embed = {
-        title: "💸 REGISTRO DE PAGAMENTO",
-        color: 5763719,
-        fields: [
-          { name: "👨‍🔧 Funcionário", value: usuarioLogado.nome || "Não informado", inline: true },
-          { name: "🪪 ID", value: String(usuarioLogado.id || "N/A"), inline: true },
-          { name: "💰 Valor", value: `$${valorNumerico.toLocaleString("pt-BR")}`, inline: true },
-          { 
-            name: "📝 Observação", 
-            value: (semanaSelecionada ? `[${semanaSelecionada}] ` : "") + (observacaoPagamento?.trim() || "Sem observações."), 
-            inline: false 
-          },
-        ],
-        image: { url: "attachment://comprovante.png" },
-        footer: { text: "RED'S TUNERSHOP - Registro de Pagamentos" },
-        timestamp: new Date(),
-      };
-      try {
-        const formData = new FormData();
-        formData.append("payload_json", JSON.stringify({ embeds: [embed] }));
-        formData.append("files[0]", imagemPagamento, "comprovante.png");
 
-      // Segundo FormData separado pois the blob pode ser consumido no primeiro fetch
+    const embed = {
+      title: "💸 REGISTRO DE PAGAMENTO",
+      color: 5763719,
+      fields: [
+        { name: "👨‍🔧 Funcionário", value: usuarioLogado.nome || "Não informado", inline: true },
+        { name: "🪪 ID", value: String(usuarioLogado.id || "N/A"), inline: true },
+        { name: "💰 Valor", value: `$${valorNumerico.toLocaleString("pt-BR")}`, inline: true },
+        {
+          name: "📝 Observação",
+          value: (semanaSelecionada ? `[${semanaSelecionada}] ` : "") + (observacaoPagamento?.trim() || "Sem observações."),
+          inline: false
+        },
+      ],
+      image: { url: "attachment://comprovante.png" },
+      footer: { text: "RED'S TUNERSHOP - Registro de Pagamentos" },
+      timestamp: new Date(),
+    };
+
+    try {
+      // 1. Otimiza a imagem para evitar estouro de limite de upload (4.5MB da Vercel / 8MB Discord)
+      const imagemOtimizada = await otimizarImagem(imagemPagamento);
+
+      const formData = new FormData();
+      formData.append("payload_json", JSON.stringify({ embeds: [embed] }));
+      formData.append("files[0]", imagemOtimizada, "comprovante.png");
+
       const formData2 = new FormData();
       formData2.append("payload_json", JSON.stringify({ embeds: [embed] }));
-      formData2.append("files[0]", imagemPagamento, "comprovante.png");
+      formData2.append("files[0]", imagemOtimizada, "comprovante.png");
 
-      const [res1, res2] = await Promise.all([
-        fetch(WEBHOOK_PAGAMENTOS + "?wait=true", { method: "POST", body: formData }),
-        fetch(WEBHOOK_CAIXA2 + "?wait=true", { method: "POST", body: formData2 }),
+      const buildEndpoint = (baseUrl) => {
+        const sep = baseUrl.includes("?") ? "&" : "?";
+        return baseUrl.includes("wait=") ? baseUrl : `${baseUrl}${sep}wait=true`;
+      };
+
+      // Disparo resiliente para ambos os canais de Discord (Pagamentos e Caixa 2)
+      const resultados = await Promise.allSettled([
+        fetch(buildEndpoint(WEBHOOK_PAGAMENTOS), { method: "POST", body: formData }),
+        fetch(buildEndpoint(WEBHOOK_CAIXA2), { method: "POST", body: formData2 }),
       ]);
 
-      if (!res1.ok && !res2.ok) { alert("❌ Erro ao enviar pagamento para o Discord."); return; }
+      const resPag = resultados[0].status === "fulfilled" ? resultados[0].value : null;
+      const resCx2 = resultados[1].status === "fulfilled" ? resultados[1].value : null;
 
-      // Tentar capturar o link da mensagem do Discord
+      const okPag = resPag && resPag.ok;
+      const okCx2 = resCx2 && resCx2.ok;
+
+      if (!okPag && !okCx2) {
+        console.error("Falha ao enviar comprovante para ambos os webhooks:", resultados);
+        alert("❌ Erro ao enviar comprovante para o Discord. Verifique a sua conexão e tente novamente.");
+        return;
+      }
+
+      // Captura o link gerado pelo Discord (prioriza o webhook principal de pagamentos)
       let linkDiscord = "";
-      try {
-        const data = await res1.json();
-        const msgId = data.id;
-        // Se o Discord não retornar channel_id ou guild_id, tentamos pegar da URL ou usamos o ID conhecido do servidor
-        const chanId = data.channel_id || WEBHOOK_PAGAMENTOS?.split("/webhooks/")[1]?.split("/")[0];
-        const gldId = data.guild_id || "1486119705814106307";
+      const resParaLink = okPag ? resPag : resCx2;
+      if (resParaLink) {
+        try {
+          const data = await resParaLink.json();
+          const msgId = data.id;
+          const chanId = data.channel_id;
+          const gldId = data.guild_id || "1486119705814106307";
 
-        if (msgId && chanId) {
-          linkDiscord = `https://discord.com/channels/${gldId}/${chanId}/${msgId}`;
-        } else if (data.embeds?.[0]?.image?.url) {
-          linkDiscord = data.embeds[0].image.url;
-        } else if (data.attachments?.[0]?.url) {
-          linkDiscord = data.attachments[0].url;
+          if (msgId && chanId) {
+            linkDiscord = `https://discord.com/channels/${gldId}/${chanId}/${msgId}`;
+          } else if (data.embeds?.[0]?.image?.url) {
+            linkDiscord = data.embeds[0].image.url;
+          } else if (data.attachments?.[0]?.url) {
+            linkDiscord = data.attachments[0].url;
+          }
+        } catch (e) {
+          console.warn("Erro ao extrair link do Discord:", e);
         }
-      } catch (e) { console.log("Erro ao ler JSON do Discord", e); }
+      }
 
       // Verificar se já existe um registro pendente sem comprovante para esta semana
       let registroExistente = null;
@@ -3808,7 +3879,7 @@ export function MainSite({ isV2 = true } = {}) {
           .from("pagamentos_semanais")
           .update({
             valor: valorNumerico,
-            comprovante_link: linkDiscord,
+            comprovante_link: linkDiscord || null,
             observacao: `[${semanaSelecionada}] ` + (observacaoPagamento?.trim() || "")
           })
           .eq("id", registroExistente.id);
@@ -3818,7 +3889,7 @@ export function MainSite({ isV2 = true } = {}) {
           funcionario_nome: usuarioLogado.nome,
           valor: valorNumerico,
           confirmado: false,
-          comprovante_link: linkDiscord,
+          comprovante_link: linkDiscord || null,
           observacao: (semanaSelecionada ? `[${semanaSelecionada}] ` : "") + (observacaoPagamento?.trim() || "")
         });
       }
@@ -3826,8 +3897,12 @@ export function MainSite({ isV2 = true } = {}) {
       alert("✅ Pagamento registrado com sucesso! Aguarde a confirmação do financeiro.");
       limparFormularioPagamento();
       buscarPagamentosSemanais();
+      if (usuarioLogado?.id && typeof buscarMeusPagamentos === "function") {
+        buscarMeusPagamentos(usuarioLogado.id);
+      }
     } catch (error) {
-      alert("❌ Erro de conexão ao enviar pagamento.");
+      console.error("Erro no envio do pagamento:", error);
+      alert("❌ Erro de conexão ao enviar pagamento: " + (error?.message || ""));
     }
   };
 
