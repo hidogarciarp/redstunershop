@@ -976,6 +976,19 @@ export function MainSite({ isV2 = true } = {}) {
     return null;
   };
 
+  // ===== CHECAGEM DE BLOQUEIO FINANCEIRO =====
+  const checarUsuarioBloqueadoFinanceiro = (user) => {
+    if (!user || !user.bloqueado_financeiro) return false;
+    const role = String(user.role || "").toLowerCase();
+    const primaryRole = role.split("|")[0];
+    if (primaryRole === "admin" || primaryRole === "dono" || role.includes("admin") || role.includes("dono")) {
+      return false;
+    }
+    const usadoEm = user.credito_24h_usado_em;
+    const dentroJanela = Boolean(usadoEm && (Date.now() - new Date(usadoEm).getTime()) < 24 * 3600 * 1000);
+    return !dentroJanela;
+  };
+
   // ===== FUNÇÕES DE BANCO =====
 
   const buscarUsuarioNoBanco = async (idDigitado) => {
@@ -1657,16 +1670,12 @@ export function MainSite({ isV2 = true } = {}) {
 
         if (data.sucesso && usuario) {
           // ===== VERIFICAR BLOQUEIO FINANCEIRO =====
-          if (usuario.bloqueado_financeiro) {
-            const usadoEm = usuario.credito_24h_usado_em;
-            const dentroJanela = usadoEm && (Date.now() - new Date(usadoEm).getTime()) < 24 * 3600 * 1000;
-            if (!dentroJanela) {
-              setUsuarioLogado(usuario);
-              setNomeMecanico(usuario.nome);
-              buscarMeusPagamentos(usuario.id);
-              setPaginaAtual("bloqueado-financeiro");
-              return;
-            }
+          if (checarUsuarioBloqueadoFinanceiro(usuario)) {
+            setUsuarioLogado(usuario);
+            setNomeMecanico(usuario.nome);
+            buscarMeusPagamentos(usuario.id);
+            setPaginaAtual("bloqueado-financeiro");
+            return;
           }
           aplicarLayoutDoUsuario(usuario);
           setUsuarioLogado(usuario);
@@ -1694,16 +1703,12 @@ export function MainSite({ isV2 = true } = {}) {
           setPaginaAtual("alterar-senha");
         } else if (senhaDb === senhaLimpa) {
           // ===== VERIFICAR BLOQUEIO FINANCEIRO =====
-          if (usuario.bloqueado_financeiro) {
-            const usadoEm = usuario.credito_24h_usado_em;
-            const dentroJanela = usadoEm && (Date.now() - new Date(usadoEm).getTime()) < 24 * 3600 * 1000;
-            if (!dentroJanela) {
-              setUsuarioLogado(usuario);
-              setNomeMecanico(usuario.nome);
-              buscarMeusPagamentos(usuario.id);
-              setPaginaAtual("bloqueado-financeiro");
-              return;
-            }
+          if (checarUsuarioBloqueadoFinanceiro(usuario)) {
+            setUsuarioLogado(usuario);
+            setNomeMecanico(usuario.nome);
+            buscarMeusPagamentos(usuario.id);
+            setPaginaAtual("bloqueado-financeiro");
+            return;
           }
           aplicarLayoutDoUsuario(usuario);
           setUsuarioLogado(usuario);
@@ -4304,6 +4309,14 @@ export function MainSite({ isV2 = true } = {}) {
         aplicarLayoutDoUsuario(atual);
         setUsuarioLogado(atual);
         setNomeMecanico(atual.nome);
+
+        // ===== VERIFICAR BLOQUEIO FINANCEIRO NA RESTAURAÇÃO DA SESSÃO =====
+        if (checarUsuarioBloqueadoFinanceiro(atual)) {
+          buscarMeusPagamentos(atual.id);
+          setPaginaAtual("bloqueado-financeiro");
+          return;
+        }
+
         setPaginaAtual(pag && pag !== "login" && !PAGINAS_OCULTAS.has(pag) ? pag : "dashboard");
       } catch (_) {
         localStorage.removeItem("reds_session_user");
@@ -4342,7 +4355,30 @@ export function MainSite({ isV2 = true } = {}) {
         return;
       }
 
-      if (String(atual.role || "") !== String(usuarioLogado.role || "") || atual.nome !== usuarioLogado.nome || atual.avatar_url !== usuarioLogado.avatar_url) {
+      const estaBloqueado = checarUsuarioBloqueadoFinanceiro(atual);
+      const estavaBloqueado = checarUsuarioBloqueadoFinanceiro(usuarioLogado);
+
+      if (estaBloqueado) {
+        setUsuarioLogado(atual);
+        setNomeMecanico(atual.nome);
+        localStorage.setItem("reds_session_user", JSON.stringify(atual));
+        buscarMeusPagamentos(atual.id);
+        setPaginaAtual("bloqueado-financeiro");
+        return;
+      } else if (estavaBloqueado && !estaBloqueado && paginaAtual === "bloqueado-financeiro") {
+        setUsuarioLogado(atual);
+        setNomeMecanico(atual.nome);
+        localStorage.setItem("reds_session_user", JSON.stringify(atual));
+        setPaginaAtual("dashboard");
+        return;
+      }
+
+      if (
+        String(atual.role || "") !== String(usuarioLogado.role || "") ||
+        atual.nome !== usuarioLogado.nome ||
+        atual.avatar_url !== usuarioLogado.avatar_url ||
+        atual.bloqueado_financeiro !== usuarioLogado.bloqueado_financeiro
+      ) {
         aplicarLayoutDoUsuario(atual);
         setUsuarioLogado(atual);
         setNomeMecanico(atual.nome);
@@ -4371,7 +4407,27 @@ export function MainSite({ isV2 = true } = {}) {
       window.clearInterval(intervalo);
       supabase.removeChannel(canalSessao);
     };
-  }, [usuarioLogado?.id, usuarioLogado?.senha, usuarioLogado?.status, usuarioLogado?.role, sessionCarregada]);
+  }, [
+    usuarioLogado?.id,
+    usuarioLogado?.senha,
+    usuarioLogado?.status,
+    usuarioLogado?.role,
+    usuarioLogado?.bloqueado_financeiro,
+    usuarioLogado?.credito_24h_usado_em,
+    paginaAtual,
+    sessionCarregada
+  ]);
+
+  // Guarda de sincronização de rota para bloqueio financeiro
+  useEffect(() => {
+    if (!sessionCarregada || !usuarioLogado) return;
+    if (checarUsuarioBloqueadoFinanceiro(usuarioLogado)) {
+      if (paginaAtual !== "bloqueado-financeiro" && paginaAtual !== "login" && paginaAtual !== "alterar-senha") {
+        buscarMeusPagamentos(usuarioLogado.id);
+        setPaginaAtual("bloqueado-financeiro");
+      }
+    }
+  }, [sessionCarregada, usuarioLogado, paginaAtual]);
 
   useEffect(() => {
     if (!passaporte) return;
@@ -6338,8 +6394,11 @@ export function MainSite({ isV2 = true } = {}) {
     );
   }
 
-  // ===== PÁGINA: BLOQUEADO FINANCEIRO =====
-  if (paginaAtual === "bloqueado-financeiro") {
+  // ===== PÁGINA: BLOQUEADO FINANCEIRO (Guarda Global) =====
+  if (
+    paginaAtual === "bloqueado-financeiro" ||
+    (checarUsuarioBloqueadoFinanceiro(usuarioLogado) && paginaAtual !== "login" && paginaAtual !== "alterar-senha")
+  ) {
     return (
       <BloqueadoFinanceiroPage
         styles={styles}

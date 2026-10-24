@@ -38,17 +38,19 @@ export async function POST(request) {
       }
     }
 
-    // 2. Se não encontrou pelo ID primário, busca por id_jogo
+    // 2. Se não encontrou pelo ID primário, busca por ids_antigos
     if (!user) {
-      const { data: dataJogo, error: errorJogo } = await supabase
-        .from("usuarios")
-        .select("*")
-        .eq("id_jogo", rawId)
-        .maybeSingle();
+      try {
+        const { data: dataAntigo } = await supabase
+          .from("usuarios")
+          .select("*")
+          .ilike("ids_antigos", `%${rawId}%`)
+          .maybeSingle();
 
-      if (!errorJogo && dataJogo) {
-        user = dataJogo;
-      }
+        if (dataAntigo) {
+          user = dataAntigo;
+        }
+      } catch (_) {}
     }
 
     if (!user) {
@@ -80,6 +82,7 @@ export async function POST(request) {
 
     // Senha incorreta
     if (senhaDb !== rawSenha) {
+      console.warn(`[LOGIN 401] ID: "${rawId}" (${user?.nome}). Senha digitada incorreta.`);
       return NextResponse.json(
         { error: "Senha incorreta. Verifique sua senha." },
         { status: 401 }
