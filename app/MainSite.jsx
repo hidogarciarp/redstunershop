@@ -3251,15 +3251,19 @@ export function MainSite({ isV2 = true } = {}) {
   const confirmarPagamentoSemanal = async (pagId, funcId, funcNome, linkComprovante = null, dataDomingo = null) => {
     const agora = new Date().toISOString();
     
-    // 1. Atualizar o registro de pagamento
+    // 1. Atualizar o registro de pagamento (preserva comprovante existente se nenhum novo for fornecido)
+    const updatePagPayload = {
+      confirmado: true,
+      confirmado_por: usuarioLogado?.id || null,
+      confirmado_em: agora,
+    };
+    if (linkComprovante && String(linkComprovante).trim()) {
+      updatePagPayload.comprovante_link = String(linkComprovante).trim();
+    }
+
     const { error: errorPag } = await supabase
       .from("pagamentos_semanais")
-      .update({ 
-        confirmado: true, 
-        confirmado_por: usuarioLogado.id, 
-        confirmado_em: agora,
-        comprovante_link: linkComprovante 
-      })
+      .update(updatePagPayload)
       .eq("id", pagId);
 
     if (errorPag) {
@@ -3268,14 +3272,14 @@ export function MainSite({ isV2 = true } = {}) {
     }
 
     // 2. Lógica de atualização de vencimento do funcionário
-    // Só avançamos o vencimento se o Domingo dessa semana for maior que o vencimento atual dele
     const func = financasFuncionarios.find((f) => f.id === funcId);
     
     let deveAtualizarVencimento = false;
     let novaDataVencimento = null;
+    const hojeStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 
     if (dataDomingo) {
-      if (!func?.data_vencimento || func.data_vencimento < dataDomingo) {
+      if (!func?.data_vencimento || func.data_vencimento <= dataDomingo) {
         deveAtualizarVencimento = true;
         // Se pagou o domingo X, o vencimento é o domingo X + 7
         const dataV = new Date(dataDomingo + "T12:00:00");
@@ -3292,6 +3296,15 @@ export function MainSite({ isV2 = true } = {}) {
       nova.setDate(nova.getDate() + (diasAteDomingo === 0 ? 7 : diasAteDomingo));
       novaDataVencimento = nova.toLocaleDateString("en-CA");
       deveAtualizarVencimento = true;
+    }
+
+    // Se o novo vencimento ainda ficou no passado em relação a hoje,
+    // avança para o próximo domingo para impedir que o funcionário aprovado seja rebloqueado
+    if (deveAtualizarVencimento && novaDataVencimento && novaDataVencimento < hojeStr) {
+      const d = new Date();
+      const diasAteDom = 7 - d.getDay();
+      d.setDate(d.getDate() + (diasAteDom === 0 ? 7 : diasAteDom));
+      novaDataVencimento = d.toLocaleDateString("en-CA");
     }
 
     const updateData = {
@@ -3848,43 +3861,49 @@ export function MainSite({ isV2 = true } = {}) {
       if (resParaLink) {
         try {
           const data = await resParaLink.json();
-          const msgId = data.id;
-          const chanId = data.channel_id;
-          const gldId = data.guild_id || "1486119705814106307";
+          if (data?.message_url) {
+            linkDiscord = data.message_url;
+          } else {
+            const msgId = data?.id;
+            const chanId = data?.channel_id || (okPag ? "1486119707416334595" : "1492627784470888538");
+            const gldId = data?.guild_id || (okPag ? "1486119705814106307" : "1388165063155646524");
 
-          if (msgId && chanId) {
-            linkDiscord = `https://discord.com/channels/${gldId}/${chanId}/${msgId}`;
-          } else if (data.embeds?.[0]?.image?.url) {
-            linkDiscord = data.embeds[0].image.url;
-          } else if (data.attachments?.[0]?.url) {
-            linkDiscord = data.attachments[0].url;
+            if (msgId && chanId) {
+              linkDiscord = `https://discord.com/channels/${gldId}/${chanId}/${msgId}`;
+            } else if (data?.attachments?.[0]?.url) {
+              linkDiscord = data.attachments[0].url;
+            } else if (data?.embeds?.[0]?.image?.url && !data.embeds[0].image.url.startsWith("attachment://")) {
+              linkDiscord = data.embeds[0].image.url;
+            }
           }
         } catch (e) {
           console.warn("Erro ao extrair link do Discord:", e);
         }
       }
 
-      // Verificar se já existe um registro pendente sem comprovante para esta semana
+      // Verificar se já existe um registro pendente para esta semana (mesmo que sem comprovante)
       let registroExistente = null;
       if (semanaSelecionada) {
         const { data: ext } = await supabase
           .from("pagamentos_semanais")
-          .select("id")
+          .select("id, comprovante_link")
           .eq("funcionario_id", usuarioLogado.id)
           .eq("confirmado", false)
-          .is("comprovante_link", null)
           .ilike("observacao", `%${semanaSelecionada}%`)
+          .order("criado_em", { ascending: false })
           .limit(1)
           .maybeSingle();
         registroExistente = ext;
       }
+
+      const comprovanteFinal = linkDiscord || registroExistente?.comprovante_link || null;
 
       if (registroExistente) {
         await supabase
           .from("pagamentos_semanais")
           .update({
             valor: valorNumerico,
-            comprovante_link: linkDiscord || null,
+            comprovante_link: comprovanteFinal,
             observacao: `[${semanaSelecionada}] ` + (observacaoPagamento?.trim() || "")
           })
           .eq("id", registroExistente.id);
@@ -3894,7 +3913,7 @@ export function MainSite({ isV2 = true } = {}) {
           funcionario_nome: usuarioLogado.nome,
           valor: valorNumerico,
           confirmado: false,
-          comprovante_link: linkDiscord || null,
+          comprovante_link: comprovanteFinal,
           observacao: (semanaSelecionada ? `[${semanaSelecionada}] ` : "") + (observacaoPagamento?.trim() || "")
         });
       }

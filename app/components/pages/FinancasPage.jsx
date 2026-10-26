@@ -47,7 +47,7 @@ export default function FinancasPage({
   const [funcSelecionado, setFuncSelecionado] = useState(null);
   const [linksTemporarios, setLinksTemporarios] = useState({});
   const [rowsEmEdicao, setRowsEmEdicao] = useState({});
-  const [subAba, setSubAba] = useState("aprovacoes"); // "aprovacoes" | "geral" | "devedores"
+  const [subAba, setSubAba] = useState("geral"); // "geral" | "devedores"
   const [filtroFila, setFiltroFila] = useState("pendentes"); // "pendentes" | "todos" | "aprovados" | "bloqueados" | "comprovante"
   const [buscaFila, setBuscaFila] = useState("");
   const [modalContratacoesSemCobranca, setModalContratacoesSemCobranca] = useState(false);
@@ -620,12 +620,28 @@ export default function FinancasPage({
               <tbody>
                 {semanas.map((sem, idx) => {
                   const pag =
-                    historicoFunc.find((p) => p.observacao?.includes(sem.label)) ||
-                    historicoFunc.find((p) => {
-                      const temOutroLabel = semanas.some((s) => s.label !== sem.label && p.observacao?.includes(s.label));
-                      if (temOutroLabel) return false;
-                      return p.criado_em >= sem.inicio && p.criado_em <= sem.fim + "T23:59:59";
-                    });
+                    historicoFunc
+                      .filter((p) => p.observacao?.includes(sem.label))
+                      .sort((a, b) => {
+                        if (a.confirmado && !b.confirmado) return -1;
+                        if (!a.confirmado && b.confirmado) return 1;
+                        if (a.comprovante_link && !b.comprovante_link) return -1;
+                        if (!a.comprovante_link && b.comprovante_link) return 1;
+                        return new Date(b.criado_em || 0) - new Date(a.criado_em || 0);
+                      })[0] ||
+                    historicoFunc
+                      .filter((p) => {
+                        const temOutroLabel = semanas.some((s) => s.label !== sem.label && p.observacao?.includes(s.label));
+                        if (temOutroLabel) return false;
+                        return p.criado_em >= sem.inicio && p.criado_em <= sem.fim + "T23:59:59";
+                      })
+                      .sort((a, b) => {
+                        if (a.confirmado && !b.confirmado) return -1;
+                        if (!a.confirmado && b.confirmado) return 1;
+                        if (a.comprovante_link && !b.comprovante_link) return -1;
+                        if (!a.comprovante_link && b.comprovante_link) return 1;
+                        return new Date(b.criado_em || 0) - new Date(a.criado_em || 0);
+                      })[0];
 
                   const rowKey = `row-${funcSelecionado.id}-${idx}`;
                   const isConfirmado = pag?.confirmado;
@@ -1893,41 +1909,6 @@ export default function FinancasPage({
         <div style={{ display: "flex", gap: "8px", marginBottom: "22px", background: "rgba(0,0,0,0.35)", padding: "5px", borderRadius: "12px", width: "fit-content", flexWrap: "wrap" }}>
           <button
             type="button"
-            onClick={() => setSubAba("aprovacoes")}
-            style={{
-              background: subAba === "aprovacoes" ? "#facc15" : "transparent",
-              color: subAba === "aprovacoes" ? "#000" : theme.subtext,
-              border: "none",
-              padding: "9px 20px",
-              borderRadius: "8px",
-              cursor: "pointer",
-              fontWeight: "900",
-              fontSize: "12px",
-              transition: "all 0.2s",
-              display: "flex",
-              alignItems: "center",
-              gap: "7px",
-            }}
-          >
-            📥 Fila de Aprovações & Pagamentos
-            {qtdPendentesComprovante > 0 && (
-              <span
-                style={{
-                  background: subAba === "aprovacoes" ? "#000" : "#ef4444",
-                  color: "#fff",
-                  fontSize: "10px",
-                  fontWeight: "900",
-                  padding: "1px 7px",
-                  borderRadius: "10px",
-                }}
-              >
-                {qtdPendentesComprovante}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
             onClick={() => setSubAba("geral")}
             style={{
               background: subAba === "geral" ? theme.accent : "transparent",
@@ -1957,15 +1938,30 @@ export default function FinancasPage({
               fontWeight: "800",
               fontSize: "12px",
               transition: "all 0.2s",
+              display: "flex",
+              alignItems: "center",
+              gap: "7px",
             }}
           >
             ⚠️ Resumo de Atrasos
+            {qtdPendentesComprovante > 0 && (
+              <span
+                style={{
+                  background: subAba === "devedores" ? "#000" : "#facc15",
+                  color: subAba === "devedores" ? "#fff" : "#000",
+                  fontSize: "10px",
+                  fontWeight: "900",
+                  padding: "1px 7px",
+                  borderRadius: "10px",
+                }}
+              >
+                {qtdPendentesComprovante}
+              </span>
+            )}
           </button>
         </div>
 
-        {subAba === "aprovacoes" ? (
-          renderFilaAprovacoes()
-        ) : subAba === "geral" ? (
+        {subAba === "geral" ? (
           <>
             {/* Banner de alerta no topo se houver comprovantes pendentes */}
             {qtdPendentesComprovante > 0 && (
@@ -1997,7 +1993,7 @@ export default function FinancasPage({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setSubAba("aprovacoes")}
+                  onClick={() => setSubAba("devedores")}
                   style={{
                     background: "linear-gradient(135deg, #eab308 0%, #ca8a04 100%)",
                     color: "#000",
@@ -2010,7 +2006,7 @@ export default function FinancasPage({
                     boxShadow: "0 4px 14px rgba(234,179,8,0.3)",
                   }}
                 >
-                  ⚡ Ver Fila de Aprovação
+                  ⚡ Ver Resumo & Comprovantes
                 </button>
               </div>
             )}

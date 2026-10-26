@@ -38,6 +38,23 @@ const getWebhookUrl = (tipo) => {
   return url;
 };
 
+const WEBHOOK_GUILDS = {
+  pagamentos: "1486119705814106307",
+  caixa2: "1388165063155646524",
+  rodas: "1486119705814106307",
+  report: "1486119705814106307",
+  reboque: "1486119705814106307",
+  guincho: "1486119705814106307",
+  vendas: "1486119705814106307",
+  tunagem: "1486119705814106307",
+  estetica: "1486119705814106307",
+};
+
+const WEBHOOK_CHANNELS = {
+  pagamentos: "1486119707416334595",
+  caixa2: "1492627784470888538",
+};
+
 export async function POST(request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -108,9 +125,20 @@ export async function POST(request) {
 
     const responseData = await discordResponse.json().catch(() => ({}));
 
-    // Injeta channel_id se ausente para facilitar a geração de link pelo cliente
-    if (responseData && !responseData.channel_id && activeWebhookUrl.includes("/webhooks/")) {
-      responseData.channel_id = activeWebhookUrl.split("/webhooks/")[1]?.split("/")[0];
+    if (responseData && typeof responseData === "object") {
+      const gId = responseData.guild_id || WEBHOOK_GUILDS[tipo] || "1486119705814106307";
+      const cId = responseData.channel_id || WEBHOOK_CHANNELS[tipo];
+      const mId = responseData.id;
+
+      if (!responseData.guild_id && gId) responseData.guild_id = gId;
+      if (!responseData.channel_id && cId) responseData.channel_id = cId;
+
+      if (mId && cId && gId) {
+        responseData.message_url = `https://discord.com/channels/${gId}/${cId}/${mId}`;
+      }
+      if (responseData.attachments?.[0]?.url) {
+        responseData.attachment_url = responseData.attachments[0].url;
+      }
     }
 
     return NextResponse.json(responseData, {
