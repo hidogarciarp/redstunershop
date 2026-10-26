@@ -3802,6 +3802,57 @@ export function MainSite({ isV2 = true } = {}) {
     const valorNumerico = Number(String(valorPagamentoRegistro).replace(/\D/g, ""));
     if (!valorNumerico || valorNumerico <= 0) { alert("⚠️ Informe um valor válido."); return; }
 
+    // Validação de restrição de semana seguinte caso haja semana anterior em aberto
+    if (semanaSelecionada && usuarioLogado.id && semanaSelecionada.includes("Semana de ")) {
+      try {
+        const { data: pagsExistentes } = await supabase
+          .from("pagamentos_semanais")
+          .select("id, observacao, confirmado, comprovante_link")
+          .eq("funcionario_id", usuarioLogado.id);
+
+        const dataMarcoZero = new Date("2026-10-12T12:00:00");
+        const hoje = new Date();
+        const diaSemana = hoje.getDay();
+        const diffParaSegunda = diaSemana === 0 ? -6 : 1 - diaSemana;
+        const segundaAtual = new Date(hoje);
+        segundaAtual.setDate(hoje.getDate() + diffParaSegunda);
+        segundaAtual.setHours(12, 0, 0, 0);
+
+        let curr = new Date(dataMarcoZero);
+        let semanaPendenteAnterior = null;
+
+        while (curr <= segundaAtual) {
+          const dom = new Date(curr);
+          dom.setDate(curr.getDate() + 6);
+          const fD = (d) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+          const label = `Semana de ${fD(curr)} até ${fD(dom)}`;
+          const domStr = dom.toISOString().split("T")[0];
+
+          if (label === semanaSelecionada) {
+            if (semanaPendenteAnterior) {
+              alert(`⚠️ Pagamento restrito! Você precisa quitar primeiro a semana anterior em débito: ${semanaPendenteAnterior}`);
+              return;
+            }
+            break;
+          }
+
+          const cobertoPeloVencimento = usuarioLogado.data_vencimento && domStr <= usuarioLogado.data_vencimento;
+          const jaPago = pagsExistentes?.some(
+            (p) => p.observacao?.includes(label) && (p.confirmado || p.comprovante_link)
+          );
+
+          if (!cobertoPeloVencimento && !jaPago) {
+            semanaPendenteAnterior = label;
+          }
+
+          curr = new Date(curr);
+          curr.setDate(curr.getDate() + 7);
+        }
+      } catch (e) {
+        console.warn("Aviso na validação de restrição de semana:", e);
+      }
+    }
+
     const embed = {
       title: "💸 REGISTRO DE PAGAMENTO",
       color: 5763719,

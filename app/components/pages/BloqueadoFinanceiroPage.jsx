@@ -35,6 +35,11 @@ export default function BloqueadoFinanceiroPage({
   const [enviando, setEnviando] = useState(false);
 
   const handleEnviarComprovante = async () => {
+    const semObj = semanasDisponiveis.find((s) => s.label === semanaSelecionada);
+    if (semObj?.bloqueada) {
+      alert(`⚠️ Semana restrita! Quite a semana anterior pendente primeiro: ${semObj.motivoBloqueio}`);
+      return;
+    }
     try {
       setEnviando(true);
       await enviarRegistroPagamento(semanaSelecionada === "Outra" ? "" : semanaSelecionada);
@@ -54,7 +59,6 @@ export default function BloqueadoFinanceiroPage({
   }, [usuarioLogado?.valor_semanal, valorPagamentoRegistro]);
 
   useEffect(() => {
-    const semanas = [];
     const hoje = new Date();
     const diaSemana = hoje.getDay();
     const diffParaSegunda = diaSemana === 0 ? -6 : 1 - diaSemana;
@@ -63,18 +67,24 @@ export default function BloqueadoFinanceiroPage({
     segundaAtual.setDate(hoje.getDate() + diffParaSegunda);
     segundaAtual.setHours(12, 0, 0, 0);
 
-    for (let i = 0; i < 5; i++) {
-      const s = new Date(segundaAtual);
-      s.setDate(segundaAtual.getDate() - i * 7);
-      const dom = new Date(s);
-      dom.setDate(s.getDate() + 6);
+    const dataMarcoZero = new Date("2026-10-12T12:00:00");
 
-      const label = `Semana de ${s.toLocaleDateString("pt-BR").slice(0, 5)} até ${dom.toLocaleDateString("pt-BR").slice(0, 5)}`;
+    // Gerar semanas cronologicamente a partir do Marco Zero (12/10/2026) até a semana atual
+    const cronologicas = [];
+    let curr = new Date(dataMarcoZero);
 
-      // Filtrar se já está pago (confirmado)
-      const jaPago = meusPagamentos?.some((pag) => pag.confirmado && pag.observacao?.includes(label));
+    while (curr <= segundaAtual) {
+      const dom = new Date(curr);
+      dom.setDate(curr.getDate() + 6);
+      const fD = (d) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = `Semana de ${fD(curr)} até ${fD(dom)}`;
+      const domStr = dom.toISOString().split("T")[0];
 
-      // Filtrar por data de admissão (semana da admissão não cobra)
+      const cobertoPeloVencimento = usuarioLogado?.data_vencimento && domStr <= usuarioLogado.data_vencimento;
+      const jaPago = meusPagamentos?.some(
+        (pag) => pag.observacao?.includes(label) && (pag.confirmado || pag.comprovante_link)
+      );
+
       let isentoPorAdmissao = false;
       if (usuarioLogado?.data_admissao) {
         const adm = new Date(usuarioLogado.data_admissao + "T12:00:00");
@@ -84,16 +94,59 @@ export default function BloqueadoFinanceiroPage({
         segAdm.setDate(adm.getDate() + diffS);
         const domAdm = new Date(segAdm);
         domAdm.setDate(segAdm.getDate() + 6);
-
         if (dom <= domAdm) isentoPorAdmissao = true;
       }
 
-      if (!jaPago && !isentoPorAdmissao) {
-        semanas.push({ label, isAtual: i === 0 });
+      cronologicas.push({
+        label,
+        inicio: curr.toISOString().split("T")[0],
+        fim: domStr,
+        isAtual: curr.getTime() === segundaAtual.getTime(),
+        quitado: Boolean(jaPago || cobertoPeloVencimento || isentoPorAdmissao),
+      });
+
+      curr = new Date(curr);
+      curr.setDate(curr.getDate() + 7);
+    }
+
+    // Regra: Restringir semana seguinte se não tiver feito o pagamento da semana anterior
+    let primeiraPendente = null;
+    const listaFinal = [];
+
+    for (const sem of cronologicas) {
+      if (sem.quitado) {
+        continue;
+      }
+
+      if (!primeiraPendente) {
+        primeiraPendente = sem.label;
+        listaFinal.push({
+          ...sem,
+          bloqueada: false,
+        });
+      } else {
+        listaFinal.push({
+          ...sem,
+          bloqueada: true,
+          motivoBloqueio: `Pague a ${primeiraPendente} primeiro`,
+        });
       }
     }
-    setSemanasDisponiveis(semanas);
-    if (semanas.length > 0) setSemanaSelecionada(semanas[0].label);
+
+    if (listaFinal.length === 0) {
+      const domAtual = new Date(segundaAtual);
+      domAtual.setDate(segundaAtual.getDate() + 6);
+      const fD = (d) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+      listaFinal.push({
+        label: `Semana de ${fD(segundaAtual)} até ${fD(domAtual)}`,
+        isAtual: true,
+        bloqueada: false,
+      });
+    }
+
+    setSemanasDisponiveis(listaFinal);
+    const primeiraLiberada = listaFinal.find((s) => !s.bloqueada) || listaFinal[0];
+    if (primeiraLiberada) setSemanaSelecionada(primeiraLiberada.label);
   }, [meusPagamentos, usuarioLogado]);
 
   useEffect(() => {
@@ -312,15 +365,41 @@ export default function BloqueadoFinanceiroPage({
                 <select
                   style={{ ...styles.select, marginBottom: 0, background: "#050505", border: "1px solid #333" }}
                   value={semanaSelecionada}
-                  onChange={(e) => setSemanaSelecionada(e.target.value)}
+                  onChange={(e) => {
+                    const escolhida = semanasDisponiveis.find((s) => s.label === e.target.value);
+                    if (escolhida?.bloqueada) {
+                      alert(`⚠️ Semana restrita! Você precisa quitar a semana anterior primeiro (${escolhida.motivoBloqueio}).`);
+                      return;
+                    }
+                    setSemanaSelecionada(e.target.value);
+                  }}
                 >
                   {semanasDisponiveis.map((s, i) => (
-                    <option key={i} value={s.label}>
-                      {s.label} {s.isAtual ? "(Atual)" : ""}
+                    <option key={i} value={s.label} disabled={s.bloqueada} style={{ color: s.bloqueada ? "#888" : "#fff" }}>
+                      {s.label} {s.isAtual ? "(Atual)" : ""} {s.bloqueada ? `🔒 (${s.motivoBloqueio})` : ""}
                     </option>
                   ))}
-                  <option value="Outra">Outra / Pendência</option>
+                  {!semanasDisponiveis.some(s => s.bloqueada) && (
+                    <option value="Outra">Outra / Pendência</option>
+                  )}
                 </select>
+                {semanasDisponiveis.some(s => s.bloqueada) && (
+                  <div style={{
+                    background: "rgba(239, 68, 68, 0.14)",
+                    border: "1px solid rgba(239, 68, 68, 0.4)",
+                    borderRadius: "10px",
+                    padding: "8px 12px",
+                    marginTop: "8px",
+                    fontSize: "11.5px",
+                    color: "#fca5a5",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}>
+                    <span>⚠️</span>
+                    <span>Semanas seguintes restritas até a quitação da anterior.</span>
+                  </div>
+                )}
               </div>
 
               <div style={{ marginBottom: "12px" }}>

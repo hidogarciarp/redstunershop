@@ -269,55 +269,99 @@ export default function MinhaContaPage({
   }, [usuarioLogado, supabase]);
 
   useEffect(() => {
-    const semanas = [];
     const hoje = new Date();
-    // Ajustar para o fuso do Brasil, ou usar as datas locais
     const diaSemana = hoje.getDay();
     const diffParaSegunda = diaSemana === 0 ? -6 : 1 - diaSemana;
     
     const segundaAtual = new Date(hoje);
     segundaAtual.setDate(hoje.getDate() + diffParaSegunda);
-    segundaAtual.setHours(12, 0, 0, 0); // Meio dia para evitar bugs de fuso horário
+    segundaAtual.setHours(12, 0, 0, 0);
 
-    const dataInauguracao = new Date("2026-04-06T12:00:00");
+    const dataMarcoZero = new Date("2026-10-12T12:00:00");
 
-    for (let i = 0; i < 15; i++) {
-      const s = new Date(segundaAtual);
-      s.setDate(segundaAtual.getDate() - (i * 7));
-      
-      if (s < dataInauguracao) break; // Trava de segurança: inauguração da loja
+    // Gerar semanas cronologicamente a partir do Marco Zero (12/10/2026) até a semana atual
+    const cronologicas = [];
+    let curr = new Date(dataMarcoZero);
 
-      const dom = new Date(s);
-      dom.setDate(s.getDate() + 6);
-      
+    while (curr <= segundaAtual) {
+      const dom = new Date(curr);
+      dom.setDate(curr.getDate() + 6);
       const fD = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const label = `Semana de ${fD(s)} até ${fD(dom)}`;
-      
+      const label = `Semana de ${fD(curr)} até ${fD(dom)}`;
       const domStr = dom.toISOString().split("T")[0];
+
       const cobertoPeloVencimento = vencimento && domStr <= vencimento;
-      const jaPago = meusPagamentos?.some(pag => pag.observacao?.includes(label) && (pag.confirmado || pag.comprovante_link));
-      
-      // Filtrar por data de admissão (semana da admissão não cobra)
+      const jaPago = meusPagamentos?.some(
+        (pag) => pag.observacao?.includes(label) && (pag.confirmado || pag.comprovante_link)
+      );
+
+      let isentoPorAdmissao = false;
       if (usuarioLogado?.data_admissao) {
         let admStr = usuarioLogado.data_admissao;
         if (admStr.includes("/")) {
           const [d, m, y] = admStr.split("/");
           admStr = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
         }
-        const domStr = dom.toISOString().split("T")[0];
-        
-        // Se o domingo da semana for anterior à data de admissão, não mostra nem essa nem as anteriores
-        if (domStr < admStr) break;
+        const admDate = new Date(admStr + "T12:00:00");
+        const diaAdm = admDate.getDay();
+        const diffAdm = diaAdm === 0 ? -6 : 1 - diaAdm;
+        const segAdm = new Date(admDate);
+        segAdm.setDate(admDate.getDate() + diffAdm);
+        const domAdm = new Date(segAdm);
+        domAdm.setDate(segAdm.getDate() + 6);
+        if (dom <= domAdm) isentoPorAdmissao = true;
       }
 
-      const temCobrancaPendenteSemComprovante = meusPagamentos?.some(pag => pag.observacao?.includes(label) && !pag.confirmado && !pag.comprovante_link);
+      cronologicas.push({
+        label,
+        inicio: curr.toISOString().split("T")[0],
+        fim: domStr,
+        isAtual: curr.getTime() === segundaAtual.getTime(),
+        quitado: Boolean(jaPago || cobertoPeloVencimento || isentoPorAdmissao),
+      });
 
-      if (temCobrancaPendenteSemComprovante || (!jaPago && !cobertoPeloVencimento)) {
-        semanas.push({ label, isAtual: i === 0 });
+      curr = new Date(curr);
+      curr.setDate(curr.getDate() + 7);
+    }
+
+    // Regra: Restringir semana seguinte se não tiver feito o pagamento da semana anterior
+    let primeiraPendente = null;
+    const listaFinal = [];
+
+    for (const sem of cronologicas) {
+      if (sem.quitado) {
+        continue;
+      }
+
+      if (!primeiraPendente) {
+        primeiraPendente = sem.label;
+        listaFinal.push({
+          ...sem,
+          bloqueada: false,
+        });
+      } else {
+        listaFinal.push({
+          ...sem,
+          bloqueada: true,
+          motivoBloqueio: `Pague a ${primeiraPendente} primeiro`,
+        });
       }
     }
-    setSemanasDisponiveis(semanas);
-    if (semanas.length > 0) setSemanaSelecionada(semanas[0].label);
+
+    if (listaFinal.length === 0) {
+      const domAtual = new Date(segundaAtual);
+      domAtual.setDate(segundaAtual.getDate() + 6);
+      const fD = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+      listaFinal.push({
+        label: `Semana de ${fD(segundaAtual)} até ${fD(domAtual)}`,
+        isAtual: true,
+        bloqueada: false,
+      });
+    }
+
+    setSemanasDisponiveis(listaFinal);
+    const primeiraLiberada = listaFinal.find((s) => !s.bloqueada) || listaFinal[0];
+    if (primeiraLiberada) setSemanaSelecionada(primeiraLiberada.label);
   }, [meusPagamentos, usuarioLogado, vencimento]);
 
   const statusFinanceiro = bloqueado
@@ -902,13 +946,41 @@ export default function MinhaContaPage({
                 <select
                   style={{ ...styles.select, marginBottom: "8px", fontSize: "13px" }}
                   value={semanaSelecionada}
-                  onChange={(e) => setSemanaSelecionada(e.target.value)}
+                  onChange={(e) => {
+                    const escolhida = semanasDisponiveis.find((s) => s.label === e.target.value);
+                    if (escolhida?.bloqueada) {
+                      alert(`⚠️ Semana restrita! Você precisa quitar a semana anterior primeiro (${escolhida.motivoBloqueio}).`);
+                      return;
+                    }
+                    setSemanaSelecionada(e.target.value);
+                  }}
                 >
                   {semanasDisponiveis.map((s, i) => (
-                    <option key={i} value={s.label}>{s.label} {i === 0 ? "(Atual)" : ""}</option>
+                    <option key={i} value={s.label} disabled={s.bloqueada} style={{ color: s.bloqueada ? "#888" : "#fff" }}>
+                      {s.label} {s.isAtual ? "(Atual)" : ""} {s.bloqueada ? `🔒 (${s.motivoBloqueio})` : ""}
+                    </option>
                   ))}
-                  <option value="Outra">Outra / Pendência</option>
+                  {!semanasDisponiveis.some(s => s.bloqueada) && (
+                    <option value="Outra">Outra / Pendência</option>
+                  )}
                 </select>
+                {semanasDisponiveis.some(s => s.bloqueada) && (
+                  <div style={{
+                    background: "rgba(239, 68, 68, 0.12)",
+                    border: "1px solid rgba(239, 68, 68, 0.35)",
+                    borderRadius: "8px",
+                    padding: "8px 10px",
+                    marginBottom: "8px",
+                    fontSize: "11.5px",
+                    color: "#fca5a5",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}>
+                    <span>⚠️</span>
+                    <span>Semanas seguintes restritas até a quitação da anterior.</span>
+                  </div>
+                )}
 
                 <input
                   style={{ ...styles.input, marginBottom: "8px" }}
@@ -929,7 +1001,14 @@ export default function MinhaContaPage({
                   onChange={(e) => setReportLinkSemanal(e.target.value)}
                 />
                 <button
-                  onClick={() => reportarPagamentoSemanal(semanaSelecionada === "Outra" ? "" : semanaSelecionada)}
+                  onClick={() => {
+                    const semObj = semanasDisponiveis.find((s) => s.label === semanaSelecionada);
+                    if (semObj?.bloqueada) {
+                      alert(`⚠️ Semana restrita! Quite a semana anterior pendente primeiro: ${semObj.motivoBloqueio}`);
+                      return;
+                    }
+                    reportarPagamentoSemanal(semanaSelecionada === "Outra" ? "" : semanaSelecionada);
+                  }}
                   style={{ background: "linear-gradient(135deg, #14532d, #22c55e)", color: "#fff", border: "none", padding: "10px", borderRadius: "9px", width: "100%", fontWeight: "700", cursor: "pointer", fontSize: "13px" }}
                 >
                   📨 Reportar para o Administrador
