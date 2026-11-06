@@ -131,6 +131,7 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const ultimoToastRef = useRef({ texto: "", time: 0 });
+  const ultimaSyncTunagensRef = useRef(0);
 
   const adicionarToast = ({ mensagem, tipo = "info", titulo = "", duracao = 4200 }) => {
     if (!mensagem) return;
@@ -4870,52 +4871,57 @@ export function MainSite({ isV2 = true } = {}) {
       })
       .subscribe();
 
-    // 3. Auto-sincronização de contingência retroativa (resgata mensagens perdidas se o site estava fechado ou suspenso)
+    // 3. Auto-sincronização de contingência ultra-leve (protegida contra egress e log ingestion)
     const sincronizarTunagensRetroativas = async () => {
       try {
-        const dataLimite = new Date(Date.now() - 4 * 3600 * 1000).toISOString();
+        const agora = Date.now();
+        // Cooldown rigoroso de 5 minutos: evita queries sucessivas em trocas de aba (Alt+Tab)
+        if (agora - ultimaSyncTunagensRef.current < 5 * 60 * 1000) return;
+        ultimaSyncTunagensRef.current = agora;
+
+        // Janela enxuta (últimas 2h) filtrada estritamente no canal da RED'S e limitada a 15 itens
+        const dataLimite = new Date(agora - 2 * 3600 * 1000).toISOString();
         const { data: msgsRecentes } = await supabase
           .from("discord_log_messages")
-          .select("id, channel_id, log_type, mechanic_id, content, created_at")
-          .in("log_type", ["servicos", "tunagem"])
+          .select("id, channel_id, content, created_at")
+          .eq("channel_id", "1544859496701108325")
           .gte("created_at", dataLimite)
           .order("created_at", { ascending: false })
-          .limit(80);
+          .limit(15);
 
         if (!msgsRecentes || msgsRecentes.length === 0) return;
 
+        const candidatos = [];
         for (const msg of msgsRecentes) {
           if (!msg.content || msg.content.includes("NÃO SALVO") || msg.content.includes("TUNAGEM SEM DONO") || msg.content.includes("Simulador")) continue;
-          if (!msg.content.includes("[TUNAGEM DE VEÍCULO]") && msg.log_type !== "servicos" && msg.log_type !== "tunagem") continue;
+          if (!msg.content.includes("[TUNAGEM DE VEÍCULO]")) continue;
 
           const logsParsed = parseLogsTunagemTexto(msg.content);
           if (!logsParsed || logsParsed.length === 0) continue;
           const novoLog = logsParsed[0];
-          if (novoLog.tecnico_id === "0") continue;
+          if (!novoLog?.uuid || novoLog.tecnico_id === "0") continue;
 
-          const oficina = (novoLog.oficina_nome || "").toLowerCase();
-          const msgContent = (msg.content || "").toLowerCase();
-          const isBeachOuVespucci = oficina.includes("beach") || oficina.includes("vespucci") || msgContent.includes("beach") || msgContent.includes("vespucci");
-          const isHarmony = oficina.includes("harmony") || msgContent.includes("harmony");
-          const isDudarkOuSalt = oficina.includes("dudark") || oficina.includes("salt") || oficina.includes("lab") || msgContent.includes("dudark") || msgContent.includes("salt") || msgContent.includes("lab");
+          novoLog.discord_message_id = String(msg.id);
+          novoLog.discord_channel_id = msg.channel_id;
+          novoLog.timestampz = msg.created_at || new Date().toISOString();
+          novoLog.mecanica_id = "reds";
+          candidatos.push(novoLog);
+        }
 
-          let targetMechanic = "outras";
-          if (isBeachOuVespucci) targetMechanic = "vespucci";
-          else if (isHarmony) targetMechanic = "harmony";
-          else if (isDudarkOuSalt) targetMechanic = "dudark";
-          else if (oficina.includes("red") || msgContent.includes("red's") || msgContent.includes("reds")) targetMechanic = "reds";
-          else if (msg.mechanic_id && msg.mechanic_id.toLowerCase().includes("red") && !isBeachOuVespucci && !isHarmony && !isDudarkOuSalt) targetMechanic = "reds";
-          else if (msg.channel_id === "1544859496701108325" && !isBeachOuVespucci && !isHarmony && !isDudarkOuSalt) targetMechanic = "reds";
+        if (candidatos.length === 0) return;
 
-          if (targetMechanic === "reds") {
-            novoLog.discord_message_id = msg.discord_id || String(msg.id);
-            novoLog.discord_channel_id = msg.channel_id;
-            novoLog.timestampz = msg.created_at || new Date().toISOString();
-            novoLog.mecanica_id = "reds";
-            try {
-              await supabase.from("log_tunagem").upsert([novoLog], { onConflict: "uuid" });
-            } catch (_) {}
-          }
+        // Verificação prévia de UUIDs: se já estão todos no banco, não dispara NENHUM upsert (0 log ingestion)
+        const uuids = candidatos.map((c) => c.uuid);
+        const { data: jaCadastrados } = await supabase
+          .from("log_tunagem")
+          .select("uuid")
+          .in("uuid", uuids);
+
+        const setExistentes = new Set((jaCadastrados || []).map((j) => j.uuid));
+        const pendentes = candidatos.filter((c) => !setExistentes.has(c.uuid));
+
+        if (pendentes.length > 0) {
+          await supabase.from("log_tunagem").upsert(pendentes, { onConflict: "uuid" });
         }
       } catch (errSync) {
         console.warn("Aviso ao auto-sincronizar tunagens recentes:", errSync);

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { REGRAS_PRECOS, TABELA_PRECOS } from "../../utils/constants";
 import { supabase } from "../../utils/supabaseClient";
 import { analisarServicoTunagem, TABELA_CAMALEAO } from "../../utils/calculadoraTunagem";
@@ -212,9 +212,13 @@ export default function DashboardPage({
       )
       .subscribe();
 
+    const ultimoRecarregamentoRef = { current: Date.now() };
     const handleVisibility = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        carregarLogsRecentes(verTodosMecanicos);
+        if (Date.now() - ultimoRecarregamentoRef.current > 3 * 60 * 1000) {
+          ultimoRecarregamentoRef.current = Date.now();
+          carregarLogsRecentes(verTodosMecanicos);
+        }
       }
     };
     if (typeof document !== "undefined") {

@@ -250,9 +250,13 @@ export default function TunagemPage({
       })
       .subscribe();
 
+    const ultimoCarregamentoRef = { current: Date.now() };
     const handleVisibility = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        carregarDados();
+        if (Date.now() - ultimoCarregamentoRef.current > 5 * 60 * 1000) {
+          ultimoCarregamentoRef.current = Date.now();
+          carregarDados();
+        }
       }
     };
     if (typeof document !== "undefined") {
