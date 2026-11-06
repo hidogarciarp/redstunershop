@@ -200,51 +200,70 @@ export default function TunagemPage({
 
 
 
-  // Supabase Realtime Listener na tabela dedicada logs_tunagem_reds
+  // Supabase Realtime Listener na tabela de tunagens
   useEffect(() => {
+    const processarNovoLog = (novoLog) => {
+      if (!novoLog) return;
+
+      const ofc = (novoLog.oficina_nome || "").toLowerCase();
+      if (ofc && (ofc.includes("beach") || ofc.includes("vespucci") || ofc.includes("harmony") || ofc.includes("dudark") || ofc.includes("salt") || ofc.includes("lab"))) {
+        return;
+      }
+      const mecId = novoLog.mecanica_id || novoLog.mechanic_id;
+      if (mecId && mecId !== "reds") return;
+      if (!acessoTotalCentral && !isLogDoUsuario(novoLog)) return;
+
+      setLogsTunagem((prev) => [novoLog, ...prev.filter((l) => l.uuid !== novoLog.uuid)]);
+
+      const isMeu = usuarioLogado?.id && (String(novoLog.tecnico_id) === String(usuarioLogado.id) || String(novoLog.mechanic_id) === String(usuarioLogado.id));
+      const isAdmin = isAdminOuDono ? isAdminOuDono(usuarioLogado?.role) : (usuarioLogado?.role === "admin" || usuarioLogado?.role === "dono" || usuarioLogado?.role === "gerente");
+      const deveNotificar = isMeu || (isAdmin && notificarTodasTunagens);
+
+      if (deveNotificar) {
+        const analise = analisarServicoTunagem(novoLog.antes_json, novoLog.depois_json, novoLog.valor_pago || 0);
+        setNotificacaoRealtime({ log: novoLog, analise, isMeu, isAdmin });
+
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+          osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+          gain.gain.setValueAtTime(0.12, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.4);
+        } catch (e) {}
+      }
+    };
+
     const canalTunagem = supabase
       .channel("realtime-tunagem-direct-reds")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "log_tunagem" }, (payload) => {
+        processarNovoLog(payload.new);
+      })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "logs_tunagem_reds" }, (payload) => {
-        const novoLog = payload.new;
-        if (!novoLog) return;
-
-        const ofc = (novoLog.oficina_nome || "").toLowerCase();
-        if (ofc && (ofc.includes("beach") || ofc.includes("vespucci") || ofc.includes("harmony") || ofc.includes("dudark") || ofc.includes("salt") || ofc.includes("lab"))) {
-          return;
-        }
-        if (novoLog.mechanic_id && novoLog.mechanic_id !== "reds") return;
-        if (!acessoTotalCentral && !isLogDoUsuario(novoLog)) return;
-
-        setLogsTunagem((prev) => [novoLog, ...prev.filter((l) => l.uuid !== novoLog.uuid)]);
-
-        const isMeu = usuarioLogado?.id && (String(novoLog.tecnico_id) === String(usuarioLogado.id) || String(novoLog.mechanic_id) === String(usuarioLogado.id));
-        const isAdmin = isAdminOuDono ? isAdminOuDono(usuarioLogado?.role) : (usuarioLogado?.role === "admin" || usuarioLogado?.role === "dono" || usuarioLogado?.role === "gerente");
-        const deveNotificar = isMeu || (isAdmin && notificarTodasTunagens);
-
-        if (deveNotificar) {
-          const analise = analisarServicoTunagem(novoLog.antes_json, novoLog.depois_json, novoLog.valor_pago || 0);
-          setNotificacaoRealtime({ log: novoLog, analise, isMeu, isAdmin });
-
-          try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = "sine";
-            osc.frequency.setValueAtTime(587.33, ctx.currentTime);
-            osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
-            gain.gain.setValueAtTime(0.12, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.4);
-          } catch (e) {}
-        }
+        processarNovoLog(payload.new);
       })
       .subscribe();
 
+    const handleVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        carregarDados();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibility);
+    }
+
     return () => {
       supabase.removeChannel(canalTunagem);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibility);
+      }
     };
   }, [usuarioLogado, notificarTodasTunagens, isAdminOuDono, acessoTotalCentral, usuarioId]);
 

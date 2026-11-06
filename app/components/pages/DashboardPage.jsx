@@ -172,37 +172,60 @@ export default function DashboardPage({
   useEffect(() => {
     carregarLogsRecentes(verTodosMecanicos);
 
+    const handlePayload = (payload) => {
+      if (!payload.new) return;
+      const mec = payload.new.mecanica_id || payload.new.mechanic_id;
+      if (mec && mec !== "reds") return;
+
+      if (payload.eventType === "INSERT") {
+        const uId = String(usuarioLogado?.id || usuarioLogado?.id_jogo || "");
+        const uNome = (usuarioLogado?.nome || nomeMecanico || "").toLowerCase().trim();
+        const logTecId = String(payload.new.tecnico_id || "");
+        const logTecNome = (payload.new.tecnico_nome || "").toLowerCase().trim();
+
+        const isMeuLog = (uId && logTecId === uId) || (uNome && logTecNome.includes(uNome));
+
+        if (isMeuLog || (isDonoAdmin && verTodosMecanicos)) {
+          setLogsRecentes((prev) => {
+            const filtered = prev.filter((l) => l.uuid !== payload.new.uuid);
+            return [payload.new, ...filtered].slice(0, 30);
+          });
+        }
+      } else if (payload.eventType === "UPDATE") {
+        setLogsRecentes((prev) =>
+          prev.map((l) => (l.uuid === payload.new.uuid ? { ...l, ...payload.new } : l))
+        );
+      }
+    };
+
     const channel = supabase
       .channel("dashboard_logs_tunagem_live")
       .on(
         "postgres_changes",
+        { event: "*", schema: "public", table: "log_tunagem" },
+        handlePayload
+      )
+      .on(
+        "postgres_changes",
         { event: "*", schema: "public", table: "logs_tunagem_reds" },
-        (payload) => {
-          if (payload.eventType === "INSERT" && payload.new) {
-            const uId = String(usuarioLogado?.id || usuarioLogado?.id_jogo || "");
-            const uNome = (usuarioLogado?.nome || nomeMecanico || "").toLowerCase().trim();
-            const logTecId = String(payload.new.tecnico_id || "");
-            const logTecNome = (payload.new.tecnico_nome || "").toLowerCase().trim();
-
-            const isMeuLog = (uId && logTecId === uId) || (uNome && logTecNome.includes(uNome));
-
-            if (isMeuLog || (isDonoAdmin && verTodosMecanicos)) {
-              setLogsRecentes((prev) => {
-                const filtered = prev.filter((l) => l.uuid !== payload.new.uuid);
-                return [payload.new, ...filtered].slice(0, 30);
-              });
-            }
-          } else if (payload.eventType === "UPDATE" && payload.new) {
-            setLogsRecentes((prev) =>
-              prev.map((l) => (l.uuid === payload.new.uuid ? { ...l, ...payload.new } : l))
-            );
-          }
-        }
+        handlePayload
       )
       .subscribe();
 
+    const handleVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        carregarLogsRecentes(verTodosMecanicos);
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibility);
+    }
+
     return () => {
       supabase.removeChannel(channel);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibility);
+      }
     };
   }, [carregarLogsRecentes, usuarioLogado, nomeMecanico, isDonoAdmin, verTodosMecanicos]);
 
