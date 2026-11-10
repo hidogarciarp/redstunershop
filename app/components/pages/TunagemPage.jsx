@@ -245,9 +245,6 @@ export default function TunagemPage({
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "log_tunagem" }, (payload) => {
         processarNovoLog(payload.new);
       })
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "logs_tunagem_reds" }, (payload) => {
-        processarNovoLog(payload.new);
-      })
       .subscribe();
 
     const ultimoCarregamentoRef = { current: Date.now() };

@@ -205,11 +205,6 @@ export default function DashboardPage({
         { event: "*", schema: "public", table: "log_tunagem" },
         handlePayload
       )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "logs_tunagem_reds" },
-        handlePayload
-      )
       .subscribe();
 
     const ultimoRecarregamentoRef = { current: Date.now() };

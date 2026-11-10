@@ -4783,7 +4783,7 @@ export function MainSite({ isV2 = true } = {}) {
       }
     };
 
-    // 1. Canal dedicado para tunagens da RED'S (ouve tanto a tabela unificada log_tunagem quanto logs_tunagem_reds)
+    // 1. Canal dedicado para tunagens da RED'S na tabela unificada oficial
     const canalTunagemDirect = supabase
       .channel("global-tunagem-direct")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "log_tunagem" }, (payload) => {
@@ -4791,11 +4791,6 @@ export function MainSite({ isV2 = true } = {}) {
         if (!novoLog) return;
         const mec = novoLog.mecanica_id || novoLog.mechanic_id;
         if (mec && mec !== "reds") return;
-        dispararAlertaTunagem(novoLog);
-      })
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "logs_tunagem_reds" }, (payload) => {
-        const novoLog = payload.new;
-        if (!novoLog) return;
         dispararAlertaTunagem(novoLog);
       })
       .subscribe();
