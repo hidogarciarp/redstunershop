@@ -1,7 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import { supabase } from "../../utils/supabaseClient";
-import { getHorarioObrigatorioParaData, sincronizarPontosDiscordParaReds } from "../../utils/helpers";
+import { getHorarioObrigatorioParaData, sincronizarPontosDiscordParaReds, isAdminOuDono, getPrimaryRole } from "../../utils/helpers";
 
 // ===== HELPERS LOCAIS =====
 function calcularDatasPeriodo(periodo, offset = 0, filtroDataInicio = "", filtroDataFim = "") {
@@ -772,8 +772,19 @@ export default function RelatorioPage({
   const [gerandoLinkShare, setGerandoLinkShare] = useState(false);
   const [filtroBuscaSemSaida, setFiltroBuscaSemSaida] = useState("");
   const [analisandoAtividades, setAnalisandoAtividades] = useState(false);
-  const [mapaAnaliseAtividades, setMapaAnaliseAtividades] = useState({});
   const [salvandoFechamento, setSalvandoFechamento] = useState(false);
+
+  // Verificação de permissão: Exclusivo para Donos e Administradores
+  const isDono = Boolean(
+    usuarioLogado &&
+    (isAdminOuDono(usuarioLogado.role) ||
+      (usuarioLogado.role && (
+        usuarioLogado.role.includes("dono") ||
+        usuarioLogado.role.includes("chief") ||
+        usuarioLogado.role.includes("admin")
+      )) ||
+      getPrimaryRole(usuarioLogado.role) === "dono")
+  );
 
   const executarAnaliseAtividadesSemSaida = async () => {
     if (pontosSemSaidaPeriodo.length === 0) {
@@ -1370,6 +1381,24 @@ export default function RelatorioPage({
     }
   });
 
+  const { inicio: periodoInicio, fim: periodoFim } = calcularDatasPeriodo(
+    filtroPeriodo, semanaOffset, filtroDataInicio, filtroDataFim
+  );
+  const dataFimLimite = periodoFim ? new Date(`${periodoFim}T23:59:59`) : null;
+
+  const diasPeriodo = React.useMemo(() => {
+    if (!periodoInicio || !periodoFim) return [];
+    const dias = [];
+    const dataInicioObj = new Date(`${periodoInicio}T12:00:00`);
+    const dataFimObj = new Date(`${periodoFim}T12:00:00`);
+    let atual = new Date(dataInicioObj);
+    while (atual <= dataFimObj) {
+      dias.push(atual.toLocaleDateString("en-CA"));
+      atual.setDate(atual.getDate() + 1);
+    }
+    return dias;
+  }, [periodoInicio, periodoFim]);
+
   const processarFuncion = (func) => {
     const fid = func.idJogo || func.id_jogo || func.id;
     const regsVinculados = [
@@ -1391,12 +1420,35 @@ export default function RelatorioPage({
     });
 
     let totalMin = 0, sessoes = 0, abertas = 0, idJogo = null;
+    let minutosObrigatorio = 0;
+    const diasComPresencaObrigatorio = new Set();
+
     todosRegs.forEach(reg => {
       if (reg.oculto) return; // Ignora registros ocultos
       if (!idJogo && reg.id_jogo) idJogo = reg.id_jogo;
       if (reg.entrada && reg.saida) {
-        const diff = (new Date(reg.saida) - new Date(reg.entrada)) / 60000;
-        if (diff > 0) { totalMin += diff; sessoes++; }
+        const tEntrada = new Date(reg.entrada);
+        const tSaida = new Date(reg.saida);
+        const diff = (tSaida - tEntrada) / 60000;
+        if (diff > 0) { 
+          totalMin += diff; 
+          sessoes++; 
+
+          // Intersecção com horário obrigatório para cada dia do período
+          diasPeriodo.forEach(dia => {
+            const infoObr = getHorarioObrigatorioParaData(dia);
+            const limiteInicio = new Date(`${dia}T${infoObr.horaInicio}-03:00`);
+            const limiteFim = new Date(`${dia}T${infoObr.horaFim}-03:00`);
+
+            const startIntersect = Math.max(tEntrada.getTime(), limiteInicio.getTime());
+            const endIntersect = Math.min(tSaida.getTime(), limiteFim.getTime());
+            const diffObr = (endIntersect - startIntersect) / 60000;
+            if (diffObr > 0) {
+              minutosObrigatorio += diffObr;
+              diasComPresencaObrigatorio.add(dia);
+            }
+          });
+        }
       } else if (reg.entrada && !reg.saida) {
         const diffEntrada = (Date.now() - new Date(reg.entrada).getTime()) / 60000;
         if (diffEntrada >= 0 && diffEntrada <= 60) {
@@ -1404,13 +1456,28 @@ export default function RelatorioPage({
         }
       }
     });
-    return { ...func, totalMin, sessoes, abertas, idJogo };
-  };
 
-  const { inicio: periodoInicio, fim: periodoFim } = calcularDatasPeriodo(
-    filtroPeriodo, semanaOffset, filtroDataInicio, filtroDataFim
-  );
-  const dataFimLimite = periodoFim ? new Date(`${periodoFim}T23:59:59`) : null;
+    const totalMinutosObrigatorioMeta = diasPeriodo.reduce((acc, dia) => {
+      const info = getHorarioObrigatorioParaData(dia);
+      return acc + (info.totalMinutos || 300);
+    }, 0);
+
+    const pctAdesaoObrigatorio = totalMinutosObrigatorioMeta > 0
+      ? Math.round((minutosObrigatorio / totalMinutosObrigatorioMeta) * 100)
+      : 0;
+
+    return { 
+      ...func, 
+      totalMin, 
+      sessoes, 
+      abertas, 
+      idJogo,
+      minutosObrigatorio,
+      diasPresentesObrigatorio: diasComPresencaObrigatorio.size,
+      totalDiasPeriodo: diasPeriodo.length,
+      pctAdesaoObrigatorio
+    };
+  };
 
   // Funcionários que estavam contratados ou trabalharam no período do relatório
   const funcionariosAtivos = listaFuncionarios
@@ -1479,6 +1546,13 @@ export default function RelatorioPage({
 
   if (ordenacao === "horas") {
     funcionariosAtivos.sort((a, b) => b.totalMin - a.totalMin);
+  } else if (ordenacao === "menos_pico") {
+    funcionariosAtivos.sort((a, b) => {
+      if (a.minutosObrigatorio !== b.minutosObrigatorio) {
+        return a.minutosObrigatorio - b.minutosObrigatorio;
+      }
+      return b.totalMin - a.totalMin;
+    });
   } else if (ordenacao === "id") {
     funcionariosAtivos.sort((a, b) => {
       const idA = a.idJogo ? Number(a.idJogo) : Number(a.id);
@@ -1519,6 +1593,7 @@ export default function RelatorioPage({
   const totalGeralMin = dadosFuncionarios.reduce((acc, r) => acc + r.totalMin, 0);
   const funcAtivos    = dadosFuncionarios.filter(r => r.totalMin > 0).length;
   const totalSessoes  = dadosFuncionarios.reduce((acc, r) => acc + r.sessoes, 0);
+  const totalObrigatorioMin = dadosFuncionarios.reduce((acc, r) => acc + (r.minutosObrigatorio || 0), 0);
 
   const pontosSemSaidaPeriodo = React.useMemo(() => {
     const regs = registrosRelatorio || [];
@@ -1583,19 +1658,6 @@ export default function RelatorioPage({
 
     return lista.sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
   }, [registrosRelatorio, ocultarManuais, listaFuncionarios]);
-
-  const diasPeriodo = React.useMemo(() => {
-    if (!periodoInicio || !periodoFim) return [];
-    const dias = [];
-    const dataInicioObj = new Date(`${periodoInicio}T12:00:00`);
-    const dataFimObj = new Date(`${periodoFim}T12:00:00`);
-    let atual = new Date(dataInicioObj);
-    while (atual <= dataFimObj) {
-      dias.push(atual.toLocaleDateString("en-CA"));
-      atual.setDate(atual.getDate() + 1);
-    }
-    return dias;
-  }, [periodoInicio, periodoFim]);
 
   // Lógica para aba Comparativo
   const metricasM1 = React.useMemo(() => {
@@ -1805,7 +1867,56 @@ export default function RelatorioPage({
     return `🗓 ${Math.abs(semanaOffset)} sem. atrás`;
   })();
 
-  const colunasHeader = ["#", "ID Jogo", "Funcionário", "Cargo", "Total de Horas", "Sessões", "Status"];
+  const copiarResumoObrigatorioDonos = () => {
+    if (!dadosFuncionarios || dadosFuncionarios.length === 0) {
+      alert("Nenhum dado de funcionário disponível para copiar.");
+      return;
+    }
+
+    const { inicio, fim } = calcularDatasPeriodo(filtroPeriodo, semanaOffset, filtroDataInicio, filtroDataFim);
+    const ordenadosPico = [...dadosFuncionarios].sort((a, b) => {
+      if (a.minutosObrigatorio !== b.minutosObrigatorio) {
+        return a.minutosObrigatorio - b.minutosObrigatorio;
+      }
+      return b.totalMin - a.totalMin;
+    });
+
+    let txt = `📋 **RELATÓRIO DE PRESENÇA - HORÁRIO OBRIGATÓRIO (18h às 23h)**\n`;
+    txt += `📅 **Período:** ${fmtBR(inicio)} a ${fmtBR(fim)}\n`;
+    txt += `⚠️ *Ordenado pelos que MENOS cumpriram a janela obrigatória*\n\n`;
+
+    ordenadosPico.forEach((f, idx) => {
+      const tag = getCargoTag(f.role) || "MC";
+      const horasPico = fmtMin(f.minutosObrigatorio);
+      const horasTotal = fmtMin(f.totalMin);
+      const alerta = f.minutosObrigatorio === 0 
+        ? "🔴 0h NO PICO" 
+        : f.pctAdesaoObrigatorio < 25 
+          ? "🟡 BAIXA" 
+          : "🟢 REGULAR";
+
+      txt += `${idx + 1}. **[${tag}] ${f.nome}** (ID: ${f.idJogo || f.id || "—"})\n`;
+      txt += `   └ Horário Obrigatório: **${horasPico}** (${f.pctAdesaoObrigatorio}% meta | ${f.diasPresentesObrigatorio} de ${f.totalDiasPeriodo} dias) - ${alerta}\n`;
+      txt += `   └ Total Geral do Período: ${horasTotal}\n`;
+    });
+
+    navigator.clipboard.writeText(txt).then(() => {
+      alert("✅ Relatório copiado para a área de transferência! Cole no Discord.");
+    }).catch(() => {
+      alert("Erro ao copiar para a área de transferência.");
+    });
+  };
+
+  const colunasHeader = [
+    "#",
+    "ID Jogo",
+    "Funcionário",
+    "Cargo",
+    "Total de Horas",
+    ...(isDono ? ["⭐ Horário Obrigatório (18h-23h)"] : []),
+    "Sessões",
+    "Status"
+  ];
 
   const renderModalAuditoriaSessao = () => {
     if (!sessaoAuditModal) return null;
@@ -2647,6 +2758,93 @@ export default function RelatorioPage({
             </div>
           )}
 
+          {/* BANNER AUDITORIA HORÁRIO OBRIGATÓRIO (EXCLUSIVO DONOS) */}
+          {isDono && jaGerou && !relatorioCarregando && (
+            <div style={{
+              background: "linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(30, 41, 59, 0.6) 100%)",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+              borderRadius: "12px",
+              padding: "16px 20px",
+              marginBottom: "20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "14px"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div style={{
+                  background: "rgba(239, 68, 68, 0.2)",
+                  borderRadius: "10px",
+                  padding: "10px",
+                  fontSize: "22px"
+                }}>
+                  🛡️
+                </div>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontWeight: "800", color: "#f87171", fontSize: "14px" }}>
+                      Painel do Dono: Horário Obrigatório (18h às 23h)
+                    </span>
+                    <span style={{
+                      background: "rgba(239, 68, 68, 0.2)",
+                      color: "#fca5a5",
+                      fontSize: "10px",
+                      fontWeight: "800",
+                      padding: "2px 8px",
+                      borderRadius: "6px"
+                    }}>
+                      EXCLUSIVO
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "12px", color: theme.subtext, marginTop: "4px" }}>
+                    Identifique quem menos compareceu no horário obrigatório e audite o cumprimento das metas no pico.
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  onClick={() => setOrdenacao("menos_pico")}
+                  style={{
+                    background: ordenacao === "menos_pico" ? "#ef4444" : "rgba(239, 68, 68, 0.15)",
+                    color: ordenacao === "menos_pico" ? "#fff" : "#fca5a5",
+                    border: "1px solid rgba(239, 68, 68, 0.4)",
+                    padding: "8px 14px",
+                    borderRadius: "8px",
+                    fontWeight: "700",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px"
+                  }}
+                >
+                  <span>⚠️</span> Listar Menos no Pico
+                </button>
+
+                <button
+                  onClick={copiarResumoObrigatorioDonos}
+                  style={{
+                    background: "rgba(59, 130, 246, 0.15)",
+                    color: "#93c5fd",
+                    border: "1px solid rgba(59, 130, 246, 0.4)",
+                    padding: "8px 14px",
+                    borderRadius: "8px",
+                    fontWeight: "700",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px"
+                  }}
+                >
+                  <span>📋</span> Copiar p/ Discord
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* TABELA PRINCIPAL */}
           <div style={{ ...styles.whiteCard, padding: "0", overflow: "hidden" }}>
 
@@ -2663,12 +2861,21 @@ export default function RelatorioPage({
               </div>
               <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: "11px", color: theme.subtext }}>Ordenar:</span>
-                {[{ val: "horas", label: "Horas ↓" }, { val: "nome", label: "Nome A-Z" }, { val: "id", label: "ID 1-9" }].map(({ val, label }) => (
+                {[
+                  { val: "horas", label: "Horas ↓" },
+                  ...(isDono ? [{ val: "menos_pico", label: "⚠️ Menos no Pico (18h-23h) ↑" }] : []),
+                  { val: "nome", label: "Nome A-Z" },
+                  { val: "id", label: "ID 1-9" }
+                ].map(({ val, label }) => (
                   <button key={val} onClick={() => setOrdenacao(val)} style={{
-                    padding: "3px 10px", borderRadius: "6px", border: "none", cursor: "pointer",
+                    padding: "3px 10px", borderRadius: "6px", 
+                    border: val === "menos_pico" && ordenacao !== val ? "1px solid rgba(239, 68, 68, 0.4)" : "none",
+                    cursor: "pointer",
                     fontSize: "11px", fontWeight: "700",
-                    background: ordenacao === val ? theme.accent : theme.card2,
-                    color: ordenacao === val ? "#fff" : theme.subtext,
+                    background: ordenacao === val 
+                      ? (val === "menos_pico" ? "#ef4444" : theme.accent) 
+                      : theme.card2,
+                    color: ordenacao === val ? "#fff" : (val === "menos_pico" ? "#f87171" : theme.subtext),
                   }}>{label}</button>
                 ))}
                 <button onClick={() => setMostrarSemHoras(v => !v)} style={{
@@ -2812,6 +3019,33 @@ export default function RelatorioPage({
                               </div>
                             )}
                           </td>
+                          {isDono && (
+                            <td style={{ padding: "10px 14px" }}>
+                              <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
+                                <span style={{
+                                  fontWeight: "800",
+                                  fontSize: "14px",
+                                  color: func.minutosObrigatorio === 0 
+                                    ? "#ef4444" 
+                                    : func.pctAdesaoObrigatorio < 25 
+                                      ? "#eab308" 
+                                      : "#38bdf8"
+                                }}>
+                                  {fmtMin(func.minutosObrigatorio)}
+                                </span>
+                                <span style={{ fontSize: "11px", color: theme.subtext }}>
+                                  ({func.pctAdesaoObrigatorio}%)
+                                </span>
+                              </div>
+                              <div style={{ fontSize: "10px", marginTop: "2px", color: theme.subtext }}>
+                                {func.minutosObrigatorio === 0 ? (
+                                  <span style={{ color: "#ef4444", fontWeight: "700" }}>🔴 0h no pico</span>
+                                ) : (
+                                  <span>📅 {func.diasPresentesObrigatorio} de {func.totalDiasPeriodo} dias</span>
+                                )}
+                              </div>
+                            </td>
+                          )}
                           <td style={{ padding: "10px 14px", color: theme.subtext, fontWeight: "700", textAlign: "center" }}>
                             {func.sessoes > 0 ? func.sessoes : "—"}
                           </td>
@@ -2848,15 +3082,30 @@ export default function RelatorioPage({
                       <div style={{ fontWeight: "800", fontSize: "16px", color: "#a78bfa" }}>{totalSessoes}</div>
                     </div>
                   </div>
-                  <div style={{
-                    display: "flex", alignItems: "center", gap: "12px",
-                    background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.3)",
-                    borderRadius: "12px", padding: "10px 20px",
-                  }}>
-                    <span style={{ fontSize: "22px" }}>⏱️</span>
-                    <div>
-                      <div style={{ fontSize: "10px", color: theme.subtext, fontWeight: "700", textTransform: "uppercase" }}>Total Geral de Horas</div>
-                      <div style={{ fontWeight: "900", fontSize: "26px", color: "#22c55e", lineHeight: 1 }}>{fmtMin(totalGeralMin)}</div>
+                  <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+                    {isDono && (
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: "12px",
+                        background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.3)",
+                        borderRadius: "12px", padding: "10px 20px",
+                      }}>
+                        <span style={{ fontSize: "22px" }}>⭐</span>
+                        <div>
+                          <div style={{ fontSize: "10px", color: theme.subtext, fontWeight: "700", textTransform: "uppercase" }}>Horário Obrigatório (Pico)</div>
+                          <div style={{ fontWeight: "900", fontSize: "22px", color: "#f87171", lineHeight: 1 }}>{fmtMin(totalObrigatorioMin)}</div>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: "12px",
+                      background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.3)",
+                      borderRadius: "12px", padding: "10px 20px",
+                    }}>
+                      <span style={{ fontSize: "22px" }}>⏱️</span>
+                      <div>
+                        <div style={{ fontSize: "10px", color: theme.subtext, fontWeight: "700", textTransform: "uppercase" }}>Total Geral de Horas</div>
+                        <div style={{ fontWeight: "900", fontSize: "26px", color: "#22c55e", lineHeight: 1 }}>{fmtMin(totalGeralMin)}</div>
+                      </div>
                     </div>
                   </div>
                 </div>

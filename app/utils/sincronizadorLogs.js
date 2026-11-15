@@ -219,35 +219,71 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
     if (!errBanc && bancadaNovas && bancadaNovas.length > 0) {
       const formatados = [];
       for (const d of bancadaNovas) {
-        const matchId = d.content.match(/\[ID\]:\s*(\d+)\s+([^`\n\r]+)/i);
-        const usuarioId = matchId ? matchId[1].trim() : "0";
-        const usuarioNome = matchId ? matchId[2].trim() : "Desconhecido";
-        const matchData = d.content.match(/\[DATA\]:\s*(\d{2}\/\d{2}\/\d{4})/i);
-        const matchHora = d.content.match(/\[HORA\]:\s*(\d{2}:\d{2}:\d{2})/i);
-        const matchItem = d.content.match(/\[ITEMNAME\]:\s*(.+)/i);
+        if (!d.content) continue;
+
+        const matchId = d.content.match(/\[ID\]:\s*(\d+)/i);
+        const matchNome = d.content.match(/\[NOME COMPLETO\]:\s*([^\n\r`]+)/i);
+        const matchItem = d.content.match(/\[ITEMNAME\]:\s*([^\n\r`]+)/i);
         const matchQtd = d.content.match(/\[QUANTIDADE\]:\s*(\d+)/i);
+        const matchStore = d.content.match(/\[STORENAME\]:\s*([^\n\r`]+)/i);
+        const matchDataHora = d.content.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),?\s*(\d{2}):(\d{2}):(\d{2})/i);
         const matchUuid = d.content.match(/\[UUID\]:\s*([a-f0-9-]{36})/i);
 
-        let dt = d.created_at.split("T")[0];
-        if (matchData) {
-          const parts = matchData[1].split("/");
-          dt = `${parts[2]}-${parts[1]}-${parts[0]}`;
+        if (!matchId && !matchItem && !matchUuid) continue;
+
+        const usuarioId = matchId ? matchId[1].trim() : "0";
+        const usuarioNome = matchNome ? matchNome[1].trim() : "Desconhecido";
+        const itemCraftado = matchItem ? matchItem[1].trim() : "Craft de Bancada";
+        const quantidade = matchQtd ? parseInt(matchQtd[1], 10) : 1;
+        const uuid = matchUuid ? matchUuid[1].trim() : `disc_banc_${d.id}`;
+
+        let dt = null;
+        let hr = null;
+        let tsUtc = d.created_at;
+
+        if (matchDataHora) {
+          const [_, dia, mes, ano, hora, min, seg] = matchDataHora;
+          dt = `${ano}-${mes}-${dia}`;
+          hr = `${hora}:${min}:${seg}`;
+          try {
+            tsUtc = new Date(`${ano}-${mes}-${dia}T${hora}:${min}:${seg}-03:00`).toISOString();
+          } catch (e) {
+            tsUtc = d.created_at;
+          }
+        } else if (d.created_at) {
+          const dObj = new Date(d.created_at);
+          dt = dObj.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+          hr = dObj.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" });
+          tsUtc = dObj.toISOString();
+        }
+
+        // Mapear oficina
+        const store = (matchStore ? matchStore[1] : "").toLowerCase();
+        let targetMecanica = "reds";
+        if (store.includes("vespucci") || store.includes("beach")) {
+          targetMecanica = "vespucci";
+        } else if (store.includes("harmony")) {
+          targetMecanica = "harmony";
+        } else if (store.includes("dudark") || store.includes("salt") || store.includes("lab")) {
+          targetMecanica = "dudark";
+        } else if (store.includes("red")) {
+          targetMecanica = "reds";
         }
 
         const item = {
-          uuid: matchUuid ? matchUuid[1].trim() : `disc_banc_${d.id}`,
-          mecanica_id: d.mechanic_id || "reds",
+          uuid,
+          mecanica_id: targetMecanica,
           usuario_id: usuarioId,
           usuario_nome: usuarioNome,
-          item_craftado: matchItem ? matchItem[1].trim() : "Craft de Bancada",
-          quantidade: matchQtd ? parseInt(matchQtd[1], 10) : 1,
+          item_craftado: itemCraftado,
+          quantidade,
           data: dt,
-          hora: matchHora ? matchHora[1] : "00:00:00",
-          timestampz: d.created_at,
+          hora: hr || "00:00:00",
+          timestampz: tsUtc,
           discord_message_id: String(d.id),
           discord_channel_id: d.channel_id,
           raw_text: d.content,
-          criado_em: d.created_at,
+          criado_em: tsUtc,
         };
 
         formatados.push(item);
@@ -258,7 +294,7 @@ export async function sincronizarLogsUnificados(diasAtras = 2) {
           uuid: item.uuid,
           tipo: "BANCADA",
           timestamp: new Date(item.timestampz),
-          detalhe: `Craft de Bancada`
+          detalhe: `${item.quantidade}x ${item.item_craftado}`
         });
       }
 

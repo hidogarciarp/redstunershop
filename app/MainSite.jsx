@@ -132,6 +132,7 @@ export function MainSite({ isV2 = true } = {}) {
 
   const ultimoToastRef = useRef({ texto: "", time: 0 });
   const ultimaSyncTunagensRef = useRef(0);
+  const ultimaSyncBancadaRef = useRef(0);
 
   const adicionarToast = ({ mensagem, tipo = "info", titulo = "", duracao = 4200 }) => {
     if (!mensagem) return;
@@ -4866,7 +4867,79 @@ export function MainSite({ isV2 = true } = {}) {
       })
       .subscribe();
 
-    // 3. Auto-sincronização de contingência ultra-leve (protegida contra egress e log ingestion)
+    // 3. Canal Realtime para Bancada/Craft
+    const canalDiscordBancada = supabase
+      .channel("global-discord-bancada")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "discord_log_messages", filter: "log_type=eq.bancada" }, async (payload) => {
+        const msg = payload.new;
+        if (!msg || !msg.content) return;
+
+        const matchId = msg.content.match(/\[ID\]:\s*(\d+)/i);
+        const matchNome = msg.content.match(/\[NOME COMPLETO\]:\s*([^\n\r`]+)/i);
+        const matchItem = msg.content.match(/\[ITEMNAME\]:\s*([^\n\r`]+)/i);
+        const matchQtd = msg.content.match(/\[QUANTIDADE\]:\s*(\d+)/i);
+        const matchStore = msg.content.match(/\[STORENAME\]:\s*([^\n\r`]+)/i);
+        const matchDataHora = msg.content.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),?\s*(\d{2}):(\d{2}):(\d{2})/i);
+        const matchUuid = msg.content.match(/\[UUID\]:\s*([a-f0-9-]{36})/i);
+
+        if (!matchId && !matchItem && !matchUuid) return;
+
+        const usuarioId = matchId ? matchId[1].trim() : "0";
+        const usuarioNome = matchNome ? matchNome[1].trim() : "Desconhecido";
+        const itemCraftado = matchItem ? matchItem[1].trim() : "Craft de Bancada";
+        const quantidade = matchQtd ? parseInt(matchQtd[1], 10) : 1;
+        const uuid = matchUuid ? matchUuid[1].trim() : `disc_banc_${msg.id}`;
+
+        let dt = null;
+        let hr = null;
+        let tsUtc = msg.created_at;
+
+        if (matchDataHora) {
+          const [_, dia, mes, ano, hora, min, seg] = matchDataHora;
+          dt = `${ano}-${mes}-${dia}`;
+          hr = `${hora}:${min}:${seg}`;
+          try {
+            tsUtc = new Date(`${ano}-${mes}-${dia}T${hora}:${min}:${seg}-03:00`).toISOString();
+          } catch (e) {
+            tsUtc = msg.created_at;
+          }
+        } else if (msg.created_at) {
+          const dObj = new Date(msg.created_at);
+          dt = dObj.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+          hr = dObj.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" });
+          tsUtc = dObj.toISOString();
+        }
+
+        const store = (matchStore ? matchStore[1] : "").toLowerCase();
+        let targetMecanica = "reds";
+        if (store.includes("vespucci") || store.includes("beach")) targetMecanica = "vespucci";
+        else if (store.includes("harmony")) targetMecanica = "harmony";
+        else if (store.includes("dudark") || store.includes("salt") || store.includes("lab")) targetMecanica = "dudark";
+        else if (store.includes("red")) targetMecanica = "reds";
+
+        const item = {
+          uuid,
+          mecanica_id: targetMecanica,
+          usuario_id: usuarioId,
+          usuario_nome: usuarioNome,
+          item_craftado: itemCraftado,
+          quantidade,
+          data: dt,
+          hora: hr || "00:00:00",
+          timestampz: tsUtc,
+          discord_message_id: String(msg.id),
+          discord_channel_id: msg.channel_id,
+          raw_text: msg.content,
+          criado_em: tsUtc,
+        };
+
+        try {
+          await supabase.from("log_bancada").upsert([item], { onConflict: "uuid" });
+        } catch (e) {}
+      })
+      .subscribe();
+
+    // 4. Auto-sincronização de contingência ultra-leve (protegida contra egress e log ingestion)
     const sincronizarTunagensRetroativas = async () => {
       try {
         const agora = Date.now();
@@ -4923,11 +4996,113 @@ export function MainSite({ isV2 = true } = {}) {
       }
     };
 
+    // 5. Auto-sincronização de contingência de bancada (últimas 2h, cooldown de 5 min)
+    const sincronizarBancadaRetroativas = async () => {
+      try {
+        const agora = Date.now();
+        if (agora - ultimaSyncBancadaRef.current < 5 * 60 * 1000) return;
+        ultimaSyncBancadaRef.current = agora;
+
+        const dataLimite = new Date(agora - 2 * 3600 * 1000).toISOString();
+        const { data: msgsRecentes } = await supabase
+          .from("discord_log_messages")
+          .select("id, channel_id, content, created_at")
+          .eq("log_type", "bancada")
+          .gte("created_at", dataLimite)
+          .order("created_at", { ascending: false })
+          .limit(30);
+
+        if (!msgsRecentes || msgsRecentes.length === 0) return;
+
+        const candidatos = [];
+        for (const msg of msgsRecentes) {
+          if (!msg.content) continue;
+          const matchId = msg.content.match(/\[ID\]:\s*(\d+)/i);
+          const matchNome = msg.content.match(/\[NOME COMPLETO\]:\s*([^\n\r`]+)/i);
+          const matchItem = msg.content.match(/\[ITEMNAME\]:\s*([^\n\r`]+)/i);
+          const matchQtd = msg.content.match(/\[QUANTIDADE\]:\s*(\d+)/i);
+          const matchStore = msg.content.match(/\[STORENAME\]:\s*([^\n\r`]+)/i);
+          const matchDataHora = msg.content.match(/\[DATA\]:\s*(\d{2})\/(\d{2})\/(\d{4}),?\s*(\d{2}):(\d{2}):(\d{2})/i);
+          const matchUuid = msg.content.match(/\[UUID\]:\s*([a-f0-9-]{36})/i);
+
+          if (!matchId && !matchItem && !matchUuid) continue;
+
+          const usuarioId = matchId ? matchId[1].trim() : "0";
+          const usuarioNome = matchNome ? matchNome[1].trim() : "Desconhecido";
+          const itemCraftado = matchItem ? matchItem[1].trim() : "Craft de Bancada";
+          const quantidade = matchQtd ? parseInt(matchQtd[1], 10) : 1;
+          const uuid = matchUuid ? matchUuid[1].trim() : `disc_banc_${msg.id}`;
+
+          let dt = null;
+          let hr = null;
+          let tsUtc = msg.created_at;
+
+          if (matchDataHora) {
+            const [_, dia, mes, ano, hora, min, seg] = matchDataHora;
+            dt = `${ano}-${mes}-${dia}`;
+            hr = `${hora}:${min}:${seg}`;
+            try {
+              tsUtc = new Date(`${ano}-${mes}-${dia}T${hora}:${min}:${seg}-03:00`).toISOString();
+            } catch (e) {
+              tsUtc = msg.created_at;
+            }
+          } else if (msg.created_at) {
+            const dObj = new Date(msg.created_at);
+            dt = dObj.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+            hr = dObj.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Sao_Paulo" });
+            tsUtc = dObj.toISOString();
+          }
+
+          const store = (matchStore ? matchStore[1] : "").toLowerCase();
+          let targetMecanica = "reds";
+          if (store.includes("vespucci") || store.includes("beach")) targetMecanica = "vespucci";
+          else if (store.includes("harmony")) targetMecanica = "harmony";
+          else if (store.includes("dudark") || store.includes("salt") || store.includes("lab")) targetMecanica = "dudark";
+          else if (store.includes("red")) targetMecanica = "reds";
+
+          candidatos.push({
+            uuid,
+            mecanica_id: targetMecanica,
+            usuario_id: usuarioId,
+            usuario_nome: usuarioNome,
+            item_craftado: itemCraftado,
+            quantidade,
+            data: dt,
+            hora: hr || "00:00:00",
+            timestampz: tsUtc,
+            discord_message_id: String(msg.id),
+            discord_channel_id: msg.channel_id,
+            raw_text: msg.content,
+            criado_em: tsUtc,
+          });
+        }
+
+        if (candidatos.length === 0) return;
+
+        const uuids = candidatos.map((c) => c.uuid);
+        const { data: jaCadastrados } = await supabase
+          .from("log_bancada")
+          .select("uuid")
+          .in("uuid", uuids);
+
+        const setExistentes = new Set((jaCadastrados || []).map((j) => j.uuid));
+        const pendentes = candidatos.filter((c) => !setExistentes.has(c.uuid));
+
+        if (pendentes.length > 0) {
+          await supabase.from("log_bancada").upsert(pendentes, { onConflict: "uuid" });
+        }
+      } catch (errSync) {
+        console.warn("Aviso ao auto-sincronizar bancada recente:", errSync);
+      }
+    };
+
     sincronizarTunagensRetroativas();
+    sincronizarBancadaRetroativas();
 
     const handleVisibility = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
         sincronizarTunagensRetroativas();
+        sincronizarBancadaRetroativas();
       }
     };
     if (typeof document !== "undefined") {
@@ -4937,6 +5112,7 @@ export function MainSite({ isV2 = true } = {}) {
     return () => {
       supabase.removeChannel(canalTunagemDirect);
       supabase.removeChannel(canalDiscordServicos);
+      supabase.removeChannel(canalDiscordBancada);
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", handleVisibility);
       }

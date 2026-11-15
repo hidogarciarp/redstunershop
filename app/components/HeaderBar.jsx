@@ -12,7 +12,26 @@ function usePontoElapsed(pontoAtivo) {
     }
 
     const inicio = new Date(entrada).getTime();
-    const atualizar = () => setSegundos(Math.max(0, Math.floor((Date.now() - inicio) / 1000)));
+    if (isNaN(inicio)) {
+      const limpar = window.setTimeout(() => setSegundos(0), 0);
+      return () => window.clearTimeout(limpar);
+    }
+
+    const mountTime = Date.now();
+    const isClockBehind = mountTime < inicio;
+
+    const atualizar = () => {
+      const now = Date.now();
+      if (isClockBehind) {
+        // Se o relógio do Windows do usuário estiver atrasado em relação ao servidor/Discord,
+        // não deixa o cronômetro congelado no 00:00:00; conta a partir de 1s enquanto navega
+        const decorridoLocal = Math.floor((now - mountTime) / 1000);
+        setSegundos(Math.max(1, decorridoLocal));
+      } else {
+        setSegundos(Math.max(0, Math.floor((now - inicio) / 1000)));
+      }
+    };
+
     const inicial = window.setTimeout(atualizar, 0);
     const intervalo = window.setInterval(atualizar, 1000);
     return () => {
