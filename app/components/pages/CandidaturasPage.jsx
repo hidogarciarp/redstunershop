@@ -99,27 +99,33 @@ export default function CandidaturasPage({
 
   const handleEnviar = async () => {
     if (!cartaApresentacao.trim() || !justificativa.trim()) {
-      return alert("Por favor, preencha todos os campos.");
+      return alert("Por favor, preencha todos os campos (Carta de Apresentação e Justificativa).");
     }
 
     // Bloqueio de segurança no envio
     if (vagasAtivas[vagaSelecionada] === false && !userPodeControlarVagas) {
-      return alert("Esta vaga não está mais aceitando candidaturas.");
+      return alert("Esta vaga não está mais aceitando candidaturas no momento.");
     }
 
     setEnviando(true);
-    const sucesso = await enviarCandidatura({
-      area: vagaSelecionada,
-      area_titulo: AREAS_DESCRICAO[vagaSelecionada].titulo,
-      carta: cartaApresentacao,
-      justificativa: justificativa
-    });
-    setEnviando(false);
-    if (sucesso) {
-      setVagaSelecionada(null);
-      setCartaApresentacao("");
-      setJustificativa("");
-      setAbaAtiva("minhas");
+    try {
+      const sucesso = await enviarCandidatura({
+        area: vagaSelecionada,
+        area_titulo: AREAS_DESCRICAO[vagaSelecionada]?.titulo || vagaSelecionada,
+        carta: cartaApresentacao,
+        justificativa: justificativa
+      });
+      if (sucesso) {
+        setVagaSelecionada(null);
+        setCartaApresentacao("");
+        setJustificativa("");
+        setAbaAtiva("minhas");
+      }
+    } catch (err) {
+      console.error("Erro ao enviar candidatura:", err);
+      alert("Ocorreu um erro ao enviar sua candidatura. Tente novamente.");
+    } finally {
+      setEnviando(false);
     }
   };
 

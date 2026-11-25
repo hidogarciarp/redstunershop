@@ -71,6 +71,7 @@ const buildMenuItems = ({ userPodeNotificar, userPodeFinancas, userIsAdmin, user
     ...(userIsAdmin ? [{ id: "clientes", label: "Clientes" }] : []),
     ...(userPodeAdmin ? [{ id: "admin", label: "Admin" }] : []),
     ...((userPodeFinancas || userIsDono || userIsAdmin) ? [{ id: "financas", label: "Finanças" }] : []),
+    ...(userIsDono ? [{ id: "sorteio", label: "🎟️ Sorteio" }] : []),
     ...((userIsAdmin || (userRole && (userRole.includes("gerente_geral") || userRole.includes("resp_ponto") || userRole.includes("dono"))))
       ? [
         { id: "monitor-ponto", label: "⚡ Monitor ao Vivo" },

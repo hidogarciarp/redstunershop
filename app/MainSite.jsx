@@ -35,6 +35,7 @@ import BonificacaoPage from "./components/pages/BonificacaoPage";
 import AtividadesMecanicosPage from "./components/pages/AtividadesMecanicosPage";
 import JanelaPontoFlutuante from "./components/JanelaPontoFlutuante";
 import RelatorioPage from "./components/pages/RelatorioPage";
+import SorteioPage from "./components/pages/SorteioPage";
 import RelatorioPublicoPage from "./components/pages/RelatorioPublicoPage";
 import OutrasMecanicasPage from "./components/pages/OutrasMecanicasPage";
 import ControleVendasPage from "./components/pages/ControleVendasPage";
@@ -3589,8 +3590,23 @@ export function MainSite({ isV2 = true } = {}) {
   };
 
   const enviarCandidatura = async (dados) => {
-    if (!usuarioLogado) return false;
+    if (!usuarioLogado) {
+      if (typeof mostrarFeedback === "function") {
+        mostrarFeedback("Você precisa estar logado para enviar uma candidatura.", "erro");
+      }
+      return false;
+    }
+
+    const novoId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+          const r = (Math.random() * 16) | 0;
+          const v = c === "x" ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        });
+
     const { error } = await supabase.from("candidaturas").insert({
+      id: novoId,
       usuario_id: usuarioLogado.id,
       usuario_nome: usuarioLogado.nome,
       area: dados.area,
@@ -3602,10 +3618,20 @@ export function MainSite({ isV2 = true } = {}) {
     });
 
     if (error) {
-      alert("❌ Erro ao enviar candidatura: " + error.message);
+      console.error("Erro ao enviar candidatura:", error);
+      if (typeof mostrarFeedback === "function") {
+        mostrarFeedback("Erro ao enviar candidatura: " + error.message, "erro");
+      } else {
+        alert("❌ Erro ao enviar candidatura: " + error.message);
+      }
       return false;
     }
-    alert("✅ Sua candidatura foi enviada com sucesso! Aguarde a análise do RH.");
+
+    if (typeof mostrarFeedback === "function") {
+      mostrarFeedback("Sua candidatura foi enviada com sucesso! Aguarde a análise do RH.", "sucesso");
+    } else {
+      alert("✅ Sua candidatura foi enviada com sucesso! Aguarde a análise do RH.");
+    }
     buscarCandidaturas();
     return true;
   };
@@ -3622,10 +3648,20 @@ export function MainSite({ isV2 = true } = {}) {
       .eq("id", id);
 
     if (error) {
-      alert("❌ Erro ao processar: " + error.message);
+      console.error("Erro ao processar candidatura:", error);
+      if (typeof mostrarFeedback === "function") {
+        mostrarFeedback("Erro ao processar: " + error.message, "erro");
+      } else {
+        alert("❌ Erro ao processar: " + error.message);
+      }
       return;
     }
-    alert(`✅ Candidatura ${status === "aprovada" ? "aprovada" : "rejeitada"}!`);
+
+    if (typeof mostrarFeedback === "function") {
+      mostrarFeedback(`Candidatura ${status === "aprovada" ? "aprovada" : "rejeitada"} com sucesso!`, "sucesso");
+    } else {
+      alert(`✅ Candidatura ${status === "aprovada" ? "aprovada" : "rejeitada"}!`);
+    }
     buscarCandidaturas();
   };
 
@@ -7121,6 +7157,37 @@ export function MainSite({ isV2 = true } = {}) {
             criarMissao={criarMissao}
             editarMissao={editarMissao}
             finalizarMissao={finalizarMissao}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  // ===== PÁGINA: SORTEIO =====
+  if (paginaAtual === "sorteio") {
+    const isDono = (userRole || "").split("|").includes("dono") || (userRole || "").includes("admin");
+    if (!isDono) {
+      return (
+        <div style={styles.dashContainer}>
+          <AppHeaderBar />
+          <div style={{ padding: "40px", textAlign: "center", color: theme.text }}>
+            <h2>🚫 Acesso Restrito</h2>
+            <p style={{ color: theme.subtext }}>O módulo de sorteios está em fase de testes e visível apenas para a diretoria no momento.</p>
+            <button style={{ ...styles.btnPrimary, width: "auto", padding: "12px 28px", marginTop: "16px" }} onClick={() => setPaginaAtual("dashboard")}>Voltar ao Dashboard</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div style={styles.dashContainer}>
+        <AppModalNotificacao />
+        <AppHeaderBar />
+        <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+          <SorteioPage
+            styles={styles}
+            theme={theme}
+            usuarioLogado={usuarioParaInterface}
+            setPaginaAtual={setPaginaAtual}
           />
         </main>
       </div>
